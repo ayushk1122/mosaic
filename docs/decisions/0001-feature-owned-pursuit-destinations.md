@@ -10,7 +10,7 @@ Mosaic must support Pursuits with different information architecture and interac
 
 ## Decision
 
-Use a thin app shell that owns launch, top-level navigation, dependency composition, and a lightweight Pursuit catalog. Route through the smallest practical destination seam to a Golf-owned experience. Golf owns navigation and presentation within that destination.
+**Decision:** Use a thin app shell that owns launch, top-level navigation, dependency composition, and a lightweight Pursuit catalog. Route through the smallest practical destination seam to a Golf-owned experience. Golf owns navigation and presentation within that destination.
 
 Keep shared Pursuit concepts limited to demonstrated identity and library metadata. Do not require a universal dashboard, card schema, plugin framework, or server-driven UI.
 

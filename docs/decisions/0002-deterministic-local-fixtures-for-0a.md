@@ -10,7 +10,7 @@ Iteration 0A is a comprehension and design review of a longitudinal Golf story. 
 
 ## Decision
 
-Use deterministic, local, read-only fixture data for 0A. The fixture story spans several months and covers current focus, practice history, consistency, progress, sample rounds, curated media, and milestones. It has no account or network dependency.
+**Decision:** Use deterministic, local, read-only fixture data for 0A. The fixture story spans several months and covers current focus, practice history, consistency, progress, sample rounds, curated media, and milestones. It has no account or network dependency.
 
 Do not select persistence in 0A. In 0B, place storage behind a small Golf repository only after practice-session fields and relaunch expectations are agreed.
 

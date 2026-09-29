@@ -32,9 +32,9 @@ Mosaic helps people developing hobbies, skills, creative pursuits, fitness goals
 
 ## Success signals
 
-**Experiment (0A):** Ask, “After several months, can I see the story of getting better?” A reviewer should be able to answer using current focus, practice history, consistency, progress, sample rounds, media, and milestones.
+**Experiment:** In 0A ask, “After several months, can I see the story of getting better?” A reviewer should be able to answer using current focus, practice history, consistency, progress, sample rounds, media, and milestones.
 
-**Experiment (0B):** A user can easily record the agreed minimal practice session and see that moment become part of the Golf progress story.
+**Experiment:** In 0B, verify that a user can easily record the agreed minimal practice session and see that moment become part of the Golf progress story.
 
 **Assumption:** A Golf-native presentation will make progress more legible and motivating than a generic dashboard.
 
