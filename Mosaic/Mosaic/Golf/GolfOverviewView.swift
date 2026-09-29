@@ -36,8 +36,8 @@ struct GolfOverviewView: View {
                 GolfMemoryChapter(milestones: story.milestones, media: story.media)
             }
             .padding(.bottom, 64)
-            .accessibilityIdentifier("golf.overview")
         }
+        .accessibilityIdentifier("golf.overview")
         .background(Color(red: 0.02, green: 0.022, blue: 0.024))
         .navigationTitle("Golf Overview")
         .navigationBarTitleDisplayMode(.inline)
@@ -76,6 +76,9 @@ private struct GolfHeroView: View {
                         .font(.body)
                         .foregroundStyle(.white.opacity(0.68))
                         .fixedSize(horizontal: false, vertical: true)
+                    Text("Since \(story.currentFocus.since.formatted(.dateTime.month(.wide).day()))")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.5))
                 }
             }
             .foregroundStyle(.white)
@@ -98,9 +101,15 @@ private struct GolfPracticeChapter: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.white.opacity(0.45))
                             .frame(width: 54, alignment: .leading)
-                        Text(practice.summary)
-                            .font(.title3.weight(.regular))
-                            .foregroundStyle(.white.opacity(0.9))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(practice.summary)
+                                .font(.title3.weight(.regular))
+                                .foregroundStyle(.white.opacity(0.9))
+                            Text(practice.note)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.58))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         Spacer(minLength: 0)
                     }
                     .padding(.vertical, 15)
@@ -131,9 +140,20 @@ private struct GolfConsistencyChapter: View {
                             )
                     }
                 }
-                Text("18 sessions · 12 weeks")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.58))
+                HStack {
+                    Text(weeks.first?.weekStart.formatted(.dateTime.month(.abbreviated).day()) ?? "")
+                    Spacer()
+                    Text(weeks.last?.weekStart.formatted(.dateTime.month(.abbreviated).day()) ?? "")
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.45))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(weeks.reduce(0) { $0 + $1.sessionCount }) sessions · \(weeks.count) weeks")
+                        .font(.subheadline.monospacedDigit())
+                    Text("Short bar: 1 session · Tall bar: 2 sessions")
+                        .font(.caption)
+                }
+                .foregroundStyle(.white.opacity(0.58))
             }
         }
     }
@@ -145,6 +165,15 @@ private struct GolfProgressChapter: View {
     var body: some View {
         GolfSection(title: "Progress") {
             VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(progress.title)
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text(progress.narrative)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         scoreValues
@@ -195,6 +224,10 @@ private struct GolfRoundsChapter: View {
                             Text(round.date.formatted(date: .abbreviated, time: .omitted))
                                 .font(.caption)
                                 .foregroundStyle(.white.opacity(0.45))
+                            Text(round.reflection)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.58))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
                     }
@@ -234,6 +267,10 @@ private struct GolfMemoryChapter: View {
                         Text(memory.caption)
                             .foregroundStyle(.white.opacity(0.68))
                             .fixedSize(horizontal: false, vertical: true)
+                        Text(milestone.meaning)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.58))
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(milestone.date.formatted(date: .long, time: .omitted))
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.48))
@@ -243,7 +280,7 @@ private struct GolfMemoryChapter: View {
                 }
                 .frame(minHeight: 330)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(milestone.title), \(milestone.date.formatted(date: .long, time: .omitted)). \(milestone.meaning). \(memory.accessibilityDescription). \(memory.caption)")
+                .accessibilityLabel("\(milestone.title), \(milestone.date.formatted(date: .long, time: .omitted)). \(milestone.meaning). \(memory.caption). \(memory.accessibilityDescription)")
                 .accessibilityIdentifier("golf.milestones")
             }
         }

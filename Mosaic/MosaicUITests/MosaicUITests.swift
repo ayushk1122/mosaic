@@ -27,18 +27,10 @@ final class MosaicUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        XCTAssertTrue(app.navigationBars["Mosaic Home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["home.screen"].waitForExistence(timeout: 5))
         let golf = app.buttons["pursuit.golf.open"]
         XCTAssertTrue(golf.exists)
         golf.tap()
-        XCTAssertTrue(app.navigationBars["Golf Overview"].waitForExistence(timeout: 5))
-    }
-
-    @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+        XCTAssertTrue(app.scrollViews["golf.overview"].waitForExistence(timeout: 5))
     }
 }

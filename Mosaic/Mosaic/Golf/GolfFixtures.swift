@@ -93,7 +93,7 @@ enum GolfFixtures {
                     id: "memory-evening-range",
                     date: date(2026, 9, 17),
                     caption: "Stayed through the rain and found a rhythm worth remembering.",
-                    accessibilityDescription: "Evening range session in light rain"
+                    accessibilityDescription: "Abstract rain-themed illustration"
                 )
             ]
         )

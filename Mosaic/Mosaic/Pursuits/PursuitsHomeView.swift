@@ -34,6 +34,7 @@ struct PursuitsHomeView: View {
             .padding(.top, 32)
             .padding(.bottom, 54)
         }
+        .accessibilityIdentifier("home.screen")
         .background(Color(red: 0.025, green: 0.027, blue: 0.03))
         .navigationTitle("Mosaic Home")
         .navigationBarTitleDisplayMode(.inline)
