@@ -23,14 +23,15 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testHomeOpensGolfOverview() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        XCTAssertTrue(app.navigationBars["Mosaic Home"].waitForExistence(timeout: 5))
+        let golf = app.buttons["pursuit.golf.open"]
+        XCTAssertTrue(golf.exists)
+        golf.tap()
+        XCTAssertTrue(app.navigationBars["Golf Overview"].waitForExistence(timeout: 5))
     }
 
     @MainActor
