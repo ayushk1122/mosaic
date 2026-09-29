@@ -33,4 +33,12 @@ final class MosaicUITests: XCTestCase {
         golf.tap()
         XCTAssertTrue(app.descendants(matching: .any)["golf.overview"].waitForExistence(timeout: 5))
     }
+
+    @MainActor
+    func testLaunchPerformance() throws {
+        // This measures how long it takes to launch your application.
+        measure(metrics: [XCTApplicationLaunchMetric()]) {
+            XCUIApplication().launch()
+        }
+    }
 }
