@@ -6,112 +6,125 @@ struct PursuitsHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                ProfileHeaderView(profile: fixture.profile)
+            VStack(alignment: .leading, spacing: 38) {
+                PortfolioIdentityView(profile: fixture.profile)
                     .accessibilityIdentifier("home.profile")
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Your Pursuits")
-                        .font(.title2.bold())
-                    Text("The parts of life you’re choosing to grow.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Pursuits")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.65))
 
-                LazyVStack(spacing: 14) {
                     ForEach(fixture.pursuits) { pursuit in
                         if pursuit.kind == .golf {
                             Button(action: openGolf) {
-                                PursuitTileView(pursuit: pursuit, isAvailable: true)
+                                PursuitPortfolioTile(pursuit: pursuit, isAvailable: true)
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("pursuit.golf.open")
                             .accessibilityHint("Opens Golf Overview")
                         } else {
-                            PursuitTileView(pursuit: pursuit, isAvailable: false)
+                            PursuitPortfolioTile(pursuit: pursuit, isAvailable: false)
                                 .accessibilityIdentifier("pursuit.\(pursuit.kind.rawValue).planned")
                         }
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 24)
+            .padding(.horizontal, 22)
+            .padding(.top, 32)
+            .padding(.bottom, 54)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Color(red: 0.025, green: 0.027, blue: 0.03))
         .navigationTitle("Mosaic Home")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
     }
 }
 
-private struct ProfileHeaderView: View {
+private struct PortfolioIdentityView: View {
     let profile: MosaicProfileFixture
 
     var body: some View {
-        HStack(spacing: 16) {
-            Text(profile.initials)
-                .font(.title2.bold())
+        VStack(alignment: .leading, spacing: 10) {
+            Text("MOSAIC")
+                .font(.caption.weight(.semibold))
+                .tracking(3)
+                .foregroundStyle(.white.opacity(0.5))
+            Text(profile.displayName)
+                .font(.largeTitle.weight(.medium))
+                .fontDesign(.serif)
                 .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
-                .background(.green.gradient, in: Circle())
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(profile.displayName)
-                    .font(.title3.bold())
-                Text(profile.headline)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text("A personal collection in progress.")
+                .font(.body)
+                .foregroundStyle(.white.opacity(0.58))
         }
         .accessibilityElement(children: .combine)
     }
 }
 
-private struct PursuitTileView: View {
+private struct PursuitPortfolioTile: View {
     let pursuit: PursuitSummary
     let isAvailable: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: palette,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
             Image(systemName: pursuit.systemImage)
-                .font(.title2)
-                .foregroundStyle(isAvailable ? .white : .secondary)
-                .frame(width: 48, height: 48)
-                .background(isAvailable ? Color.green.gradient : Color.secondary.opacity(0.12).gradient,
-                            in: RoundedRectangle(cornerRadius: 14))
+                .font(.system(size: isAvailable ? 118 : 70, weight: .ultraLight))
+                .foregroundStyle(.white.opacity(isAvailable ? 0.16 : 0.09))
+                .offset(x: 80, y: -26)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pursuit.title)
-                    .font(.headline)
-                Text(pursuit.subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.72)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
 
-            Spacer(minLength: 8)
-
-            if isAvailable {
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            } else {
-                Text("Planned")
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(.secondary.opacity(0.1), in: Capsule())
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(pursuit.title)
+                        .font(isAvailable ? .largeTitle.weight(.medium) : .title2.weight(.medium))
+                        .fontDesign(.serif)
+                        .foregroundStyle(.white)
+                    Text(isAvailable ? "View journey" : "Planned")
+                        .font(.caption.weight(.medium))
+                        .textCase(.uppercase)
+                        .tracking(1.4)
+                        .foregroundStyle(.white.opacity(0.62))
+                }
+                Spacer(minLength: 10)
+                if isAvailable {
+                    Image(systemName: "arrow.up.right")
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .accessibilityHidden(true)
+                }
             }
+            .padding(20)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 20))
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: isAvailable ? 220 : 132)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
         .accessibilityElement(children: .combine)
+    }
+
+    private var palette: [Color] {
+        switch pursuit.kind {
+        case .golf:
+            [Color(red: 0.08, green: 0.31, blue: 0.21), Color(red: 0.18, green: 0.16, blue: 0.09)]
+        case .fitness:
+            [Color(red: 0.20, green: 0.18, blue: 0.25), Color(red: 0.08, green: 0.08, blue: 0.10)]
+        case .modeling:
+            [Color(red: 0.12, green: 0.20, blue: 0.25), Color(red: 0.07, green: 0.09, blue: 0.11)]
+        case .cooking:
+            [Color(red: 0.28, green: 0.15, blue: 0.10), Color(red: 0.10, green: 0.07, blue: 0.06)]
+        }
     }
 }
 

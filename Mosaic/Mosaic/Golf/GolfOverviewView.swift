@@ -17,88 +17,96 @@ struct GolfOverviewView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 32) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(story.title)
-                        .font(.largeTitle.bold())
-                    Text("A season of deliberate work, remembered in the moments that mattered.")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
-
-                GolfCurrentFocusView(focus: story.currentFocus)
+            LazyVStack(alignment: .leading, spacing: 52) {
+                GolfHeroView(story: story)
                     .accessibilityIdentifier("golf.current-focus")
 
-                GolfRecentPracticeView(practices: story.recentPractice)
+                GolfPracticeChapter(practices: story.recentPractice)
                     .accessibilityIdentifier("golf.recent-practice")
 
-                GolfConsistencyGrid(weeks: story.consistency)
+                GolfConsistencyChapter(weeks: story.consistency)
                     .accessibilityIdentifier("golf.consistency")
 
-                GolfProgressView(progress: story.progress)
+                GolfProgressChapter(progress: story.progress)
                     .accessibilityIdentifier("golf.progress")
 
-                GolfRoundsView(rounds: story.rounds)
+                GolfRoundsChapter(rounds: story.rounds)
                     .accessibilityIdentifier("golf.rounds")
 
-                GolfMemoriesView(milestones: story.milestones, media: story.media)
+                GolfMemoryChapter(milestones: story.milestones, media: story.media)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 24)
+            .padding(.bottom, 64)
             .accessibilityIdentifier("golf.overview")
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Color(red: 0.02, green: 0.022, blue: 0.024))
         .navigationTitle("Golf Overview")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
     }
 }
 
-private struct GolfCurrentFocusView: View {
-    let focus: GolfCurrentFocus
+private struct GolfHeroView: View {
+    let story: GolfOverviewStory
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Current focus", systemImage: "scope")
-                .font(.headline)
-                .foregroundStyle(.green)
-            Text(focus.title)
-                .font(.title2.bold())
-            Text(focus.detail)
-                .foregroundStyle(.secondary)
-            Text("Since \(focus.since.formatted(date: .abbreviated, time: .omitted))")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: [Color(red: 0.10, green: 0.31, blue: 0.21), Color(red: 0.19, green: 0.15, blue: 0.08), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: "figure.golf")
+                .font(.system(size: 190, weight: .ultraLight))
+                .foregroundStyle(.white.opacity(0.12))
+                .offset(x: 120, y: -70)
+                .accessibilityHidden(true)
+            LinearGradient(colors: [.clear, .black.opacity(0.86)], startPoint: .center, endPoint: .bottom)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Text(story.title)
+                    .font(.system(.largeTitle, design: .serif, weight: .medium))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("CURRENT FOCUS")
+                        .font(.caption.weight(.semibold))
+                        .tracking(2)
+                        .foregroundStyle(.white.opacity(0.56))
+                    Text(story.currentFocus.title)
+                        .font(.title2.weight(.medium))
+                    Text(story.currentFocus.detail)
+                        .font(.body)
+                        .foregroundStyle(.white.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(24)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 24))
+        .frame(minHeight: 420)
+        .accessibilityElement(children: .combine)
     }
 }
 
-private struct GolfRecentPracticeView: View {
+private struct GolfPracticeChapter: View {
     let practices: [GolfPracticeEvidence]
 
     var body: some View {
-        StorySection(title: "Recent practice", subtitle: "Small observations from the latest chapter") {
+        GolfSection(title: "Practice") {
             VStack(spacing: 0) {
                 ForEach(Array(practices.enumerated()), id: \.element.id) { index, practice in
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(practice.date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 18) {
+                        Text(practice.date.formatted(.dateTime.month(.abbreviated).day()))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.45))
+                            .frame(width: 54, alignment: .leading)
                         Text(practice.summary)
-                            .font(.headline)
-                        Text(practice.note)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .font(.title3.weight(.regular))
+                            .foregroundStyle(.white.opacity(0.9))
+                        Spacer(minLength: 0)
                     }
-                    .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 15)
                     .accessibilityElement(children: .combine)
-
                     if index < practices.count - 1 {
-                        Divider()
+                        Divider().overlay(.white.opacity(0.12))
                     }
                 }
             }
@@ -106,188 +114,154 @@ private struct GolfRecentPracticeView: View {
     }
 }
 
-private struct GolfConsistencyGrid: View {
+private struct GolfConsistencyChapter: View {
     let weeks: [GolfConsistencyWeek]
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
 
     var body: some View {
-        StorySection(title: "12-week rhythm", subtitle: "\(weeks.reduce(0) { $0 + $1.sessionCount }) sessions over 12 weeks") {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(weeks) { week in
-                    VStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.green.opacity(week.sessionCount == 2 ? 0.8 : 0.35))
-                            .frame(height: 34)
-                            .overlay {
-                                Text("\(week.sessionCount)")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(week.sessionCount == 2 ? .white : .primary)
-                            }
-                        Text(week.weekStart.formatted(.dateTime.month(.abbreviated).day()))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .minimumScaleFactor(0.8)
+        GolfSection(title: "Rhythm") {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .bottom, spacing: 7) {
+                    ForEach(weeks) { week in
+                        Capsule()
+                            .fill(week.sessionCount == 2 ? Color.green.opacity(0.9) : Color.green.opacity(0.35))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: week.sessionCount == 2 ? 54 : 28)
+                            .accessibilityLabel(
+                                "Week of \(week.weekStart.formatted(date: .long, time: .omitted)), \(week.sessionCount) practice \(week.sessionCount == 1 ? "session" : "sessions")"
+                            )
                     }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(
-                        "Week of \(week.weekStart.formatted(date: .long, time: .omitted)), \(week.sessionCount) practice \(week.sessionCount == 1 ? "session" : "sessions")"
-                    )
                 }
+                Text("18 sessions · 12 weeks")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.58))
             }
-            Text("Each cell shows that week’s practice count.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 }
 
-private struct GolfProgressView: View {
+private struct GolfProgressChapter: View {
     let progress: GolfProgressSummary
 
     var body: some View {
-        StorySection(title: "Visible progress", subtitle: progress.dateRangeLabel) {
-            Text(progress.title)
-                .font(.headline)
-            HStack(alignment: .bottom, spacing: 12) {
-                ForEach(progress.points) { point in
-                    VStack(spacing: 8) {
-                        Text("\(point.value)")
-                            .font(.title2.bold().monospacedDigit())
-                        Capsule()
-                            .fill(Color.green.opacity(0.75))
-                            .frame(height: CGFloat(132 - point.value))
-                            .frame(minHeight: 28)
-                        Text(point.date.formatted(.dateTime.month(.abbreviated)))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        GolfSection(title: "Progress") {
+            VStack(alignment: .leading, spacing: 20) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        scoreValues
                     }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(point.date.formatted(date: .long, time: .omitted)), sample round, \(point.value) \(progress.unitLabel)")
+                    VStack(alignment: .leading, spacing: 12) {
+                        scoreValues
+                    }
                 }
+                Text("Sample rounds · strokes · \(progress.dateRangeLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
             }
-            .padding(.vertical, 4)
-            Text(progress.narrative)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var scoreValues: some View {
+        ForEach(Array(progress.points.enumerated()), id: \.element.id) { index, point in
+            Text("\(point.value)")
+                .font(.system(.largeTitle, design: .serif, weight: .medium).monospacedDigit())
+                .foregroundStyle(index == progress.points.count - 1 ? Color.green : .white)
+                .accessibilityLabel("\(point.date.formatted(date: .long, time: .omitted)), sample round, \(point.value) \(progress.unitLabel)")
+            if index < progress.points.count - 1 {
+                Image(systemName: "arrow.right")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.35))
+                    .accessibilityHidden(true)
+            }
         }
     }
 }
 
-private struct GolfRoundsView: View {
+private struct GolfRoundsChapter: View {
     let rounds: [GolfRoundEvidence]
 
     var body: some View {
-        StorySection(title: "Sample rounds", subtitle: "Read-only evidence from this season") {
-            ForEach(rounds) { round in
-                HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    Text("\(round.score)")
-                        .font(.title2.bold().monospacedDigit())
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("\(round.score) strokes")
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Sample round · \(round.courseName)")
-                            .font(.headline)
-                        Text(round.date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(round.reflection)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+        GolfSection(title: "Sample rounds") {
+            VStack(spacing: 20) {
+                ForEach(rounds) { round in
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text("\(round.score)")
+                            .font(.title2.weight(.medium).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .accessibilityLabel("\(round.score) strokes")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(round.courseName)
+                                .foregroundStyle(.white.opacity(0.82))
+                            Text(round.date.formatted(date: .abbreviated, time: .omitted))
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+                        Spacer(minLength: 0)
                     }
+                    .accessibilityElement(children: .combine)
                 }
-                .padding(.vertical, 8)
-                .accessibilityElement(children: .combine)
             }
         }
     }
 }
 
-private struct GolfMemoriesView: View {
+private struct GolfMemoryChapter: View {
     let milestones: [GolfMilestone]
     let media: [GolfMediaMemory]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            StorySection(title: "Milestone", subtitle: "A moment worth marking") {
-                ForEach(milestones) { milestone in
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: milestone.systemImage)
-                            .font(.title2)
-                            .foregroundStyle(.orange)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(milestone.title)
-                                .font(.title3.bold())
-                            Text(milestone.date.formatted(date: .long, time: .omitted))
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            Text(milestone.meaning)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(20)
-                    .background(Color.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 22))
-                    .accessibilityElement(children: .combine)
-                }
-            }
-            .accessibilityIdentifier("golf.milestones")
-
-            StorySection(title: "A memory from the work", subtitle: "The story is more than a score") {
-                ForEach(media) { memory in
-                    VStack(alignment: .leading, spacing: 12) {
-                        ZStack(alignment: .bottomLeading) {
-                            LinearGradient(
-                                colors: [.indigo.opacity(0.8), .green.opacity(0.55), .black.opacity(0.75)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            Image(systemName: "cloud.rain.fill")
-                                .font(.system(size: 76))
-                                .foregroundStyle(.white.opacity(0.28))
-                                .padding(24)
-                            Label("Evening range", systemImage: "figure.golf")
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                                .padding(16)
-                        }
-                        .frame(height: 190)
-                        .clipShape(RoundedRectangle(cornerRadius: 22))
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(memory.accessibilityDescription)
-
-                        Text(memory.date.formatted(date: .long, time: .omitted))
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(Array(zip(milestones, media)), id: \.0.id) { milestone, memory in
+                ZStack(alignment: .bottomLeading) {
+                    LinearGradient(
+                        colors: [Color.indigo.opacity(0.72), Color.green.opacity(0.48), Color.orange.opacity(0.26), .black],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Image(systemName: "cloud.rain.fill")
+                        .font(.system(size: 110))
+                        .foregroundStyle(.white.opacity(0.12))
+                        .offset(x: 190, y: -95)
+                        .accessibilityHidden(true)
+                    LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("MILESTONE")
+                            .font(.caption.weight(.semibold))
+                            .tracking(2)
+                            .foregroundStyle(.white.opacity(0.56))
+                        Text(milestone.title)
+                            .font(.system(.title, design: .serif, weight: .medium))
                         Text(memory.caption)
+                            .foregroundStyle(.white.opacity(0.68))
                             .fixedSize(horizontal: false, vertical: true)
+                        Text(milestone.date.formatted(date: .long, time: .omitted))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.48))
                     }
+                    .padding(24)
                 }
+                .frame(minHeight: 330)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(milestone.title), \(milestone.date.formatted(date: .long, time: .omitted)). \(milestone.meaning). \(memory.accessibilityDescription). \(memory.caption)")
+                .accessibilityIdentifier("golf.milestones")
             }
-            .accessibilityIdentifier("golf.media")
         }
+        .accessibilityIdentifier("golf.media")
     }
 }
 
-private struct StorySection<Content: View>: View {
+private struct GolfSection<Content: View>: View {
     let title: String
-    let subtitle: String
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.title2.bold())
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title)
+                .font(.system(.title2, design: .serif, weight: .medium))
+                .foregroundStyle(.white)
             content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
     }
 }
 
