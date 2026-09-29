@@ -238,6 +238,7 @@ private struct GolfMemoryChapter: View {
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.48))
                     }
+                    .foregroundStyle(.white)
                     .padding(24)
                 }
                 .frame(minHeight: 330)
