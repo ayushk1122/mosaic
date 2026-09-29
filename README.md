@@ -50,7 +50,8 @@ xcodebuild test \
 - **Experiment:** a hypothesis that must be evaluated
 - **Assumption:** a belief requiring validation
 - **Open question:** intentionally unresolved
+- **Current repository fact:** an observed implementation detail, not product approval
 
 **Decision:** Golf is the first vertical slice; Iteration 0 begins with a fixture-driven visual review (0A), followed only later by practice-session capture (0B).
 
-**Open question:** The product behavior described in these documents still needs to be validated through 0A and 0B.
+**Experiment:** Validate the planned product behavior through the stated 0A comprehension review and 0B practice-capture review.

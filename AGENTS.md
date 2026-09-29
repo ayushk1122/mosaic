@@ -44,7 +44,7 @@ Do not implement 0A or later scope during documentation-only work. Do not pull 0
 
 ## Architecture and quality
 
-Use a thin app shell with feature-owned Pursuit destinations. Keep Golf records, rules, state, repositories, and presentation Golf-owned; share only concepts demonstrated across Pursuits. Prefer explicit injectable state and dependencies over a global app object.
+Use a thin app shell with feature-owned Pursuit destinations. The approved shared boundary may include stable Pursuit identity, kind identity, and display metadata needed by the library. Keep lifecycle states unshared until confirmed, and keep Golf records, rules, state, repositories, metrics, and presentation Golf-owned; do not invent generic activity, card, metric, or dashboard behavior. Prefer explicit injectable state and dependencies over a global app object.
 
 Treat the exact navigation container, composition mechanism, fixture shape, review-device size, and eventual persistence implementation as reversible. Follow the acceptance gates and deterministic-fixture policy in the [feature brief](docs/features/golf/iteration-0.md) and [testing strategy](docs/quality/testing.md).
 

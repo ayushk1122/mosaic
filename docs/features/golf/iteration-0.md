@@ -42,7 +42,7 @@ Exact people, dates, values, copy, media, and screen decomposition are not estab
 
 ### 0A non-goals
 
-No data capture, practice entry, round logging, persistence selection, account, sync, backend, iPad-specific optimization, or generalized Pursuit schema is required. Implementing 0A is outside this documentation change.
+0A does not include data capture, practice entry, round logging, persistence selection, account, sync, backend, iPad-specific optimization, or a generalized Pursuit schema.
 
 ## Iteration 0B — practice-session capture
 
