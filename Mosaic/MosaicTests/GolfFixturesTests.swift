@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import Mosaic
 
 struct GolfFixturesTests {
@@ -31,5 +32,24 @@ struct GolfFixturesTests {
         #expect(story.progress.points.map(\.id) == story.rounds.map(\.id))
         #expect(story.progress.unitLabel == "strokes")
         #expect(story.progress.narrative.localizedCaseInsensitiveContains("not an official handicap"))
+    }
+
+    @Test
+    func seasonMosaicMatchesTheApprovedStory() {
+        #expect(story.seasonMemories.map(\.dateLabel) == ["June", "August", "September", "September 20"])
+        #expect(story.seasonMemories.map(\.caption) == [
+            "Finding a calmer setup.",
+            "Practice became more regular.",
+            "Stayed long enough to find the rhythm.",
+            "First round under 90."
+        ])
+    }
+
+    @Test
+    func everyFixtureImageResolvesFromTheAssetCatalog() {
+        #expect(FixtureImageAsset.allCases.count == 12)
+        for asset in FixtureImageAsset.allCases {
+            #expect(UIImage(named: asset.rawValue) != nil, "Missing fixture image: \(asset.rawValue)")
+        }
     }
 }

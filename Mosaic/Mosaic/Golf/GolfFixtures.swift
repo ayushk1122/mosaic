@@ -78,6 +78,36 @@ enum GolfFixtures {
                     GolfProgressPoint(id: $0.id, date: $0.date, value: $0.score)
                 }
             ),
+            seasonMemories: [
+                GolfSeasonMemory(
+                    id: "season-june",
+                    dateLabel: "June",
+                    caption: "Finding a calmer setup.",
+                    asset: .golfGloveClubDetail,
+                    accessibilityDescription: "Gloved hands settling an iron behind the ball at the range"
+                ),
+                GolfSeasonMemory(
+                    id: "season-august",
+                    dateLabel: "August",
+                    caption: "Practice became more regular.",
+                    asset: .golfDewyGreenBall,
+                    accessibilityDescription: "A ball resting on a quiet, dew-covered practice green"
+                ),
+                GolfSeasonMemory(
+                    id: "season-september-rain",
+                    dateLabel: "September",
+                    caption: "Stayed long enough to find the rhythm.",
+                    asset: .golfRainyEveningRange,
+                    accessibilityDescription: "A quiet driving range in evening rain"
+                ),
+                GolfSeasonMemory(
+                    id: "season-september-20",
+                    dateLabel: "September 20",
+                    caption: "First round under 90.",
+                    asset: .golfRangeGoldenHour,
+                    accessibilityDescription: "A golfer looking across a still green at golden hour"
+                )
+            ],
             rounds: rounds,
             milestones: [
                 GolfMilestone(
@@ -93,7 +123,8 @@ enum GolfFixtures {
                     id: "memory-evening-range",
                     date: date(2026, 9, 17),
                     caption: "Stayed through the rain and found a rhythm worth remembering.",
-                    accessibilityDescription: "Abstract rain-themed illustration"
+                    asset: .golfRainyEveningRange,
+                    accessibilityDescription: "A quiet driving range in evening rain"
                 )
             ]
         )

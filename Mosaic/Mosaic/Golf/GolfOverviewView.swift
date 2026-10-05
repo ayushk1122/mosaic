@@ -30,6 +30,9 @@ struct GolfOverviewView: View {
                 GolfProgressChapter(progress: story.progress)
                     .accessibilityIdentifier("golf.progress")
 
+                GolfSeasonMosaic(memories: story.seasonMemories)
+                    .accessibilityIdentifier("golf.season-mosaic")
+
                 GolfRoundsChapter(rounds: story.rounds)
                     .accessibilityIdentifier("golf.rounds")
 
@@ -50,17 +53,13 @@ private struct GolfHeroView: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: [Color(red: 0.10, green: 0.31, blue: 0.21), Color(red: 0.19, green: 0.15, blue: 0.08), .black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Image(systemName: "figure.golf")
-                .font(.system(size: 190, weight: .ultraLight))
-                .foregroundStyle(.white.opacity(0.12))
-                .offset(x: 120, y: -70)
+            GolfFixtureImage(asset: .golfRangeGoldenHour)
                 .accessibilityHidden(true)
-            LinearGradient(colors: [.clear, .black.opacity(0.86)], startPoint: .center, endPoint: .bottom)
+            LinearGradient(
+                colors: [.black.opacity(0.12), .black.opacity(0.94)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
 
             VStack(alignment: .leading, spacing: 18) {
                 Text(story.title)
@@ -86,6 +85,68 @@ private struct GolfHeroView: View {
         }
         .frame(minHeight: 420)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct GolfSeasonMosaic: View {
+    let memories: [GolfSeasonMemory]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        GolfSection(title: "Season mosaic") {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 24) {
+                    ForEach(memories) { memory in
+                        GolfSeasonMemoryView(memory: memory, imageHeight: 190)
+                    }
+                }
+            } else {
+                VStack(spacing: 14) {
+                    HStack(alignment: .top, spacing: 14) {
+                        GolfSeasonMemoryView(memory: memories[0], imageHeight: 180)
+                            .frame(maxWidth: .infinity)
+                        GolfSeasonMemoryView(memory: memories[1], imageHeight: 136)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 26)
+                    }
+                    HStack(alignment: .top, spacing: 14) {
+                        GolfSeasonMemoryView(memory: memories[2], imageHeight: 136)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 18)
+                        GolfSeasonMemoryView(memory: memories[3], imageHeight: 180)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct GolfSeasonMemoryView: View {
+    let memory: GolfSeasonMemory
+    let imageHeight: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GolfFixtureImage(asset: memory.asset)
+                .frame(height: imageHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
+                }
+                .accessibilityHidden(true)
+            Text(memory.dateLabel.uppercased())
+                .font(.caption2.weight(.semibold))
+                .tracking(1.3)
+                .foregroundStyle(.white.opacity(0.58))
+            Text(memory.caption)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.88))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(memory.dateLabel). \(memory.caption) \(memory.accessibilityDescription).")
     }
 }
 
@@ -246,17 +307,9 @@ private struct GolfMemoryChapter: View {
         VStack(alignment: .leading, spacing: 18) {
             ForEach(Array(zip(milestones, media)), id: \.0.id) { milestone, memory in
                 ZStack(alignment: .bottomLeading) {
-                    LinearGradient(
-                        colors: [Color.indigo.opacity(0.72), Color.green.opacity(0.48), Color.orange.opacity(0.26), .black],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    Image(systemName: "cloud.rain.fill")
-                        .font(.system(size: 110))
-                        .foregroundStyle(.white.opacity(0.12))
-                        .offset(x: 190, y: -95)
+                    GolfFixtureImage(asset: memory.asset)
                         .accessibilityHidden(true)
-                    LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+                    LinearGradient(colors: [.black.opacity(0.08), .black.opacity(0.94)], startPoint: .top, endPoint: .bottom)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("MILESTONE")
                             .font(.caption.weight(.semibold))
@@ -285,6 +338,19 @@ private struct GolfMemoryChapter: View {
             }
         }
         .accessibilityIdentifier("golf.media")
+    }
+}
+
+private struct GolfFixtureImage: View {
+    let asset: FixtureImageAsset
+
+    var body: some View {
+        Image(asset.rawValue)
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .allowsHitTesting(false)
     }
 }
 

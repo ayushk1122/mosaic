@@ -56,7 +56,7 @@ enum MosaicHomeFixtures {
                 id: PursuitID(rawValue: "modeling"),
                 kind: .modeling,
                 title: "Modeling",
-                subtitle: "Learning to shape ideas in three dimensions",
+                subtitle: "Craft, confidence, and creative range",
                 systemImage: "cube.transparent"
             ),
             PursuitSummary(

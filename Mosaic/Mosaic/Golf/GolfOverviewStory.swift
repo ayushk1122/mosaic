@@ -7,6 +7,7 @@ struct GolfOverviewStory: Equatable, Sendable {
     let recentPractice: [GolfPracticeEvidence]
     let consistency: [GolfConsistencyWeek]
     let progress: GolfProgressSummary
+    let seasonMemories: [GolfSeasonMemory]
     let rounds: [GolfRoundEvidence]
     let milestones: [GolfMilestone]
     let media: [GolfMediaMemory]
@@ -53,6 +54,14 @@ struct GolfRoundEvidence: Identifiable, Equatable, Sendable {
     let reflection: String
 }
 
+struct GolfSeasonMemory: Identifiable, Equatable, Sendable {
+    let id: String
+    let dateLabel: String
+    let caption: String
+    let asset: FixtureImageAsset
+    let accessibilityDescription: String
+}
+
 struct GolfMilestone: Identifiable, Equatable, Sendable {
     let id: String
     let date: Date
@@ -65,5 +74,6 @@ struct GolfMediaMemory: Identifiable, Equatable, Sendable {
     let id: String
     let date: Date
     let caption: String
+    let asset: FixtureImageAsset
     let accessibilityDescription: String
 }
