@@ -345,12 +345,14 @@ private struct GolfFixtureImage: View {
     let asset: FixtureImageAsset
 
     var body: some View {
-        Image(asset.rawValue)
-            .resizable()
-            .scaledToFill()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            .allowsHitTesting(false)
+        GeometryReader { geometry in
+            Image(asset.rawValue)
+                .resizable()
+                .scaledToFill()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .clipped()
+        .allowsHitTesting(false)
     }
 }
 

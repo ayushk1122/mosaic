@@ -33,6 +33,7 @@ struct PursuitsHomeView: View {
             .padding(.horizontal, 22)
             .padding(.top, 32)
             .padding(.bottom, 54)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("home.screen")
         .background(Color(red: 0.025, green: 0.027, blue: 0.03))
@@ -335,18 +336,20 @@ private struct FixtureImageFrame: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        Image(asset.rawValue)
-            .resizable()
-            .scaledToFill()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(.white.opacity(0.18), lineWidth: 0.5)
-            }
-            .clipped()
-            .accessibilityHidden(true)
-            .allowsHitTesting(false)
+        GeometryReader { geometry in
+            Image(asset.rawValue)
+                .resizable()
+                .scaledToFill()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
+                }
+        }
+        .clipped()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 

@@ -30,8 +30,19 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["home.screen"].waitForExistence(timeout: 5))
         let golf = app.buttons["pursuit.golf.open"]
         XCTAssertTrue(golf.exists)
+        XCTAssertTrue(golf.label.contains("Building a more confident, consistent game"))
+        XCTAssertTrue(golf.label.contains("Open journey"))
+
+        for pursuit in ["fitness", "modeling", "cooking"] {
+            XCTAssertTrue(app.descendants(matching: .any)["pursuit.\(pursuit).planned"].exists)
+            XCTAssertFalse(app.buttons["pursuit.\(pursuit).planned"].exists)
+        }
+
         golf.tap()
         XCTAssertTrue(app.descendants(matching: .any)["golf.overview"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Add"].exists)
+        XCTAssertFalse(app.buttons["Edit"].exists)
+        XCTAssertFalse(app.buttons["Save"].exists)
     }
 
     @MainActor
