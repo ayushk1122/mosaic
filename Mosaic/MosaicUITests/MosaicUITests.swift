@@ -50,6 +50,8 @@ final class MosaicUITests: XCTestCase {
             app.swipeUp()
         }
         XCTAssertTrue(seasonMosaic.exists)
+        app.swipeUp()
+        app.swipeUp()
         attachScreenshot(named: "Golf", from: app)
     }
 
