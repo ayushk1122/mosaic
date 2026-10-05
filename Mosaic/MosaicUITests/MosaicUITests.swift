@@ -46,11 +46,14 @@ final class MosaicUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Save"].exists)
 
         let seasonMosaic = app.descendants(matching: .any)["golf.season-mosaic"]
-        for _ in 0..<10 where !seasonMosaic.exists {
+        for _ in 0..<12 {
+            if seasonMosaic.exists, seasonMosaic.frame.intersects(app.frame) {
+                break
+            }
             app.swipeUp()
         }
         XCTAssertTrue(seasonMosaic.exists)
-        app.swipeUp()
+        XCTAssertTrue(seasonMosaic.frame.intersects(app.frame))
         app.swipeUp()
         attachScreenshot(named: "Golf", from: app)
     }

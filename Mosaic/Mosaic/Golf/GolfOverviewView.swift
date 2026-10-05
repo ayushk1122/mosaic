@@ -152,27 +152,13 @@ private struct GolfSeasonMemoryView: View {
 
 private struct GolfPracticeChapter: View {
     let practices: [GolfPracticeEvidence]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         GolfSection(title: "Practice") {
             VStack(spacing: 0) {
                 ForEach(Array(practices.enumerated()), id: \.element.id) { index, practice in
-                    HStack(alignment: .firstTextBaseline, spacing: 18) {
-                        Text(practice.date.formatted(.dateTime.month(.abbreviated).day()))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.46))
-                            .frame(width: 54, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(practice.summary)
-                                .font(.title3.weight(.regular))
-                                .foregroundStyle(.white.opacity(0.9))
-                            Text(practice.note)
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.58))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 0)
-                    }
+                    practiceRow(practice)
                     .padding(.vertical, 15)
                     .accessibilityElement(children: .combine)
                     if index < practices.count - 1 {
@@ -180,6 +166,42 @@ private struct GolfPracticeChapter: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func practiceRow(_ practice: GolfPracticeEvidence) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 8) {
+                practiceDate(practice)
+                practiceCopy(practice)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 18) {
+                practiceDate(practice)
+                    .frame(width: 54, alignment: .leading)
+                practiceCopy(practice)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func practiceDate(_ practice: GolfPracticeEvidence) -> some View {
+        Text(practice.date.formatted(.dateTime.month(.abbreviated).day()))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.46))
+    }
+
+    private func practiceCopy(_ practice: GolfPracticeEvidence) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(practice.summary)
+                .font(.title3.weight(.regular))
+                .foregroundStyle(.white.opacity(0.9))
+            Text(practice.note)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.58))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
