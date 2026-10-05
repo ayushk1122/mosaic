@@ -8,14 +8,25 @@
 import SwiftUI
 
 struct ContentView: View {
+    private enum ShellRoute: Hashable {
+        case golf
+    }
+
+    @State private var path: [ShellRoute] = []
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        NavigationStack(path: $path) {
+            PursuitsHomeView(
+                fixture: MosaicHomeFixtures.iteration0A,
+                openGolf: { path.append(.golf) }
+            )
+            .navigationDestination(for: ShellRoute.self) { route in
+                switch route {
+                case .golf:
+                    GolfDestinationView()
+                }
+            }
         }
-        .padding()
     }
 }
 
