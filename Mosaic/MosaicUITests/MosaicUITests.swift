@@ -41,10 +41,15 @@ final class MosaicUITests: XCTestCase {
         attachScreenshot(named: "Home", from: app)
         golf.tap()
         XCTAssertTrue(app.descendants(matching: .any)["golf.overview"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["golf.season-mosaic"].exists)
         XCTAssertFalse(app.buttons["Add"].exists)
         XCTAssertFalse(app.buttons["Edit"].exists)
         XCTAssertFalse(app.buttons["Save"].exists)
+
+        let seasonMosaic = app.descendants(matching: .any)["golf.season-mosaic"]
+        for _ in 0..<10 where !seasonMosaic.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(seasonMosaic.exists)
         attachScreenshot(named: "Golf", from: app)
     }
 
