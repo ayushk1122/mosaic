@@ -104,8 +104,8 @@ enum GolfFixtures {
                     id: "season-september-20",
                     dateLabel: "September 20",
                     caption: "First round under 90.",
-                    asset: .golfRangeGoldenHour,
-                    accessibilityDescription: "A golfer looking across a still green at golden hour"
+                    asset: .golfDewyGreenBall,
+                    accessibilityDescription: "A quiet flag beyond a ball on the morning green"
                 )
             ],
             rounds: rounds,
