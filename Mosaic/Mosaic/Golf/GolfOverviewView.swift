@@ -99,7 +99,7 @@ private struct GolfPracticeChapter: View {
                     HStack(alignment: .firstTextBaseline, spacing: 18) {
                         Text(practice.date.formatted(.dateTime.month(.abbreviated).day()))
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.45))
+                            .foregroundStyle(.white.opacity(0.46))
                             .frame(width: 54, alignment: .leading)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(practice.summary)
@@ -146,7 +146,7 @@ private struct GolfConsistencyChapter: View {
                     Text(weeks.last?.weekStart.formatted(.dateTime.month(.abbreviated).day()) ?? "")
                 }
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(.white.opacity(0.46))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(weeks.reduce(0) { $0 + $1.sessionCount }) sessions · \(weeks.count) weeks")
                         .font(.subheadline.monospacedDigit())
@@ -223,7 +223,7 @@ private struct GolfRoundsChapter: View {
                                 .foregroundStyle(.white.opacity(0.82))
                             Text(round.date.formatted(date: .abbreviated, time: .omitted))
                                 .font(.caption)
-                                .foregroundStyle(.white.opacity(0.45))
+                                .foregroundStyle(.white.opacity(0.46))
                             Text(round.reflection)
                                 .font(.subheadline)
                                 .foregroundStyle(.white.opacity(0.58))
