@@ -38,11 +38,14 @@ final class MosaicUITests: XCTestCase {
             XCTAssertFalse(app.buttons["pursuit.\(pursuit).planned"].exists)
         }
 
+        attachScreenshot(named: "Home", from: app)
         golf.tap()
         XCTAssertTrue(app.descendants(matching: .any)["golf.overview"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["golf.season-mosaic"].exists)
         XCTAssertFalse(app.buttons["Add"].exists)
         XCTAssertFalse(app.buttons["Edit"].exists)
         XCTAssertFalse(app.buttons["Save"].exists)
+        attachScreenshot(named: "Golf", from: app)
     }
 
     @MainActor
@@ -51,5 +54,12 @@ final class MosaicUITests: XCTestCase {
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             XCUIApplication().launch()
         }
+    }
+
+    private func attachScreenshot(named name: String, from app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }
