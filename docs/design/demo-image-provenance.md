@@ -1,7 +1,7 @@
 # Demo image provenance
 
-**Owner:** Mosaic team  
-**Status:** Fixture asset record for the image-led visual-review slice  
+**Owner:** Mosaic team
+**Status:** Fixture asset record for the image-led visual-review slice
 **Generation date:** 2026-10-04
 
 ## Rights and handling
@@ -29,5 +29,5 @@ The checked-in JPEGs were re-encoded at quality 82. Spotlight inspection found n
 | `cooking_window_light_pasta` | 1280×720 | `3fbe643ae670373e930c0a29d4f295a574f1d9fa3c1f6dfffa81d1e173b761ce` | No | Handmade pasta with seasonal vegetables on simple ceramic tableware in warm natural window light. |
 | `cooking_ingredient_preparation` | 1152×864 | `04ab648ce3dff2d5b5b4590f494d2dd731854bfdf552617a195f1d997ed6cb5c` | Partial anonymous hands | Anonymous hands preparing fresh herbs and vegetables on a wooden kitchen surface in warm window light. |
 
-**Source inputs and rights:** text prompts authored for this project; no image inputs.  
+**Source inputs and rights:** text prompts authored for this project; no image inputs.
 **Checked-in raster total:** approximately 2.6 MB.
