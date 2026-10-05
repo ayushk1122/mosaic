@@ -95,40 +95,18 @@ private struct PursuitPortfolioTile: View {
         }
     }
 
+    @ViewBuilder
     private var accessibleComposition: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            FixtureImageFrame(asset: anchorImage, cornerRadius: 3)
-                .frame(maxWidth: .infinity)
-                .frame(height: 180)
-            VStack(alignment: .leading, spacing: 7) {
-                Text(pursuit.title)
-                    .font(.title2.weight(.medium))
-                    .fontDesign(.serif)
-                Text(pursuit.subtitle)
-                    .font(.body)
-                Text(statusText)
-                    .font(.caption.weight(.semibold))
-                    .textCase(.uppercase)
-                    .tracking(1)
-            }
-            .foregroundStyle(.white)
-        }
-        .padding(16)
-        .background(Color(red: 0.075, green: 0.08, blue: 0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private var anchorImage: FixtureImageAsset {
         switch pursuit.kind {
-        case .golf: .golfRangeGoldenHour
-        case .fitness: .fitnessStrengthMovement
-        case .modeling: .modelingEditorialPose
-        case .cooking: .cookingWindowLightPasta
+        case .golf:
+            AccessibleGolfHomeComposition(pursuit: pursuit)
+        case .fitness:
+            AccessibleFitnessHomeComposition(pursuit: pursuit)
+        case .modeling:
+            AccessibleModelingHomeComposition(pursuit: pursuit)
+        case .cooking:
+            AccessibleCookingHomeComposition(pursuit: pursuit)
         }
-    }
-
-    private var statusText: String {
-        isAvailable ? "June–September · Open journey" : "Visual study · Planned"
     }
 
     private var accessibilityLabel: String {
@@ -140,45 +118,39 @@ private struct GolfHomeComposition: View {
     let pursuit: PursuitSummary
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            FixtureImageFrame(asset: .golfRangeGoldenHour, cornerRadius: 4)
-            LinearGradient(
-                colors: [.black.opacity(0.08), .black.opacity(0.9)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
-            VStack {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .top) {
+                FixtureImageFrame(asset: .golfRangeGoldenHour, cornerRadius: 4)
                 HStack(alignment: .top) {
                     Text("JUN — SEP")
                         .font(.caption2.weight(.semibold))
                         .tracking(1.7)
-                        .foregroundStyle(.white.opacity(0.86))
+                        .foregroundStyle(.white.opacity(0.9))
                         .padding(.vertical, 7)
                         .padding(.horizontal, 9)
-                        .background(Color(red: 0.08, green: 0.25, blue: 0.17).opacity(0.9))
+                        .background(Color(red: 0.08, green: 0.25, blue: 0.17).opacity(0.94))
                     Spacer()
                     HStack(spacing: 9) {
                         FixtureImageFrame(asset: .golfGloveClubDetail, cornerRadius: 2)
-                            .frame(width: 78, height: 70)
+                            .frame(width: 78, height: 64)
                             .rotationEffect(.degrees(-2))
                         FixtureImageFrame(asset: .golfDewyGreenBall, cornerRadius: 2)
-                            .frame(width: 78, height: 70)
+                            .frame(width: 78, height: 64)
                             .rotationEffect(.degrees(2))
                     }
                 }
-                Spacer()
+                .padding(14)
             }
-            .padding(14)
+            .frame(height: 190)
             HomeCompositionCopy(
                 title: pursuit.title,
                 subtitle: pursuit.subtitle,
                 status: "June–September · Open journey",
                 lightBackground: false
             )
-            .padding(20)
+            .padding(18)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 300)
+        .background(Color(red: 0.055, green: 0.075, blue: 0.065))
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
@@ -270,24 +242,26 @@ private struct CookingHomeComposition: View {
     let pursuit: PursuitSummary
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 4)
-            VStack {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        FixtureImageFrame(asset: .cookingIngredientPreparation, cornerRadius: 2)
-                            .frame(width: 98, height: 78)
-                            .rotationEffect(.degrees(2))
-                        FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 2)
-                            .frame(width: 78, height: 62)
-                            .rotationEffect(.degrees(-2))
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topTrailing) {
+                FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 4)
+                VStack {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 8) {
+                            FixtureImageFrame(asset: .cookingIngredientPreparation, cornerRadius: 2)
+                                .frame(width: 98, height: 72)
+                                .rotationEffect(.degrees(2))
+                            FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 2)
+                                .frame(width: 78, height: 56)
+                                .rotationEffect(.degrees(-2))
+                        }
                     }
+                    Spacer()
                 }
-                Spacer()
+                .padding(13)
             }
-            .padding(13)
-            LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+            .frame(height: 190)
             VStack(alignment: .leading, spacing: 8) {
                 Text("repeat-worthy.")
                     .font(.caption.italic())
@@ -299,10 +273,133 @@ private struct CookingHomeComposition: View {
                     lightBackground: false
                 )
             }
-            .padding(20)
+            .padding(18)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 286)
+        .background(Color(red: 0.14, green: 0.085, blue: 0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct AccessibleGolfHomeComposition: View {
+    let pursuit: PursuitSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack(alignment: .topLeading) {
+                FixtureImageFrame(asset: .golfRangeGoldenHour, cornerRadius: 3)
+                Text("JUN — SEP")
+                    .font(.caption.weight(.semibold))
+                    .tracking(1.4)
+                    .padding(8)
+                    .foregroundStyle(.white)
+                    .background(Color(red: 0.08, green: 0.25, blue: 0.17).opacity(0.94))
+                    .padding(12)
+            }
+            .frame(height: 170)
+            HStack(spacing: 12) {
+                FixtureImageFrame(asset: .golfGloveClubDetail, cornerRadius: 2)
+                    .frame(height: 92)
+                    .rotationEffect(.degrees(-1.5))
+                FixtureImageFrame(asset: .golfDewyGreenBall, cornerRadius: 2)
+                    .frame(height: 92)
+                    .rotationEffect(.degrees(1.5))
+            }
+            HomeCompositionCopy(
+                title: pursuit.title,
+                subtitle: pursuit.subtitle,
+                status: "June–September · Open journey",
+                lightBackground: false
+            )
+        }
+        .padding(16)
+        .background(Color(red: 0.055, green: 0.075, blue: 0.065))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct AccessibleFitnessHomeComposition: View {
+    let pursuit: PursuitSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                FixtureImageFrame(asset: .fitnessStrengthMovement, cornerRadius: 2)
+                    .frame(width: 128, height: 210)
+                VStack(spacing: 12) {
+                    FixtureImageFrame(asset: .fitnessChalkedHand, cornerRadius: 2)
+                        .frame(height: 99)
+                    FixtureImageFrame(asset: .fitnessRecoveryStillLife, cornerRadius: 2)
+                        .frame(height: 99)
+                }
+            }
+            HomeCompositionCopy(
+                title: pursuit.title,
+                subtitle: pursuit.subtitle,
+                status: "Visual study · Planned",
+                lightBackground: false
+            )
+        }
+        .padding(16)
+        .background(Color(red: 0.075, green: 0.08, blue: 0.085))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct AccessibleModelingHomeComposition: View {
+    let pursuit: PursuitSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                FixtureImageFrame(asset: .modelingEditorialPose, cornerRadius: 1)
+                    .frame(width: 124, height: 190)
+                    .rotationEffect(.degrees(-1))
+                VStack(spacing: 12) {
+                    FixtureImageFrame(asset: .modelingContactStudy, cornerRadius: 1)
+                        .frame(height: 86)
+                        .rotationEffect(.degrees(1))
+                    FixtureImageFrame(asset: .modelingFabricDetail, cornerRadius: 1)
+                        .frame(height: 86)
+                }
+            }
+            HomeCompositionCopy(
+                title: pursuit.title,
+                subtitle: pursuit.subtitle,
+                status: "Visual study · Planned",
+                lightBackground: true
+            )
+        }
+        .padding(16)
+        .background(Color(red: 0.92, green: 0.89, blue: 0.83))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct AccessibleCookingHomeComposition: View {
+    let pursuit: PursuitSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 3)
+                .frame(height: 174)
+            HStack(spacing: 12) {
+                FixtureImageFrame(asset: .cookingIngredientPreparation, cornerRadius: 2)
+                    .frame(height: 96)
+                FixtureImageFrame(asset: .cookingWindowLightPasta, cornerRadius: 2)
+                    .frame(height: 96)
+            }
+            Text("repeat-worthy.")
+                .font(.caption.italic())
+                .foregroundStyle(.white.opacity(0.86))
+            HomeCompositionCopy(
+                title: pursuit.title,
+                subtitle: pursuit.subtitle,
+                status: "Visual study · Planned",
+                lightBackground: false
+            )
+        }
+        .padding(16)
+        .background(Color(red: 0.14, green: 0.085, blue: 0.06))
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }

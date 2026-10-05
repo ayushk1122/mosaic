@@ -52,18 +52,22 @@ private struct GolfHeroView: View {
     let story: GolfOverviewStory
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            GolfFixtureImage(asset: .golfRangeGoldenHour)
-                .accessibilityHidden(true)
-            LinearGradient(
-                colors: [.black.opacity(0.12), .black.opacity(0.94)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .bottomLeading) {
+                GolfFixtureImage(asset: .golfRangeGoldenHour)
+                    .accessibilityHidden(true)
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.82)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
                 Text(story.title)
                     .font(.system(.largeTitle, design: .serif, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(24)
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("CURRENT FOCUS")
                         .font(.caption.weight(.semibold))
@@ -83,7 +87,7 @@ private struct GolfHeroView: View {
             .foregroundStyle(.white)
             .padding(24)
         }
-        .frame(minHeight: 420)
+        .background(Color(red: 0.035, green: 0.04, blue: 0.038))
         .accessibilityElement(children: .combine)
     }
 }
@@ -328,17 +332,24 @@ private struct GolfMemoryChapter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             ForEach(Array(zip(milestones, media)), id: \.0.id) { milestone, memory in
-                ZStack(alignment: .bottomLeading) {
-                    GolfFixtureImage(asset: memory.asset)
-                        .accessibilityHidden(true)
-                    LinearGradient(colors: [.black.opacity(0.08), .black.opacity(0.94)], startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 0) {
+                    ZStack(alignment: .bottomLeading) {
+                        GolfFixtureImage(asset: memory.asset)
+                            .accessibilityHidden(true)
+                        LinearGradient(colors: [.clear, .black.opacity(0.86)], startPoint: .center, endPoint: .bottom)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("MILESTONE")
+                                .font(.caption.weight(.semibold))
+                                .tracking(2)
+                                .foregroundStyle(.white.opacity(0.76))
+                            Text(milestone.title)
+                                .font(.system(.title, design: .serif, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(24)
+                    }
+                    .aspectRatio(16 / 9, contentMode: .fit)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("MILESTONE")
-                            .font(.caption.weight(.semibold))
-                            .tracking(2)
-                            .foregroundStyle(.white.opacity(0.56))
-                        Text(milestone.title)
-                            .font(.system(.title, design: .serif, weight: .medium))
                         Text(memory.caption)
                             .foregroundStyle(.white.opacity(0.68))
                             .fixedSize(horizontal: false, vertical: true)
@@ -353,7 +364,7 @@ private struct GolfMemoryChapter: View {
                     .foregroundStyle(.white)
                     .padding(24)
                 }
-                .frame(minHeight: 330)
+                .background(Color(red: 0.035, green: 0.04, blue: 0.038))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(milestone.title), \(milestone.date.formatted(date: .long, time: .omitted)). \(milestone.meaning). \(memory.caption). \(memory.accessibilityDescription)")
                 .accessibilityIdentifier("golf.milestones")

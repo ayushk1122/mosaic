@@ -1,13 +1,13 @@
 # Mosaic
 
 **Owner:** Mosaic team
-**Status:** Foundation — documentation only; Iteration 0A is not implemented
+**Status:** Iteration 0A visual-review implementation
 
 Mosaic helps people capture the work they put into meaningful Pursuits and turn those moments into a visual story of progress.
 
 ## Current maturity
 
-The repository contains an initial SwiftUI application shell and generated test targets. Product behavior, fixtures, and the Iteration 0A Golf journey are not yet implemented.
+The repository contains a deterministic, local, read-only Iteration 0A experience. Home presents Golf, Fitness, Modeling, and Cooking as image-led Pursuits; only Golf opens a destination. Golf owns its June–September overview, progress story, season mosaic, sample rounds, milestone, and bundled fixture imagery. Practice capture, persistence, accounts, networking, and Iteration 0B remain unimplemented.
 
 ## Prerequisites
 
@@ -54,4 +54,4 @@ xcodebuild test \
 
 **Decision:** Golf is the first vertical slice; Iteration 0 begins with a fixture-driven visual review (0A), followed only later by practice-session capture (0B).
 
-**Experiment:** Validate the planned product behavior through the stated 0A comprehension review and 0B practice-capture review.
+**Experiment:** Evaluate the implemented 0A journey against its comprehension question; evaluate 0B practice capture only after its fields and behavior are approved.

@@ -31,3 +31,9 @@ The checked-in JPEGs were re-encoded at quality 82. Spotlight inspection found n
 
 **Source inputs and rights:** text prompts authored for this project; no image inputs.
 **Checked-in raster total:** approximately 2.6 MB.
+
+## Resolution and display sizing
+
+The generation tool produced native long edges between 1024 and 1280 pixels; it did not expose a higher-resolution export. The files remain at native resolution and were not enlarged.
+
+This differs from the plan's provisional 1800–2400-pixel guidance. The compositions instead constrain prominent landscape frames to a 16:9 presentation and keep portrait anchors narrow. On the recorded 1206×2622, 3× iPhone simulator, every displayed image target stays at or below its source pixel dimensions after aspect-fill cropping, including Home at accessibility Dynamic Type, the Golf hero, season memories, and milestone. This preserves native detail without claiming that pixel upscaling creates information.
