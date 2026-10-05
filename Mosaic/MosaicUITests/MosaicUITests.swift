@@ -45,7 +45,7 @@ final class MosaicUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Edit"].exists)
         XCTAssertFalse(app.buttons["Save"].exists)
 
-        let seasonMosaic = app.descendants(matching: .any)["golf.season-mosaic"]
+        let seasonMosaic = app.staticTexts["Season mosaic"]
         for _ in 0..<12 {
             if seasonMosaic.exists, seasonMosaic.frame.intersects(app.frame) {
                 break
