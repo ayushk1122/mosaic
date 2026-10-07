@@ -7,6 +7,8 @@ struct MosaicComposerView: View {
     let documentID: ComposerDocumentID?
 
     @Environment(ComposerStore.self) private var store
+    @Environment(MosaicChrome.self) private var chrome
+    @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @State private var menuExpanded = false
     @State private var placingOption: BlockMenuOption?
     @State private var ghostLocation: CGPoint = .zero
@@ -63,13 +65,6 @@ struct MosaicComposerView: View {
                                 .padding(.top, 48)
                         }
 
-                        if placingOption != nil {
-                            Text("Drag to place")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(Color.white.opacity(0.45))
-                                .position(x: canvasSize.width * 0.5, y: 28)
-                        }
-
                         ForEach(blocks) { block in
                             blockView(for: block)
                                 .id(block.id)
@@ -78,10 +73,16 @@ struct MosaicComposerView: View {
                                 .opacity(textDragVisual.blockID == block.id && textDragVisual.isMoving ? 0.96 : 1)
                                 .modifier(
                                     RelocateGestureModifier(
-                                        isEnabled: supportsCanvasGestures(block.kind) && placingOption == nil && mediaMenuBlockID != block.id,
+                                        isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && mediaMenuBlockID != block.id,
                                         claimsTouches: claimsCanvasTouches(for: block),
                                         gesture: textPressGesture(for: block),
                                         pinch: textPinchGesture(for: block)
+                                    )
+                                )
+                                .modifier(
+                                    ViewingMediaTapModifier(
+                                        isEnabled: chrome.isViewing && block.kind == .media,
+                                        onTap: { toggleMediaPlayback(block.id) }
                                     )
                                 )
                         }
@@ -119,12 +120,17 @@ struct MosaicComposerView: View {
                 .scrollDisabled(textDragVisual.isMoving)
                 .scrollDismissesKeyboard(.interactively)
 
-            ComposerFloatingMenu(
-                isExpanded: $menuExpanded,
-                showsTrashDropZone: textDragVisual.isMoving,
-                isTrashHighlighted: textDragVisual.hoveringTrash
-            ) { option in
-                beginPlacement(for: option)
+            HStack(alignment: .bottom, spacing: 12) {
+                viewEyeButton
+                if !chrome.isViewing {
+                    ComposerFloatingMenu(
+                        isExpanded: $menuExpanded,
+                        showsTrashDropZone: textDragVisual.isMoving,
+                        isTrashHighlighted: textDragVisual.hoveringTrash
+                    ) { option in
+                        beginPlacement(for: option)
+                    }
+                }
             }
             .padding(.trailing, 20)
             .padding(.bottom, 20)
@@ -147,6 +153,13 @@ struct MosaicComposerView: View {
             trashDropZoneFrame = rounded
         }
         .background(MosaicBrand.inkBlack)
+        .onChange(of: chrome.isViewing) { _, viewing in
+            guard viewing else { return }
+            menuExpanded = false
+            placingOption = nil
+            dismissBlockInteraction()
+        }
+        .toolbar(mosaicTabBarHidden ? .hidden : .visible, for: .tabBar)
         .navigationTitle(pageTitle)
         .navigationBarTitleDisplayMode(.large)
         .toolbarColorScheme(.dark, for: .navigationBar)
@@ -639,6 +652,25 @@ struct MosaicComposerView: View {
         )
     }
 
+    private var viewEyeButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.28)) {
+                chrome.isViewing.toggle()
+            }
+        } label: {
+            Image(systemName: "eye")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+                .background(MosaicBrand.inkBlack, in: Circle())
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                .opacity(chrome.isViewing ? 1 : 0.45)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(chrome.isViewing ? "Exit view" : "View Mosaic")
+        .accessibilityIdentifier("composer.viewMode")
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Add the first piece of your Mosaic")
@@ -734,6 +766,19 @@ private struct TextPinchVisual: Equatable {
     static let inactive = TextPinchVisual(blockID: nil, scale: 1)
 }
 
+private struct ViewingMediaTapModifier: ViewModifier {
+    var isEnabled: Bool
+    var onTap: () -> Void
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.onTapGesture(perform: onTap)
+        } else {
+            content
+        }
+    }
+}
+
 private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModifier {
     let isEnabled: Bool
     let claimsTouches: Bool
@@ -753,4 +798,8 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
                 .simultaneousGesture(pinch)
         }
     }
+}
+
+#Preview("Mosaic") {
+    MosaicTabShell(persistToDisk: false)
 }

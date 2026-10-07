@@ -13,6 +13,6 @@ struct ContentView: View {
     }
 }
 
-#Preview {
-    ContentView()
+#Preview("Mosaic") {
+    MosaicTabShell(persistToDisk: false)
 }
