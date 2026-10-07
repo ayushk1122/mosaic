@@ -38,6 +38,18 @@ struct ComposerStoreTests {
     }
 
     @Test
+    func wideMediaCanSlideInsideASquareFrame() {
+        let frame = CGSize(width: 100, height: 100)
+        let limits = MediaFraming.panLimits(contentAspect: 2, frame: frame, zoom: 1)
+        #expect(limits.width == 50)
+        #expect(limits.height == 0)
+
+        let clamped = MediaFraming.clampedPan(CGSize(width: 80, height: 12), limits: limits)
+        #expect(clamped.width == 50)
+        #expect(clamped.height == 0)
+    }
+
+    @Test
     func snapshotEncodesAndDecodes() throws {
         let snapshot = ComposerSnapshot(
             mosaicTitle: "My Mosaic",

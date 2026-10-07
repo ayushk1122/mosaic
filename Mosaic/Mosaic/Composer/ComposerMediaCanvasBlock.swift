@@ -12,9 +12,17 @@ struct ComposerMediaCanvasBlock: View {
     var isPaused: Bool
     var showsMenu: Bool
     var onOpenMenu: () -> Void
+    var onCrop: () -> Void
 
     @State private var preview: UIImage?
     @State private var videoAspect: CGFloat = 16.0 / 9.0
+    @State private var itemFrame: CGRect = .zero
+
+    @Environment(\.composerViewportWidth) private var viewportWidth
+
+    private var iconPlacement: ComposerChromePlacement {
+        ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
+    }
 
     private var showsLift: Bool { isLifted }
     private var isVideo: Bool { Self.isVideo(mediaURL) }
@@ -33,7 +41,16 @@ struct ComposerMediaCanvasBlock: View {
             .shadow(color: .white.opacity(showsLift ? 0.85 : 0), radius: showsLift ? 3 : 0)
             .shadow(color: .white.opacity(showsLift ? 0.4 : 0), radius: showsLift ? 14 : 0)
             .animation(.easeOut(duration: 0.16), value: showsLift)
-            .contentShape(MediaIconHitShape(menuOpen: showsMenu))
+            .contentShape(MediaIconHitShape(
+                menuOpen: showsMenu,
+                iconX: iconPlacement.x,
+                cropBelow: iconPlacement.cropBelow
+            ))
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named("composerRoot"))
+            } action: { frame in
+                itemFrame = frame
+            }
         .task(id: mediaURL) {
             if isVideo, let mediaURL {
                 videoAspect = await Self.videoAspect(at: mediaURL)
@@ -44,37 +61,53 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private var mediaContent: some View {
-        ZStack {
-            if isVideo, let mediaURL {
-                ComposerInlineVideo(
-                    url: mediaURL,
-                    isPaused: isPaused,
-                    fillsFrame: block.mediaShape != .rectangle
-                )
-                    .frame(width: displayWidth, height: shapeHeight)
-                    .overlay {
-                        if isPaused {
-                            Image(systemName: "play.fill")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(12)
-                                .background(.black.opacity(0.4), in: Circle())
-                        }
-                    }
-                    .clipShape(frameShape)
+        framedMedia
+            .overlay {
+                if isVideo, isPaused {
+                    Image(systemName: "play.fill")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(.black.opacity(0.4), in: Circle())
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var framedMedia: some View {
+        if isVideo, let mediaURL {
+            framed(
+                ComposerInlineVideo(url: mediaURL, isPaused: isPaused, fillsFrame: false)
                     .allowsHitTesting(false)
-            } else if let preview {
+            )
+        } else if let preview {
+            framed(
                 Image(uiImage: preview)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: displayWidth, height: shapeHeight)
-                    .clipShape(frameShape)
-            } else {
-                ProgressView()
-                    .tint(.white)
-                    .frame(width: 44, height: 44)
-            }
+            )
+        } else {
+            ProgressView()
+                .tint(.white)
+                .frame(width: 44, height: 44)
         }
+    }
+
+    private func framed<Content: View>(_ content: Content) -> some View {
+        let frame = CGSize(width: displayWidth, height: shapeHeight)
+        let zoom = CGFloat(min(max(block.mediaZoom, 1), 4))
+        let filled = MediaFraming.fillSize(contentAspect: contentAspect, in: frame)
+        let pan = MediaFraming.clampedPan(
+            CGSize(width: block.mediaPanX * frame.width, height: block.mediaPanY * frame.height),
+            limits: MediaFraming.panLimits(contentAspect: contentAspect, frame: frame, zoom: zoom)
+        )
+        return content
+            .frame(width: filled.width * zoom, height: filled.height * zoom)
+            .offset(pan)
+            .frame(width: frame.width, height: frame.height)
+            .clipped()
+            .clipShape(mediaClipShape(block.mediaShape))
     }
 
     private var shapeHeight: CGFloat {
@@ -84,38 +117,39 @@ struct ComposerMediaCanvasBlock: View {
         return displayWidth / max(isVideo ? videoAspect : imageAspect, 0.4)
     }
 
+    private var contentAspect: CGFloat {
+        isVideo ? videoAspect : imageAspect
+    }
+
     private var imageAspect: CGFloat {
         guard let preview, preview.size.height > 0 else { return 1 }
         return preview.size.width / preview.size.height
     }
 
-    private var frameShape: AnyShape {
-        switch block.mediaShape {
-        case .rectangle:
-            AnyShape(Rectangle())
-        case .square:
-            AnyShape(Rectangle())
-        case .rounded:
-            AnyShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        case .circle:
-            AnyShape(Circle())
-        case .triangle:
-            AnyShape(MediaTriangle())
-        }
-    }
-
     private var mediaChrome: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        ZStack(alignment: .topLeading) {
             if showsMenu {
-                ComposerMediaShapeChoices(shape: block.mediaShape) { option in
-                    block.mediaShape = option
-                    block.mediaWarp = nil
-                }
+                cropIconButton
+                    .offset(x: iconPlacement.x, y: iconPlacement.cropBelow ? 36 : -46)
             }
             mediaIconButton
+                .offset(x: iconPlacement.x, y: -2)
         }
         .fixedSize()
-        .offset(x: -40, y: showsMenu ? -70 : -2)
+        .animation(.easeOut(duration: 0.16), value: iconPlacement)
+    }
+
+    private var cropIconButton: some View {
+        Image(systemName: "crop")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(width: 32, height: 32)
+            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .contentShape(Circle())
+            .highPriorityGesture(TapGesture().onEnded { onCrop() })
+            .accessibilityLabel("Crop")
+            .accessibilityAddTraits(.isButton)
     }
 
     private var mediaIconButton: some View {
@@ -181,45 +215,21 @@ struct MediaTriangle: Shape {
 
 private struct MediaIconHitShape: Shape {
     var menuOpen: Bool
+    var iconX: CGFloat
+    var cropBelow: Bool
 
     func path(in rect: CGRect) -> Path {
         var path = Path(rect)
-        path.addEllipse(in: CGRect(x: rect.minX - 48, y: rect.minY - 8, width: 40, height: 40))
+        path.addEllipse(in: CGRect(x: rect.minX + iconX - 4, y: rect.minY - 8, width: 40, height: 40))
         if menuOpen {
-            path.addRect(CGRect(x: rect.minX - 48, y: rect.minY - 84, width: 270, height: 84))
+            let cropY = cropBelow ? rect.minY + 28 : rect.minY - 54
+            path.addEllipse(in: CGRect(x: rect.minX + iconX - 4, y: cropY, width: 44, height: 44))
         }
         return path
     }
 }
 
-private struct ComposerMediaShapeChoices: View {
-    let shape: MediaFrameShape
-    var onShape: (MediaFrameShape) -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(MediaFrameShape.allCases, id: \.self) { option in
-                Button {
-                    onShape(option)
-                } label: {
-                    Image(systemName: option.systemImage)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(shape == option ? MosaicBrand.inkBlack : .white.opacity(0.92))
-                        .frame(width: 36, height: 36)
-                        .background(shape == option ? MosaicBrand.cream : Color.white.opacity(0.12), in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .highPriorityGesture(TapGesture().onEnded { onShape(option) })
-                .accessibilityLabel(option.label)
-            }
-        }
-        .padding(12)
-        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-}
-
-private struct ComposerInlineVideo: UIViewRepresentable {
+struct ComposerInlineVideo: UIViewRepresentable {
     let url: URL
     let isPaused: Bool
     let fillsFrame: Bool
@@ -305,7 +315,7 @@ private struct ComposerInlineVideo: UIViewRepresentable {
     }
 }
 
-private final class ComposerPlayerView: UIView {
+final class ComposerPlayerView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
 
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }

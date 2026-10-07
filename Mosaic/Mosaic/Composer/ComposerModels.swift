@@ -232,7 +232,15 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
     case square
     case rounded
     case circle
+    case oval
+    case capsule
     case triangle
+    case diamond
+    case pentagon
+    case hexagon
+    case octagon
+    case star
+    case heart
 
     var label: String {
         switch self {
@@ -240,7 +248,15 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .square: "Square"
         case .rounded: "Rounded"
         case .circle: "Circle"
+        case .oval: "Oval"
+        case .capsule: "Capsule"
         case .triangle: "Triangle"
+        case .diamond: "Diamond"
+        case .pentagon: "Pentagon"
+        case .hexagon: "Hexagon"
+        case .octagon: "Octagon"
+        case .star: "Star"
+        case .heart: "Heart"
         }
     }
 
@@ -250,14 +266,24 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .square: "square"
         case .rounded: "rectangle.roundedtop"
         case .circle: "circle"
+        case .oval: "oval"
+        case .capsule: "capsule"
         case .triangle: "triangle"
+        case .diamond: "diamond"
+        case .pentagon: "pentagon"
+        case .hexagon: "hexagon"
+        case .octagon: "octagon"
+        case .star: "star"
+        case .heart: "heart"
         }
     }
 
     var usesSquareFrame: Bool {
         switch self {
-        case .square, .circle, .triangle: true
-        case .rectangle, .rounded: false
+        case .square, .circle, .triangle, .diamond, .pentagon, .hexagon, .octagon, .star, .heart:
+            true
+        case .rectangle, .rounded, .oval, .capsule:
+            false
         }
     }
 }
@@ -321,11 +347,14 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var mediaFileName: String?
     var mediaShape: MediaFrameShape
     var mediaWarp: MediaEdgeGrid?
+    var mediaZoom: Double
+    var mediaPanX: Double
+    var mediaPanY: Double
     var linkURL: String?
     var pursuitID: ComposerDocumentID?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, linkURL, pursuitID
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID
     }
 
     init(
@@ -337,6 +366,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         mediaFileName: String? = nil,
         mediaShape: MediaFrameShape = .rectangle,
         mediaWarp: MediaEdgeGrid? = nil,
+        mediaZoom: Double = 1,
+        mediaPanX: Double = 0,
+        mediaPanY: Double = 0,
         linkURL: String? = nil,
         pursuitID: ComposerDocumentID? = nil
     ) {
@@ -348,6 +380,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.mediaFileName = mediaFileName
         self.mediaShape = mediaShape
         self.mediaWarp = mediaWarp
+        self.mediaZoom = mediaZoom
+        self.mediaPanX = mediaPanX
+        self.mediaPanY = mediaPanY
         self.linkURL = linkURL
         self.pursuitID = pursuitID
     }
@@ -363,6 +398,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         mediaFileName = try container.decodeIfPresent(String.self, forKey: .mediaFileName)
         mediaShape = try container.decodeIfPresent(MediaFrameShape.self, forKey: .mediaShape) ?? .rectangle
         mediaWarp = try container.decodeIfPresent(MediaEdgeGrid.self, forKey: .mediaWarp)
+        mediaZoom = try container.decodeIfPresent(Double.self, forKey: .mediaZoom) ?? 1
+        mediaPanX = try container.decodeIfPresent(Double.self, forKey: .mediaPanX) ?? 0
+        mediaPanY = try container.decodeIfPresent(Double.self, forKey: .mediaPanY) ?? 0
         linkURL = try container.decodeIfPresent(String.self, forKey: .linkURL)
         pursuitID = try container.decodeIfPresent(ComposerDocumentID.self, forKey: .pursuitID)
     }

@@ -13,6 +13,13 @@ struct ComposerTextCanvasBlock: View {
     let onStyleChange: () -> Void
 
     @State private var showsStyleDialog = false
+    @State private var itemFrame: CGRect = .zero
+
+    @Environment(\.composerViewportWidth) private var viewportWidth
+
+    private var iconPlacement: ComposerChromePlacement {
+        ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
+    }
 
     private var isHeading: Bool { block.kind == .heading }
 
@@ -31,8 +38,14 @@ struct ComposerTextCanvasBlock: View {
             .overlay(alignment: .topLeading) {
                 if isSelected, !isRelocating, !isLifted {
                     formatIconButton
-                        .offset(x: -40, y: -2)
+                        .offset(x: iconPlacement.x, y: -2)
+                        .animation(.easeOut(duration: 0.16), value: iconPlacement.x)
                 }
+            }
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named("composerRoot"))
+            } action: { frame in
+                itemFrame = frame
             }
             .animation(.easeOut(duration: 0.16), value: showsMoveAffordance)
             .accessibilityIdentifier("composer.block.\(block.id.rawValue)")

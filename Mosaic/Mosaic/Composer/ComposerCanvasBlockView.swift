@@ -1,5 +1,40 @@
 import SwiftUI
 
+struct ComposerChromePlacement: Equatable {
+    var x: CGFloat
+    var cropBelow: Bool
+
+    static let leading = ComposerChromePlacement(x: -40, cropBelow: false)
+
+    static func resolve(itemFrame: CGRect, viewportWidth: CGFloat) -> ComposerChromePlacement {
+        guard viewportWidth > 1, itemFrame.width > 1 else { return .leading }
+        let reach: CGFloat = 46
+        let leadingRoom = itemFrame.minX
+        let trailingRoom = viewportWidth - itemFrame.maxX
+        let useTrailing = leadingRoom < reach && trailingRoom >= leadingRoom
+        let x: CGFloat
+        if useTrailing {
+            x = trailingRoom < reach ? max(4, itemFrame.width - 36) : itemFrame.width + 8
+        } else if leadingRoom < reach {
+            x = 4
+        } else {
+            x = -40
+        }
+        return ComposerChromePlacement(x: x, cropBelow: itemFrame.minY < 56)
+    }
+}
+
+private struct ComposerViewportWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var composerViewportWidth: CGFloat {
+        get { self[ComposerViewportWidthKey.self] }
+        set { self[ComposerViewportWidthKey.self] = newValue }
+    }
+}
+
 struct ComposerCanvasBlockView: View {
     let documentID: ComposerDocumentID?
     @Binding var block: ComposerBlock
@@ -19,6 +54,7 @@ struct ComposerCanvasBlockView: View {
     var onStyleChange: () -> Void
     var showsMediaMenu: Bool
     var onOpenMediaMenu: () -> Void
+    var onCropMedia: () -> Void
 
     var body: some View {
         Group {
@@ -46,7 +82,8 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     isPaused: isMediaPaused,
                     showsMenu: showsMediaMenu,
-                    onOpenMenu: onOpenMediaMenu
+                    onOpenMenu: onOpenMediaMenu,
+                    onCrop: onCropMedia
                 )
             case .link:
                 linkEditor

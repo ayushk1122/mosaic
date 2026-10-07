@@ -24,6 +24,7 @@ struct MosaicComposerView: View {
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
     @State private var mediaEditRequest: MediaEditRequest?
     @State private var mediaMenuBlockID: ComposerBlockID?
+    @State private var viewportWidth: CGFloat = 0
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -129,6 +130,12 @@ struct MosaicComposerView: View {
             .padding(.bottom, 20)
         }
         .coordinateSpace(name: "composerRoot")
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            viewportWidth = width
+        }
+        .environment(\.composerViewportWidth, viewportWidth)
         .onPreferenceChange(ComposerTrashDropZoneFrameKey.self) { frame in
             let rounded = CGRect(
                 x: frame.origin.x.rounded(),
@@ -237,6 +244,9 @@ struct MosaicComposerView: View {
                 showsMediaMenu: mediaMenuBlockID == block.id,
                 onOpenMediaMenu: {
                     handleMediaIconTap(block.id)
+                },
+                onCropMedia: {
+                    openMediaFrameEditor(block.id)
                 }
             )
         }
@@ -524,7 +534,40 @@ struct MosaicComposerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black)
+        case .shape(let blockID):
+            if let block = store.block(with: blockID, in: documentID),
+               let fileName = block.mediaFileName {
+                ComposerMediaFrameEditor(
+                    mediaURL: store.mediaURL(for: fileName),
+                    isVideo: composerMediaIsVideo(store.mediaURL(for: fileName)),
+                    initialShape: block.mediaShape,
+                    initialZoom: block.mediaZoom,
+                    initialPanX: block.mediaPanX,
+                    initialPanY: block.mediaPanY,
+                    onCancel: { mediaEditRequest = nil },
+                    onDone: { shape, zoom, panX, panY in
+                        guard var current = store.block(with: blockID, in: documentID) else {
+                            mediaEditRequest = nil
+                            return
+                        }
+                        current.mediaShape = shape
+                        current.mediaZoom = zoom
+                        current.mediaPanX = panX
+                        current.mediaPanY = panY
+                        current.mediaWarp = nil
+                        store.updateBlock(current, in: documentID)
+                        mediaEditRequest = nil
+                    }
+                )
+            }
         }
+    }
+
+    private func openMediaFrameEditor(_ blockID: ComposerBlockID) {
+        playingMediaIDs.remove(blockID)
+        mediaMenuBlockID = nil
+        selectedBlockID = blockID
+        mediaEditRequest = .shape(blockID)
     }
 
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
@@ -623,16 +666,22 @@ private struct PlacementGestureModifier<G: Gesture>: ViewModifier {
     }
 }
 
+private func composerMediaIsVideo(_ url: URL) -> Bool {
+    ["mov", "mp4", "m4v", "avi"].contains(url.pathExtension.lowercased())
+}
+
 private enum MediaEditRequest: Identifiable {
     case crop(ComposerBlockID)
     case trim(ComposerBlockID, URL)
     case trimUnavailable
+    case shape(ComposerBlockID)
 
     var id: String {
         switch self {
         case .crop(let blockID): "crop-\(blockID.rawValue)"
         case .trim(let blockID, _): "trim-\(blockID.rawValue)"
         case .trimUnavailable: "trim-unavailable"
+        case .shape(let blockID): "shape-\(blockID.rawValue)"
         }
     }
 }
