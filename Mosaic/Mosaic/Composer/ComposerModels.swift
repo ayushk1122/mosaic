@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct ComposerDocumentID: Hashable, Codable, Sendable {
     let rawValue: String
@@ -227,10 +228,120 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
     static let headingDefault = TextBlockStyle(size: .title, color: .canvas, alignment: .leading, fontSize: 28)
 }
 
+struct PursuitTextItem: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var text: String
+    var style: TextBlockStyle
+    var x: Double
+    var y: Double
+
+    init(
+        id: String = UUID().uuidString,
+        text: String,
+        style: TextBlockStyle = .bodyDefault,
+        x: Double = 0.08,
+        y: Double = 0.42
+    ) {
+        self.id = id
+        self.text = text
+        self.style = style
+        self.x = x
+        self.y = y
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, style, x, y
+        case fontSize, fontChoice, color
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        x = try container.decodeIfPresent(Double.self, forKey: .x) ?? 0.08
+        y = try container.decodeIfPresent(Double.self, forKey: .y) ?? 0.42
+        if let style = try container.decodeIfPresent(TextBlockStyle.self, forKey: .style) {
+            self.style = style
+        } else {
+            let fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? 22
+            let fontChoice = try container.decodeIfPresent(ComposerFontChoice.self, forKey: .fontChoice) ?? .system
+            let color = try container.decodeIfPresent(ComposerRGBColor.self, forKey: .color)
+            self.style = TextBlockStyle(
+                size: .body,
+                color: .canvas,
+                alignment: .leading,
+                fontSize: fontSize,
+                fontChoice: fontChoice,
+                customColor: color
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(text, forKey: .text)
+        try container.encode(style, forKey: .style)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+    }
+
+    func canvasBlock() -> ComposerBlock {
+        ComposerBlock(
+            id: ComposerBlockID(rawValue: id),
+            kind: .text,
+            text: text,
+            style: style,
+            position: BlockPosition(x: x, y: y)
+        )
+    }
+
+    mutating func adopt(_ block: ComposerBlock) {
+        text = block.text
+        style = block.style
+    }
+}
+
+enum PursuitWidgetShape: String, Codable, CaseIterable, Sendable {
+    case square
+    case landscape
+    case wide
+    case banner
+    case portrait
+    case tall
+    case story
+
+    var label: String {
+        switch self {
+        case .square: "Square"
+        case .landscape: "Landscape"
+        case .wide: "Wide"
+        case .banner: "Banner"
+        case .portrait: "Portrait"
+        case .tall: "Tall"
+        case .story: "Story"
+        }
+    }
+
+    /// Width divided by height.
+    var aspect: CGFloat {
+        switch self {
+        case .square: 1
+        case .landscape: 4.0 / 3.0
+        case .wide: 16.0 / 9.0
+        case .banner: 2.35
+        case .portrait: 3.0 / 4.0
+        case .tall: 9.0 / 16.0
+        case .story: 9.0 / 19.0
+        }
+    }
+}
+
 enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
     case rectangle
     case square
     case rounded
+    case roundedRectangle
     case circle
     case oval
     case capsule
@@ -247,6 +358,7 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .rectangle: "Rectangle"
         case .square: "Square"
         case .rounded: "Rounded"
+        case .roundedRectangle: "Rounded rectangle"
         case .circle: "Circle"
         case .oval: "Oval"
         case .capsule: "Capsule"
@@ -265,6 +377,7 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .rectangle: "rectangle"
         case .square: "square"
         case .rounded: "rectangle.roundedtop"
+        case .roundedRectangle: "app"
         case .circle: "circle"
         case .oval: "oval"
         case .capsule: "capsule"
@@ -282,7 +395,7 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         switch self {
         case .square, .circle, .triangle, .diamond, .pentagon, .hexagon, .octagon, .star, .heart:
             true
-        case .rectangle, .rounded, .oval, .capsule:
+        case .rectangle, .rounded, .roundedRectangle, .oval, .capsule:
             false
         }
     }
@@ -352,9 +465,19 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var mediaPanY: Double
     var linkURL: String?
     var pursuitID: ComposerDocumentID?
+    var pursuitShape: MediaFrameShape
+    var pursuitLayout: PursuitWidgetShape
+    var pursuitTextX: Double
+    var pursuitTextY: Double
+    var pursuitTexts: [PursuitTextItem]
+    var pursuitImageZoom: Double
+    var pursuitImagePanX: Double
+    var pursuitImagePanY: Double
+    var pursuitFill: ComposerRGBColor?
+    var pursuitImageFileName: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName
     }
 
     init(
@@ -370,7 +493,17 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         mediaPanX: Double = 0,
         mediaPanY: Double = 0,
         linkURL: String? = nil,
-        pursuitID: ComposerDocumentID? = nil
+        pursuitID: ComposerDocumentID? = nil,
+        pursuitShape: MediaFrameShape = .rounded,
+        pursuitLayout: PursuitWidgetShape = .square,
+        pursuitTextX: Double = 0,
+        pursuitTextY: Double = 0,
+        pursuitTexts: [PursuitTextItem] = [],
+        pursuitImageZoom: Double = 1,
+        pursuitImagePanX: Double = 0,
+        pursuitImagePanY: Double = 0,
+        pursuitFill: ComposerRGBColor? = nil,
+        pursuitImageFileName: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -385,6 +518,16 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.mediaPanY = mediaPanY
         self.linkURL = linkURL
         self.pursuitID = pursuitID
+        self.pursuitShape = pursuitShape
+        self.pursuitLayout = pursuitLayout
+        self.pursuitTextX = pursuitTextX
+        self.pursuitTextY = pursuitTextY
+        self.pursuitTexts = pursuitTexts
+        self.pursuitImageZoom = pursuitImageZoom
+        self.pursuitImagePanX = pursuitImagePanX
+        self.pursuitImagePanY = pursuitImagePanY
+        self.pursuitFill = pursuitFill
+        self.pursuitImageFileName = pursuitImageFileName
     }
 
     init(from decoder: Decoder) throws {
@@ -403,6 +546,16 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         mediaPanY = try container.decodeIfPresent(Double.self, forKey: .mediaPanY) ?? 0
         linkURL = try container.decodeIfPresent(String.self, forKey: .linkURL)
         pursuitID = try container.decodeIfPresent(ComposerDocumentID.self, forKey: .pursuitID)
+        pursuitShape = try container.decodeIfPresent(MediaFrameShape.self, forKey: .pursuitShape) ?? .rounded
+        pursuitLayout = try container.decodeIfPresent(PursuitWidgetShape.self, forKey: .pursuitLayout) ?? .square
+        pursuitTextX = try container.decodeIfPresent(Double.self, forKey: .pursuitTextX) ?? 0
+        pursuitTextY = try container.decodeIfPresent(Double.self, forKey: .pursuitTextY) ?? 0
+        pursuitTexts = try container.decodeIfPresent([PursuitTextItem].self, forKey: .pursuitTexts) ?? []
+        pursuitImageZoom = try container.decodeIfPresent(Double.self, forKey: .pursuitImageZoom) ?? 1
+        pursuitImagePanX = try container.decodeIfPresent(Double.self, forKey: .pursuitImagePanX) ?? 0
+        pursuitImagePanY = try container.decodeIfPresent(Double.self, forKey: .pursuitImagePanY) ?? 0
+        pursuitFill = try container.decodeIfPresent(ComposerRGBColor.self, forKey: .pursuitFill)
+        pursuitImageFileName = try container.decodeIfPresent(String.self, forKey: .pursuitImageFileName)
     }
 
     static func make(kind: BlockKind, position: BlockPosition) -> ComposerBlock {
@@ -441,15 +594,30 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 linkURL: ""
             )
         case .pursuit:
-            ComposerBlock(
-                id: ComposerBlockID(),
-                kind: .pursuit,
-                text: "Pursuit",
-                style: .headingDefault,
-                position: position,
-                pursuitID: ComposerDocumentID()
-            )
+            newPursuitBlock(at: position)
         }
+    }
+
+    /// A new Pursuit widget with the name placeholder centered on the square.
+    private static func newPursuitBlock(at position: BlockPosition) -> ComposerBlock {
+        let style = TextBlockStyle.headingDefault
+        let module = PursuitWidgetShape.square.moduleSize(scale: CGFloat(style.scale))
+        let font = UIFont.systemFont(ofSize: style.fontSize * style.scale, weight: .semibold)
+        let textSize = (NSString(string: "Pursuit")).size(withAttributes: [.font: font])
+        let width = max(module.width, 1)
+        let height = max(module.height, 1)
+        let textX = min(max(Double((width - textSize.width) / 2 / width), 0), 1)
+        let textY = min(max(Double((height - textSize.height) / 2 / height), 0), 1)
+        return ComposerBlock(
+            id: ComposerBlockID(),
+            kind: .pursuit,
+            text: "",
+            style: style,
+            position: position,
+            pursuitID: ComposerDocumentID(),
+            pursuitTextX: textX,
+            pursuitTextY: textY
+        )
     }
 }
 

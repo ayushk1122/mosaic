@@ -42,7 +42,9 @@ final class ComposerStore {
 
     func title(for documentID: ComposerDocumentID?) -> String {
         if let documentID {
-            return snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? "Pursuit"
+            let title = snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? ""
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Pursuit" : trimmed
         }
         return snapshot.mosaicTitle
     }
@@ -75,18 +77,22 @@ final class ComposerStore {
         mutateBlocks(for: documentID) { blocks in
             guard let index = blocks.firstIndex(where: { $0.id == block.id }) else { return }
             blocks[index] = block
-            if block.kind == .pursuit, let pursuitID = block.pursuitID {
-                if let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
-                    snapshot.pursuits[pursuitIndex].title = block.text
-                }
-            }
+        }
+        // Title lives on the pursuit document, outside the block array this method just borrowed.
+        if block.kind == .pursuit, let pursuitID = block.pursuitID,
+           let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
+            snapshot.pursuits[pursuitIndex].title = block.text
         }
         persist()
     }
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        let removed = block(with: blockID, in: documentID)
         mutateBlocks(for: documentID) { blocks in
             blocks.removeAll { $0.id == blockID }
+        }
+        if removed?.kind == .pursuit, let pursuitID = removed?.pursuitID {
+            snapshot.pursuits.removeAll { $0.id == pursuitID }
         }
         persist()
     }

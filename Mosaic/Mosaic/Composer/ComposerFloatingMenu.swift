@@ -11,6 +11,22 @@ private enum ComposerAddMenuColors {
     static let secondaryIcon = Color.white.opacity(0.55)
 }
 
+struct ComposerPencilFrameKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: CGRect] = [:]
+
+    static func reduce(value: inout [ComposerBlockID: CGRect], nextValue: () -> [ComposerBlockID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+struct ComposerChromeIconFrameKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: CGRect] = [:]
+
+    static func reduce(value: inout [ComposerBlockID: CGRect], nextValue: () -> [ComposerBlockID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
 struct ComposerTrashDropZoneFrameKey: PreferenceKey {
     static var defaultValue: CGRect = .zero
 

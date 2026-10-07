@@ -23,6 +23,28 @@ struct ComposerStoreTests {
         let block = store.blocks(for: nil).first
         #expect(block?.kind == .pursuit)
         #expect(store.snapshot.pursuits.count == 1)
+
+        var named = store.blocks(for: nil)[0]
+        named.text = "Golf"
+        store.updateBlock(named, in: nil)
+        #expect(store.blocks(for: nil)[0].text == "Golf")
+        #expect(store.snapshot.pursuits[0].title == "Golf")
+        #expect(store.title(for: store.snapshot.pursuits[0].id) == "Golf")
+
+        named.pursuitLayout = .tall
+        named.pursuitTextX = 0.4
+        named.pursuitTextY = 0.2
+        named.pursuitShape = .circle
+        named.pursuitFill = ComposerRGBColor(red: 0.2, green: 0.4, blue: 0.6)
+        named.pursuitImageFileName = "cover.jpg"
+        store.updateBlock(named, in: nil)
+        let styled = store.blocks(for: nil)[0]
+        #expect(styled.pursuitLayout == .tall)
+        #expect(styled.pursuitTextX == 0.4)
+        #expect(styled.pursuitTextY == 0.2)
+        #expect(styled.pursuitShape == .circle)
+        #expect(styled.pursuitFill == ComposerRGBColor(red: 0.2, green: 0.4, blue: 0.6))
+        #expect(styled.pursuitImageFileName == "cover.jpg")
     }
 
     @Test

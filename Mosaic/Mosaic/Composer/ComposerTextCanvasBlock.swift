@@ -11,6 +11,7 @@ struct ComposerTextCanvasBlock: View {
     var focusBlockID: FocusState<ComposerBlockID?>.Binding
     let onCommit: () -> Void
     let onStyleChange: () -> Void
+    var showsFormatButton: Bool = true
 
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
@@ -36,7 +37,7 @@ struct ComposerTextCanvasBlock: View {
     var body: some View {
         textContent
             .overlay(alignment: .topLeading) {
-                if isSelected, !isRelocating, !isLifted {
+                if showsFormatButton, isSelected, !isRelocating, !isLifted {
                     formatIconButton
                         .offset(x: iconPlacement.x, y: -2)
                         .animation(.easeOut(duration: 0.16), value: iconPlacement.x)
@@ -136,6 +137,9 @@ struct ComposerTextCanvasBlock: View {
 struct ComposerTextStylePanel: View {
     @Binding var style: TextBlockStyle
     var onChange: () -> Void
+    var showsSize: Bool = false
+    var onDelete: (() -> Void)? = nil
+    var fillsBar: Bool = false
 
     @State private var showsFonts = false
     @State private var showsColor = false
@@ -186,6 +190,35 @@ struct ComposerTextStylePanel: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Color")
+
+                if let onDelete {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.08), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete text")
+                }
+            }
+
+            if showsSize {
+                HStack(spacing: 10) {
+                    Text("Size")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                    Slider(value: $style.fontSize, in: 12...80, step: 1)
+                        .tint(.white)
+                        .onChange(of: style.fontSize) { _, _ in
+                            onChange()
+                        }
+                    Text("\(Int(style.fontSize.rounded()))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 28, alignment: .trailing)
+                }
             }
 
             if showsFonts {
@@ -226,13 +259,14 @@ struct ComposerTextStylePanel: View {
                 .frame(height: 140)
             }
         }
-        .padding(12)
-        .frame(width: 228)
-        .background(Color(red: 0.20, green: 0.21, blue: 0.23))
+        .padding(fillsBar ? 0 : 12)
+        .frame(maxWidth: fillsBar ? .infinity : 228, alignment: .leading)
+        .frame(width: fillsBar ? nil : 228)
+        .background(fillsBar ? Color.clear : Color(red: 0.20, green: 0.21, blue: 0.23))
     }
 }
 
-private struct ComposerColorSquare: View {
+struct ComposerColorSquare: View {
     let color: Color
     var onPick: (Double, Double, Double) -> Void
 

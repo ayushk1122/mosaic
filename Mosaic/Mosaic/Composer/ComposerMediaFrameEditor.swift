@@ -36,6 +36,8 @@ func mediaClipShape(_ shape: MediaFrameShape) -> AnyShape {
         AnyShape(Rectangle())
     case .rounded:
         AnyShape(MediaRoundedRect())
+    case .roundedRectangle:
+        AnyShape(MediaRoundedRectangle())
     case .circle:
         AnyShape(Circle())
     case .oval:
@@ -306,6 +308,12 @@ struct ComposerMediaFrameEditor: View {
 struct MediaRoundedRect: Shape {
     func path(in rect: CGRect) -> Path {
         RoundedRectangle(cornerRadius: min(rect.width, rect.height) * 0.18, style: .continuous).path(in: rect)
+    }
+}
+
+struct MediaRoundedRectangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        RoundedRectangle(cornerRadius: min(rect.width, rect.height) * 0.28, style: .continuous).path(in: rect)
     }
 }
 

@@ -25,8 +25,12 @@ struct MosaicComposerView: View {
     @State private var pendingMediaBlockID: ComposerBlockID?
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
     @State private var mediaEditRequest: MediaEditRequest?
-    @State private var mediaMenuBlockID: ComposerBlockID?
+    @State private var styleMenuBlockID: ComposerBlockID?
     @State private var viewportWidth: CGFloat = 0
+    @State private var openedPursuitID: ComposerDocumentID?
+    @State private var chromeIconFrames: [ComposerBlockID: CGRect] = [:]
+    @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
+    @State private var pursuitEditRequest: PursuitEditRequest?
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -68,12 +72,12 @@ struct MosaicComposerView: View {
                         ForEach(blocks) { block in
                             blockView(for: block)
                                 .id(block.id)
-                                .zIndex(mediaMenuBlockID == block.id ? 2 : 0)
+                                .zIndex(styleMenuBlockID == block.id ? 2 : 0)
                                 .offset(liveOffset(for: block))
                                 .opacity(textDragVisual.blockID == block.id && textDragVisual.isMoving ? 0.96 : 1)
                                 .modifier(
                                     RelocateGestureModifier(
-                                        isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && mediaMenuBlockID != block.id,
+                                        isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && styleMenuBlockID != block.id,
                                         claimsTouches: claimsCanvasTouches(for: block),
                                         gesture: textPressGesture(for: block),
                                         pinch: textPinchGesture(for: block)
@@ -81,8 +85,8 @@ struct MosaicComposerView: View {
                                 )
                                 .modifier(
                                     ViewingMediaTapModifier(
-                                        isEnabled: chrome.isViewing && block.kind == .media,
-                                        onTap: { toggleMediaPlayback(block.id) }
+                                        isEnabled: chrome.isViewing && (block.kind == .media || block.kind == .pursuit),
+                                        onTap: { handleViewingTap(on: block) }
                                     )
                                 )
                         }
@@ -142,6 +146,12 @@ struct MosaicComposerView: View {
             viewportWidth = width
         }
         .environment(\.composerViewportWidth, viewportWidth)
+        .onPreferenceChange(ComposerChromeIconFrameKey.self) { frames in
+            chromeIconFrames = frames
+        }
+        .onPreferenceChange(ComposerPencilFrameKey.self) { frames in
+            pencilFrames = frames
+        }
         .onPreferenceChange(ComposerTrashDropZoneFrameKey.self) { frame in
             let rounded = CGRect(
                 x: frame.origin.x.rounded(),
@@ -175,7 +185,7 @@ struct MosaicComposerView: View {
                 }
             }
         }
-        .navigationDestination(for: ComposerDocumentID.self) { pursuitID in
+        .navigationDestination(item: $openedPursuitID) { pursuitID in
             MosaicComposerView(documentID: pursuitID)
         }
         .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
@@ -194,6 +204,9 @@ struct MosaicComposerView: View {
         }
         .fullScreenCover(item: $mediaEditRequest) { request in
             mediaEditor(for: request)
+        }
+        .fullScreenCover(item: $pursuitEditRequest) { request in
+            pursuitEditor(for: request)
         }
         .onChange(of: showMediaPicker) { _, isPresented in
             guard !isPresented else { return }
@@ -222,8 +235,8 @@ struct MosaicComposerView: View {
                 livePinchScale: textPinchVisual.blockID == block.id ? textPinchVisual.scale : 1,
                 focusBlockID: $focusedTextBlockID,
                 mediaURL: block.mediaFileName.map { store.mediaURL(for: $0) },
+                pursuitImageURL: block.pursuitImageFileName.map { store.mediaURL(for: $0) },
                 isMediaPaused: !playingMediaIDs.contains(block.id),
-                opensPursuitInParentStack: documentID == nil,
                 onCommit: commitTextEditing,
                 onBeginEditing: {
                     selectedBlockID = block.id
@@ -248,18 +261,31 @@ struct MosaicComposerView: View {
                         store.updateBlock(updated, in: documentID)
                     }
                 },
+                onPursuitImage: { data in
+                    if let fileName = try? store.saveMediaData(data) {
+                        guard var updated = store.blocks(for: documentID).first(where: { $0.id == block.id }) else {
+                            return
+                        }
+                        updated.pursuitImageFileName = fileName
+                        store.updateBlock(updated, in: documentID)
+                    }
+                },
                 onStyleChange: {
                     guard let current = store.blocks(for: documentID).first(where: { $0.id == block.id }) else {
                         return
                     }
                     store.updateBlock(current, in: documentID)
                 },
-                showsMediaMenu: mediaMenuBlockID == block.id,
+                showsMediaMenu: styleMenuBlockID == block.id,
                 onOpenMediaMenu: {
                     handleMediaIconTap(block.id)
                 },
                 onCropMedia: {
                     openMediaFrameEditor(block.id)
+                },
+                showsPursuitPencil: !chrome.isViewing,
+                onEditPursuit: {
+                    beginPursuitEdit(block.id)
                 }
             )
         }
@@ -285,7 +311,7 @@ struct MosaicComposerView: View {
             .onEnded { value in
                 guard let placingOption else { return }
                 let point = clamped(point: value.location)
-                if isTextLikeKind(placingOption.blockKind) {
+                if isTextLikeKind(placingOption.blockKind) || placingOption.blockKind == .pursuit {
                     placeTextAndBeginEditing(option: placingOption, at: point)
                 } else if placingOption.blockKind == .media {
                     placeMedia(at: point)
@@ -364,7 +390,7 @@ struct MosaicComposerView: View {
         let finishedID = editingBlockID
         editingBlockID = nil
         focusedTextBlockID = nil
-        if let finishedID, blocks.contains(where: { $0.id == finishedID && isTextLikeKind($0.kind) }) {
+        if let finishedID, blocks.contains(where: { $0.id == finishedID && (isTextLikeKind($0.kind) || $0.kind == .pursuit) }) {
             selectedBlockID = finishedID
         }
     }
@@ -373,14 +399,14 @@ struct MosaicComposerView: View {
         editingBlockID = nil
         selectedBlockID = nil
         focusedTextBlockID = nil
-        mediaMenuBlockID = nil
+        styleMenuBlockID = nil
         textDragSession.reset()
     }
 
     private func handleMediaIconTap(_ blockID: ComposerBlockID) {
         textDragSession.didHandleMediaIconTap = true
         selectedBlockID = blockID
-        mediaMenuBlockID = mediaMenuBlockID == blockID ? nil : blockID
+        styleMenuBlockID = styleMenuBlockID == blockID ? nil : blockID
     }
 
     private func textPressGesture(for block: ComposerBlock) -> some Gesture {
@@ -396,7 +422,7 @@ struct MosaicComposerView: View {
                     session.started = Date()
                     session.baseline = nil
                     session.didHaptic = false
-                    session.menuWasOpen = mediaMenuBlockID == block.id
+                    session.menuWasOpen = styleMenuBlockID == block.id
                     session.didHandleMediaIconTap = false
                 }
 
@@ -436,13 +462,19 @@ struct MosaicComposerView: View {
                 let translation = textDragSession.lastTranslation
                 let shouldDelete = textDragSession.hoveringTrash
                 let iconAlreadyHandled = textDragSession.didHandleMediaIconTap
+                let tappedChromeIcon = chromeIconFrames[block.id].map { frame in
+                    frame.width > 1 && frame.insetBy(dx: -16, dy: -16).contains(value.location)
+                } ?? false
+                let tappedPencil = pencilFrames[block.id].map { frame in
+                    frame.width > 1 && frame.insetBy(dx: -12, dy: -12).contains(value.location)
+                } ?? false
                 textDragSession.lastEnded = Date()
                 textDragSession.reset()
 
                 if didMove {
                     editingBlockID = nil
                     focusedTextBlockID = nil
-                    mediaMenuBlockID = nil
+                    styleMenuBlockID = nil
                     if shouldDelete {
                         deleteBlock(block.id)
                         selectedBlockID = nil
@@ -457,12 +489,21 @@ struct MosaicComposerView: View {
                         )
                         selectedBlockID = block.id
                     }
+                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, tappedPencil {
+                    beginPursuitEdit(block.id)
+                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, !iconAlreadyHandled, !tappedChromeIcon {
+                    if selectedBlockID != block.id {
+                        selectedBlockID = block.id
+                        styleMenuBlockID = nil
+                    } else if styleMenuBlockID != block.id {
+                        openPursuit(block)
+                    }
                 } else if distance < 12, elapsed < 0.32, isTextLikeKind(block.kind), editingBlockID != block.id {
                     beginTextEditing(block.id)
                 } else if distance < 12, elapsed < 0.32, block.kind == .media, !iconAlreadyHandled {
                     if selectedBlockID != block.id {
                         selectedBlockID = block.id
-                    } else if mediaMenuBlockID != block.id {
+                    } else if styleMenuBlockID != block.id {
                         toggleMediaPlayback(block.id)
                     }
                 }
@@ -480,7 +521,7 @@ struct MosaicComposerView: View {
                 textDragSession.isPinching = false
                 textDragSession.baseline = nil
                 guard var current = store.block(with: block.id, in: documentID) else { return }
-                if current.kind == .media {
+                if current.kind == .media || current.kind == .pursuit {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, 0.45), 3.2)
                 } else {
@@ -578,13 +619,13 @@ struct MosaicComposerView: View {
 
     private func openMediaFrameEditor(_ blockID: ComposerBlockID) {
         playingMediaIDs.remove(blockID)
-        mediaMenuBlockID = nil
+        styleMenuBlockID = nil
         selectedBlockID = blockID
         mediaEditRequest = .shape(blockID)
     }
 
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
-        if block.kind == .media {
+        if block.kind == .media || block.kind == .pursuit {
             return selectedBlockID != block.id
         }
         return editingBlockID != block.id
@@ -612,7 +653,76 @@ struct MosaicComposerView: View {
     }
 
     private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
-        isTextLikeKind(kind) || kind == .media
+        isTextLikeKind(kind) || kind == .media || kind == .pursuit
+    }
+
+    private func handleViewingTap(on block: ComposerBlock) {
+        if block.kind == .media {
+            toggleMediaPlayback(block.id)
+        } else if block.kind == .pursuit {
+            openPursuit(block)
+        }
+    }
+
+    private func beginPursuitEdit(_ blockID: ComposerBlockID) {
+        styleMenuBlockID = nil
+        editingBlockID = nil
+        focusedTextBlockID = nil
+        pursuitEditRequest = PursuitEditRequest(blockID: blockID)
+    }
+
+    @ViewBuilder
+    private func pursuitEditor(for request: PursuitEditRequest) -> some View {
+        if let block = store.block(with: request.blockID, in: documentID) {
+            PursuitWidgetEditor(
+                name: block.text,
+                layout: block.pursuitLayout,
+                textX: block.pursuitTextX,
+                textY: block.pursuitTextY,
+                texts: block.pursuitTexts,
+                style: block.style,
+                fill: block.pursuitFill,
+                image: block.pursuitImageFileName.flatMap { UIImage(contentsOfFile: store.mediaURL(for: $0).path) },
+                imageZoom: block.pursuitImageZoom,
+                imagePanX: block.pursuitImagePanX,
+                imagePanY: block.pursuitImagePanY,
+                onCancel: { pursuitEditRequest = nil },
+                onDone: { edits in
+                    applyPursuitEdits(edits, to: request.blockID)
+                    pursuitEditRequest = nil
+                }
+            )
+        }
+    }
+
+    private func applyPursuitEdits(_ edits: PursuitWidgetEdits, to blockID: ComposerBlockID) {
+        guard var block = store.block(with: blockID, in: documentID) else { return }
+        let scale = block.style.scale
+        block.text = edits.name
+        block.style = edits.nameStyle
+        block.style.scale = scale
+        block.pursuitTextX = edits.textX
+        block.pursuitTextY = edits.textY
+        block.pursuitLayout = edits.layout
+        block.pursuitTexts = edits.texts
+        block.pursuitImageZoom = edits.imageZoom
+        block.pursuitImagePanX = edits.imagePanX
+        block.pursuitImagePanY = edits.imagePanY
+        if edits.removeImage {
+            block.pursuitImageFileName = nil
+        }
+        if let imageData = edits.imageData, let fileName = try? store.saveMediaData(imageData) {
+            block.pursuitImageFileName = fileName
+        }
+        store.updateBlock(block, in: documentID)
+    }
+
+    private func openPursuit(_ block: ComposerBlock) {
+        guard let pursuitID = block.pursuitID else { return }
+        editingBlockID = nil
+        focusedTextBlockID = nil
+        styleMenuBlockID = nil
+        openedPursuitID = pursuitID
     }
 
     private func liveOffset(for block: ComposerBlock) -> CGSize {
@@ -700,6 +810,11 @@ private struct PlacementGestureModifier<G: Gesture>: ViewModifier {
 
 private func composerMediaIsVideo(_ url: URL) -> Bool {
     ["mov", "mp4", "m4v", "avi"].contains(url.pathExtension.lowercased())
+}
+
+private struct PursuitEditRequest: Identifiable {
+    let blockID: ComposerBlockID
+    var id: String { blockID.rawValue }
 }
 
 private enum MediaEditRequest: Identifiable {
