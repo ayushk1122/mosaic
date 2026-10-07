@@ -6,7 +6,9 @@ struct ComposerCanvasBlockView: View {
     @Binding var block: ComposerBlock
     let isEditing: Bool
     let isSelected: Bool
+    let isLifted: Bool
     let isRelocating: Bool
+    var livePinchScale: CGFloat
     var focusBlockID: FocusState<ComposerBlockID?>.Binding
     let mediaURL: URL?
     var opensPursuitInParentStack: Bool
@@ -26,7 +28,9 @@ struct ComposerCanvasBlockView: View {
                     block: $block,
                     isEditing: isEditing,
                     isSelected: isSelected,
+                    isLifted: isLifted,
                     isRelocating: isRelocating,
+                    livePinchScale: livePinchScale,
                     focusBlockID: focusBlockID,
                     onCommit: onCommit,
                     onStyleChange: onStyleChange

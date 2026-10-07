@@ -104,6 +104,14 @@ enum TextBlockSize: String, Codable, CaseIterable, Sendable {
         case .title: "Title"
         }
     }
+
+    var pointSize: Double {
+        switch self {
+        case .body: 17
+        case .large: 22
+        case .title: 28
+        }
+    }
 }
 
 enum TextBlockColor: String, Codable, CaseIterable, Sendable {
@@ -136,27 +144,71 @@ enum TextAlignmentOption: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum ComposerFontChoice: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system
+    case rounded
+    case serif
+    case mono
+    case avenir
+    case georgia
+    case futura
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .rounded: "Rounded"
+        case .serif: "Serif"
+        case .mono: "Mono"
+        case .avenir: "Avenir"
+        case .georgia: "Georgia"
+        case .futura: "Futura"
+        }
+    }
+}
+
+struct ComposerRGBColor: Codable, Equatable, Sendable {
+    var red: Double
+    var green: Double
+    var blue: Double
+    var opacity: Double = 1
+}
+
 struct TextBlockStyle: Codable, Equatable, Sendable {
     var size: TextBlockSize
     var color: TextBlockColor
     var alignment: TextAlignmentOption
-    /// Pinch-to-resize multiplier persisted with the block.
+    /// Legacy pinch multiplier. New pinches bake this into `fontSize`.
     var scale: Double
+    var fontSize: Double
+    var fontChoice: ComposerFontChoice
+    /// Installed font family. When set, this overrides `fontChoice`.
+    var fontFamilyName: String?
+    var customColor: ComposerRGBColor?
 
     init(
         size: TextBlockSize,
         color: TextBlockColor,
         alignment: TextAlignmentOption,
-        scale: Double = 1
+        scale: Double = 1,
+        fontSize: Double? = nil,
+        fontChoice: ComposerFontChoice = .system,
+        fontFamilyName: String? = nil,
+        customColor: ComposerRGBColor? = nil
     ) {
         self.size = size
         self.color = color
         self.alignment = alignment
         self.scale = scale
+        self.fontSize = fontSize ?? size.pointSize
+        self.fontChoice = fontChoice
+        self.fontFamilyName = fontFamilyName
+        self.customColor = customColor
     }
 
     enum CodingKeys: String, CodingKey {
-        case size, color, alignment, scale
+        case size, color, alignment, scale, fontSize, fontChoice, fontFamilyName, customColor
     }
 
     init(from decoder: Decoder) throws {
@@ -165,10 +217,14 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
         color = try container.decode(TextBlockColor.self, forKey: .color)
         alignment = try container.decode(TextAlignmentOption.self, forKey: .alignment)
         scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? 1
+        fontSize = try container.decodeIfPresent(Double.self, forKey: .fontSize) ?? size.pointSize
+        fontChoice = try container.decodeIfPresent(ComposerFontChoice.self, forKey: .fontChoice) ?? .system
+        fontFamilyName = try container.decodeIfPresent(String.self, forKey: .fontFamilyName)
+        customColor = try container.decodeIfPresent(ComposerRGBColor.self, forKey: .customColor)
     }
 
-    static let bodyDefault = TextBlockStyle(size: .body, color: .canvas, alignment: .leading)
-    static let headingDefault = TextBlockStyle(size: .title, color: .canvas, alignment: .leading)
+    static let bodyDefault = TextBlockStyle(size: .body, color: .canvas, alignment: .leading, fontSize: 17)
+    static let headingDefault = TextBlockStyle(size: .title, color: .canvas, alignment: .leading, fontSize: 28)
 }
 
 struct BlockPosition: Codable, Equatable, Sendable {

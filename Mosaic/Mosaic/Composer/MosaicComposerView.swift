@@ -12,12 +12,10 @@ struct MosaicComposerView: View {
     @State private var editingBlockID: ComposerBlockID?
     @State private var selectedBlockID: ComposerBlockID?
     @FocusState private var focusedTextBlockID: ComposerBlockID?
-    @State private var relocatingBlockID: ComposerBlockID?
-    @State private var relocateTranslation: CGSize = .zero
-    @State private var relocateBaseline: CGSize = .zero
-    @State private var pressStartedAt: Date?
+    @State private var textDragSession = TextDragSession()
+    @GestureState private var textDragVisual = TextDragVisual.inactive
+    @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
-    @State private var isHoveringTrash = false
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -67,12 +65,13 @@ struct MosaicComposerView: View {
                             blockView(for: block)
                                 .id(block.id)
                                 .offset(liveOffset(for: block))
-                                .scaleEffect(relocatingBlockID == block.id ? 1.02 : 1, anchor: .topLeading)
-                                .opacity(relocatingBlockID == block.id ? 0.92 : 1)
+                                .opacity(textDragVisual.blockID == block.id && textDragVisual.isMoving ? 0.96 : 1)
                                 .modifier(
                                     RelocateGestureModifier(
-                                        isEnabled: isTextLikeKind(block.kind) && editingBlockID != block.id && placingOption == nil,
-                                        gesture: textPressGesture(for: block)
+                                        isEnabled: isTextLikeKind(block.kind) && placingOption == nil,
+                                        claimsTouches: editingBlockID != block.id,
+                                        gesture: textPressGesture(for: block),
+                                        pinch: textPinchGesture(for: block)
                                     )
                                 )
                         }
@@ -107,13 +106,13 @@ struct MosaicComposerView: View {
                         )
                     )
                 }
-                .scrollDisabled(relocatingBlockID != nil)
+                .scrollDisabled(textDragVisual.isMoving)
                 .scrollDismissesKeyboard(.interactively)
 
             ComposerFloatingMenu(
                 isExpanded: $menuExpanded,
-                showsTrashDropZone: relocatingBlockID != nil,
-                isTrashHighlighted: isHoveringTrash
+                showsTrashDropZone: textDragVisual.isMoving,
+                isTrashHighlighted: textDragVisual.hoveringTrash
             ) { option in
                 beginPlacement(for: option)
             }
@@ -161,7 +160,9 @@ struct MosaicComposerView: View {
                 block: blockBinding(for: block.id, fallback: block),
                 isEditing: editingBlockID == block.id,
                 isSelected: selectedBlockID == block.id,
-                isRelocating: relocatingBlockID == block.id,
+                isLifted: textDragVisual.blockID == block.id && textDragVisual.lifted,
+                isRelocating: textDragVisual.blockID == block.id && textDragVisual.isMoving,
+                livePinchScale: textPinchVisual.blockID == block.id ? textPinchVisual.scale : 1,
                 focusBlockID: $focusedTextBlockID,
                 mediaURL: block.mediaFileName.map { store.mediaURL(for: $0) },
                 opensPursuitInParentStack: documentID == nil,
@@ -256,7 +257,7 @@ struct MosaicComposerView: View {
     }
 
     private func beginTextEditing(_ blockID: ComposerBlockID) {
-        guard relocatingBlockID == nil else { return }
+        guard textDragVisual.blockID == nil else { return }
         selectedBlockID = blockID
         editingBlockID = blockID
         Task { @MainActor in
@@ -277,86 +278,100 @@ struct MosaicComposerView: View {
         editingBlockID = nil
         selectedBlockID = nil
         focusedTextBlockID = nil
-        endRelocation(commitMove: false)
+        textDragSession.reset()
     }
 
     private func textPressGesture(for block: ComposerBlock) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named("composerRoot"))
-            .onChanged { value in
-                guard isTextLikeKind(block.kind), editingBlockID != block.id else { return }
-                if pressStartedAt == nil {
-                    pressStartedAt = Date()
+            .updating($textDragVisual) { value, visual, _ in
+                let session = textDragSession
+                if session.isPinching {
+                    visual = .inactive
+                    return
                 }
-                let elapsed = Date().timeIntervalSince(pressStartedAt ?? Date())
+                if session.blockID != block.id {
+                    session.blockID = block.id
+                    session.started = Date()
+                    session.baseline = nil
+                    session.didHaptic = false
+                }
+
+                let elapsed = Date().timeIntervalSince(session.started)
                 let distance = hypot(value.translation.width, value.translation.height)
-                guard elapsed >= 0.36, distance > 8 else { return }
+                var next = TextDragVisual(blockID: block.id, lifted: false, isMoving: false, translation: .zero, hoveringTrash: false)
 
-                if relocatingBlockID == nil {
-                    beginRelocation(for: block, baseline: value.translation)
+                if elapsed >= 0.28 {
+                    next.lifted = true
+                    if !session.didHaptic {
+                        session.didHaptic = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
                 }
-                guard relocatingBlockID == block.id else { return }
 
-                let translation = CGSize(
-                    width: value.translation.width - relocateBaseline.width,
-                    height: value.translation.height - relocateBaseline.height
-                )
-                if translation != relocateTranslation {
-                    relocateTranslation = translation
+                if elapsed >= 0.32, distance > 6 {
+                    if session.baseline == nil {
+                        session.baseline = value.translation
+                    }
+                    let baseline = session.baseline ?? .zero
+                    next.isMoving = true
+                    next.translation = CGSize(
+                        width: value.translation.width - baseline.width,
+                        height: value.translation.height - baseline.height
+                    )
+                    next.hoveringTrash = trashDropZoneFrame.insetBy(dx: -28, dy: -28).contains(value.location)
+                    session.lastTranslation = next.translation
+                    session.hoveringTrash = next.hoveringTrash
                 }
-                let hovering = trashDropZoneFrame.insetBy(dx: -28, dy: -28).contains(value.location)
-                if hovering != isHoveringTrash {
-                    isHoveringTrash = hovering
-                }
+
+                visual = next
             }
             .onEnded { value in
-                let elapsed = Date().timeIntervalSince(pressStartedAt ?? Date())
+                let elapsed = Date().timeIntervalSince(textDragSession.started)
                 let distance = hypot(value.translation.width, value.translation.height)
-                pressStartedAt = nil
+                let didMove = textDragSession.baseline != nil && !textDragSession.isPinching
+                let translation = textDragSession.lastTranslation
+                let shouldDelete = textDragSession.hoveringTrash
+                textDragSession.reset()
 
-                if relocatingBlockID == block.id {
-                    let shouldDelete = trashDropZoneFrame.insetBy(dx: -28, dy: -28).contains(value.location)
+                if didMove {
+                    editingBlockID = nil
+                    focusedTextBlockID = nil
                     if shouldDelete {
                         deleteBlock(block.id)
-                        endRelocation(commitMove: false)
+                        selectedBlockID = nil
                     } else {
-                        commitRelocation(for: block)
-                        endRelocation(commitMove: true)
+                        let origin = canvasPoint(for: block.position)
+                        moveBlock(
+                            block.id,
+                            to: CGPoint(
+                                x: origin.x + translation.width,
+                                y: origin.y + translation.height
+                            )
+                        )
+                        selectedBlockID = block.id
                     }
-                } else if distance < 12, elapsed < 0.36 {
+                } else if distance < 12, elapsed < 0.32, editingBlockID != block.id {
                     beginTextEditing(block.id)
                 }
             }
     }
 
-    private func beginRelocation(for block: ComposerBlock, baseline: CGSize) {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        menuExpanded = false
-        relocatingBlockID = block.id
-        selectedBlockID = block.id
-        editingBlockID = nil
-        focusedTextBlockID = nil
-        relocateBaseline = baseline
-        relocateTranslation = .zero
-        isHoveringTrash = false
-    }
-
-    private func commitRelocation(for block: ComposerBlock) {
-        let origin = canvasPoint(for: block.position)
-        let destination = CGPoint(
-            x: origin.x + relocateTranslation.width,
-            y: origin.y + relocateTranslation.height
-        )
-        moveBlock(block.id, to: destination)
-    }
-
-    private func endRelocation(commitMove: Bool) {
-        relocatingBlockID = nil
-        relocateTranslation = .zero
-        relocateBaseline = .zero
-        isHoveringTrash = false
-        if !commitMove {
-            selectedBlockID = nil
-        }
+    private func textPinchGesture(for block: ComposerBlock) -> some Gesture {
+        MagnificationGesture()
+            .updating($textPinchVisual) { value, visual, _ in
+                textDragSession.isPinching = true
+                textDragSession.baseline = nil
+                visual = TextPinchVisual(blockID: block.id, scale: value)
+            }
+            .onEnded { value in
+                textDragSession.isPinching = false
+                textDragSession.baseline = nil
+                guard var current = store.block(with: block.id, in: documentID) else { return }
+                let next = current.style.fontSize * current.style.scale * Double(value)
+                current.style.fontSize = min(max(next, 12), 80)
+                current.style.scale = 1
+                store.updateBlock(current, in: documentID)
+            }
     }
 
     private func deleteBlock(_ blockID: ComposerBlockID) {
@@ -382,10 +397,10 @@ struct MosaicComposerView: View {
 
     private func liveOffset(for block: ComposerBlock) -> CGSize {
         let base = anchorOffset(for: block.position)
-        guard relocatingBlockID == block.id else { return base }
+        guard textDragVisual.blockID == block.id, textDragVisual.isMoving else { return base }
         return CGSize(
-            width: base.width + relocateTranslation.width,
-            height: base.height + relocateTranslation.height
+            width: base.width + textDragVisual.translation.width,
+            height: base.height + textDragVisual.translation.height
         )
     }
 
@@ -444,15 +459,66 @@ private struct PlacementGestureModifier<G: Gesture>: ViewModifier {
     }
 }
 
-private struct RelocateGestureModifier<G: Gesture>: ViewModifier {
+private struct TextDragVisual: Equatable {
+    var blockID: ComposerBlockID?
+    var lifted: Bool
+    var isMoving: Bool
+    var translation: CGSize
+    var hoveringTrash: Bool
+
+    static let inactive = TextDragVisual(
+        blockID: nil,
+        lifted: false,
+        isMoving: false,
+        translation: .zero,
+        hoveringTrash: false
+    )
+}
+
+private final class TextDragSession {
+    var blockID: ComposerBlockID?
+    var started = Date()
+    var baseline: CGSize?
+    var lastTranslation: CGSize = .zero
+    var hoveringTrash = false
+    var didHaptic = false
+    var isPinching = false
+
+    func reset() {
+        blockID = nil
+        started = Date()
+        baseline = nil
+        lastTranslation = .zero
+        hoveringTrash = false
+        didHaptic = false
+        isPinching = false
+    }
+}
+
+private struct TextPinchVisual: Equatable {
+    var blockID: ComposerBlockID?
+    var scale: CGFloat
+
+    static let inactive = TextPinchVisual(blockID: nil, scale: 1)
+}
+
+private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModifier {
     let isEnabled: Bool
-    let gesture: G
+    let claimsTouches: Bool
+    let gesture: Drag
+    let pinch: Pinch
 
     func body(content: Content) -> some View {
-        if isEnabled {
-            content.highPriorityGesture(gesture)
+        if !isEnabled {
+            content
+        } else if claimsTouches {
+            content
+                .highPriorityGesture(gesture)
+                .simultaneousGesture(pinch)
         } else {
             content
+                .simultaneousGesture(gesture)
+                .simultaneousGesture(pinch)
         }
     }
 }
