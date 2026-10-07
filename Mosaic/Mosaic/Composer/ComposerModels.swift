@@ -631,10 +631,45 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     var mosaicTitle: String
     var mosaicBlocks: [ComposerBlock]
     var pursuits: [ComposerPursuit]
+    /// True after the board title has been placed as canvas text. Deleting that text does not restore a fixed title.
+    var mosaicTitlePlaced: Bool
 
     static let empty = ComposerSnapshot(
         mosaicTitle: "My Mosaic",
         mosaicBlocks: [],
-        pursuits: []
+        pursuits: [],
+        mosaicTitlePlaced: false
     )
+
+    init(
+        mosaicTitle: String,
+        mosaicBlocks: [ComposerBlock],
+        pursuits: [ComposerPursuit],
+        mosaicTitlePlaced: Bool = false
+    ) {
+        self.mosaicTitle = mosaicTitle
+        self.mosaicBlocks = mosaicBlocks
+        self.pursuits = pursuits
+        self.mosaicTitlePlaced = mosaicTitlePlaced
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mosaicTitle = try container.decode(String.self, forKey: .mosaicTitle)
+        mosaicBlocks = try container.decode([ComposerBlock].self, forKey: .mosaicBlocks)
+        pursuits = try container.decode([ComposerPursuit].self, forKey: .pursuits)
+        mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mosaicTitle, forKey: .mosaicTitle)
+        try container.encode(mosaicBlocks, forKey: .mosaicBlocks)
+        try container.encode(pursuits, forKey: .pursuits)
+        try container.encode(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
+    }
 }

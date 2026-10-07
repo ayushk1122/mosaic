@@ -55,7 +55,9 @@ struct MosaicTabShell: View {
     @State private var store: ComposerStore
 
     init(persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")) {
-        _store = State(initialValue: ComposerStore(persistToDisk: persistToDisk))
+        let store = ComposerStore(persistToDisk: persistToDisk)
+        store.placeMosaicTitleIfNeeded()
+        _store = State(initialValue: store)
     }
 
     var body: some View {

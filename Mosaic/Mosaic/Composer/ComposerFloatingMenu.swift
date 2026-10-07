@@ -19,7 +19,7 @@ struct ComposerPencilFrameKey: PreferenceKey {
     }
 }
 
-struct ComposerChromeIconFrameKey: PreferenceKey {
+struct ComposerTextStyleIconFrameKey: PreferenceKey {
     static var defaultValue: [ComposerBlockID: CGRect] = [:]
 
     static func reduce(value: inout [ComposerBlockID: CGRect], nextValue: () -> [ComposerBlockID: CGRect]) {

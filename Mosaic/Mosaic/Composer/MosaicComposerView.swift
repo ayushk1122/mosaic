@@ -28,8 +28,8 @@ struct MosaicComposerView: View {
     @State private var styleMenuBlockID: ComposerBlockID?
     @State private var viewportWidth: CGFloat = 0
     @State private var openedPursuitID: ComposerDocumentID?
-    @State private var chromeIconFrames: [ComposerBlockID: CGRect] = [:]
     @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
+    @State private var textStyleIconFrames: [ComposerBlockID: CGRect] = [:]
     @State private var pursuitEditRequest: PursuitEditRequest?
 
     private var blocks: [ComposerBlock] {
@@ -146,11 +146,11 @@ struct MosaicComposerView: View {
             viewportWidth = width
         }
         .environment(\.composerViewportWidth, viewportWidth)
-        .onPreferenceChange(ComposerChromeIconFrameKey.self) { frames in
-            chromeIconFrames = frames
-        }
         .onPreferenceChange(ComposerPencilFrameKey.self) { frames in
             pencilFrames = frames
+        }
+        .onPreferenceChange(ComposerTextStyleIconFrameKey.self) { frames in
+            textStyleIconFrames = frames
         }
         .onPreferenceChange(ComposerTrashDropZoneFrameKey.self) { frame in
             let rounded = CGRect(
@@ -163,6 +163,9 @@ struct MosaicComposerView: View {
             trashDropZoneFrame = rounded
         }
         .background(MosaicBrand.inkBlack)
+        .onAppear {
+            _ = ComposerInstalledFont.familyNames
+        }
         .onChange(of: chrome.isViewing) { _, viewing in
             guard viewing else { return }
             menuExpanded = false
@@ -170,8 +173,9 @@ struct MosaicComposerView: View {
             dismissBlockInteraction()
         }
         .toolbar(mosaicTabBarHidden ? .hidden : .visible, for: .tabBar)
-        .navigationTitle(pageTitle)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationTitle(documentID == nil ? "" : pageTitle)
+        .navigationBarTitleDisplayMode(documentID == nil ? .inline : .large)
+        .toolbar(documentID == nil ? .hidden : .automatic, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
@@ -261,20 +265,18 @@ struct MosaicComposerView: View {
                         store.updateBlock(updated, in: documentID)
                     }
                 },
-                onPursuitImage: { data in
-                    if let fileName = try? store.saveMediaData(data) {
-                        guard var updated = store.blocks(for: documentID).first(where: { $0.id == block.id }) else {
-                            return
-                        }
-                        updated.pursuitImageFileName = fileName
-                        store.updateBlock(updated, in: documentID)
-                    }
-                },
                 onStyleChange: {
                     guard let current = store.blocks(for: documentID).first(where: { $0.id == block.id }) else {
                         return
                     }
                     store.updateBlock(current, in: documentID)
+                },
+                onStyleMenuChange: { isOpen in
+                    if isOpen {
+                        styleMenuBlockID = block.id
+                    } else if styleMenuBlockID == block.id {
+                        styleMenuBlockID = nil
+                    }
                 },
                 showsMediaMenu: styleMenuBlockID == block.id,
                 onOpenMediaMenu: {
@@ -418,6 +420,10 @@ struct MosaicComposerView: View {
                     return
                 }
                 if session.blockID != block.id {
+                    if touchHitsTextStyleIcon(block.id, at: value.startLocation) {
+                        visual = .inactive
+                        return
+                    }
                     session.blockID = block.id
                     session.started = Date()
                     session.baseline = nil
@@ -456,15 +462,16 @@ struct MosaicComposerView: View {
                 visual = next
             }
             .onEnded { value in
+                if touchHitsTextStyleIcon(block.id, at: value.startLocation) {
+                    textDragSession.reset()
+                    return
+                }
                 let elapsed = Date().timeIntervalSince(textDragSession.started)
                 let distance = hypot(value.translation.width, value.translation.height)
                 let didMove = textDragSession.baseline != nil && !textDragSession.isPinching
                 let translation = textDragSession.lastTranslation
                 let shouldDelete = textDragSession.hoveringTrash
                 let iconAlreadyHandled = textDragSession.didHandleMediaIconTap
-                let tappedChromeIcon = chromeIconFrames[block.id].map { frame in
-                    frame.width > 1 && frame.insetBy(dx: -16, dy: -16).contains(value.location)
-                } ?? false
                 let tappedPencil = pencilFrames[block.id].map { frame in
                     frame.width > 1 && frame.insetBy(dx: -12, dy: -12).contains(value.location)
                 } ?? false
@@ -491,7 +498,7 @@ struct MosaicComposerView: View {
                     }
                 } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, tappedPencil {
                     beginPursuitEdit(block.id)
-                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, !iconAlreadyHandled, !tappedChromeIcon {
+                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, !iconAlreadyHandled {
                     if selectedBlockID != block.id {
                         selectedBlockID = block.id
                         styleMenuBlockID = nil
@@ -625,10 +632,12 @@ struct MosaicComposerView: View {
     }
 
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
-        if block.kind == .media || block.kind == .pursuit {
-            return selectedBlockID != block.id
-        }
-        return editingBlockID != block.id
+        selectedBlockID != block.id
+    }
+
+    private func touchHitsTextStyleIcon(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        guard let frame = textStyleIconFrames[blockID], frame.width > 1 else { return false }
+        return frame.insetBy(dx: -12, dy: -12).contains(point)
     }
 
     private func beginVideoTrim(_ blockID: ComposerBlockID) {

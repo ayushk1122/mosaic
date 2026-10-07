@@ -4,21 +4,35 @@ struct ComposerChromePlacement: Equatable {
     var x: CGFloat
     var cropBelow: Bool
 
-    static let leading = ComposerChromePlacement(x: -40, cropBelow: false)
+    static let iconDiameter: CGFloat = 32
+    static let gap: CGFloat = 4
+    private static let screenMargin: CGFloat = 8
 
-    static func resolve(itemFrame: CGRect, viewportWidth: CGFloat) -> ComposerChromePlacement {
+    static var leading: ComposerChromePlacement {
+        ComposerChromePlacement(x: -(iconDiameter + gap), cropBelow: false)
+    }
+
+    /// Puts the menu icon against the item. `contentWidth` is the visible width when the layout frame is wider than the glyphs.
+    static func resolve(
+        itemFrame: CGRect,
+        viewportWidth: CGFloat,
+        contentWidth: CGFloat? = nil
+    ) -> ComposerChromePlacement {
         guard viewportWidth > 1, itemFrame.width > 1 else { return .leading }
-        let reach: CGFloat = 46
-        let leadingRoom = itemFrame.minX
-        let trailingRoom = viewportWidth - itemFrame.maxX
-        let useTrailing = leadingRoom < reach && trailingRoom >= leadingRoom
+        let visibleWidth = min(max(contentWidth ?? itemFrame.width, 1), itemFrame.width)
+        let leadingX = -(iconDiameter + gap)
+        let trailingX = visibleWidth + gap
+        let leadingFits = itemFrame.minX + leadingX >= screenMargin
+        let trailingFits = itemFrame.minX + trailingX + iconDiameter <= viewportWidth - screenMargin
         let x: CGFloat
-        if useTrailing {
-            x = trailingRoom < reach ? max(4, itemFrame.width - 36) : itemFrame.width + 8
-        } else if leadingRoom < reach {
-            x = 4
+        if leadingFits {
+            x = leadingX
+        } else if trailingFits {
+            x = trailingX
+        } else if itemFrame.minX <= viewportWidth - itemFrame.maxX {
+            x = min(max(screenMargin - itemFrame.minX, 0), max(visibleWidth - iconDiameter, 0))
         } else {
-            x = -40
+            x = max(visibleWidth - iconDiameter - gap, 0)
         }
         return ComposerChromePlacement(x: x, cropBelow: itemFrame.minY < 56)
     }
@@ -51,8 +65,8 @@ struct ComposerCanvasBlockView: View {
     var onBeginEditing: () -> Void
     var onDelete: () -> Void
     var onMediaData: (Data) -> Void
-    var onPursuitImage: (Data) -> Void
     var onStyleChange: () -> Void
+    var onStyleMenuChange: (Bool) -> Void = { _ in }
     var showsMediaMenu: Bool
     var onOpenMediaMenu: () -> Void
     var onCropMedia: () -> Void
@@ -60,14 +74,6 @@ struct ComposerCanvasBlockView: View {
     var onEditPursuit: () -> Void
 
     @State private var pursuitBackground: UIImage?
-    @Environment(\.composerViewportWidth) private var viewportWidth
-
-    private var pursuitIconPlacement: ComposerChromePlacement {
-        ComposerChromePlacement.resolve(itemFrame: pursuitItemFrame, viewportWidth: viewportWidth)
-    }
-
-    @State private var pursuitItemFrame: CGRect = .zero
-    @State private var pursuitIconFrame: CGRect = .zero
     @State private var pursuitPencilFrame: CGRect = .zero
 
     var body: some View {
@@ -83,7 +89,8 @@ struct ComposerCanvasBlockView: View {
                     livePinchScale: livePinchScale,
                     focusBlockID: focusBlockID,
                     onCommit: onCommit,
-                    onStyleChange: onStyleChange
+                    onStyleChange: onStyleChange,
+                    onStyleMenuChange: onStyleMenuChange
                 )
             case .media:
                 ComposerMediaCanvasBlock(
@@ -145,21 +152,11 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
-            .overlay(alignment: .topLeading) {
-                if isSelected, !isEditing, !isLifted, !isRelocating {
-                    pursuitIconStack
-                }
-            }
             .overlay(alignment: .bottomTrailing) {
                 if showsPursuitPencil, !isEditing, !isLifted, !isRelocating {
                     pursuitPencil
                         .padding(8)
                 }
-            }
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
-            } action: { frame in
-                pursuitItemFrame = frame
             }
             .onChange(of: isEditing) { _, editing in
                 guard editing else { return }
@@ -180,56 +177,6 @@ struct ComposerCanvasBlockView: View {
                 }
                 pursuitBackground = UIImage(contentsOfFile: pursuitImageURL.path)
             }
-    }
-
-    private var pursuitPanelBelow: Bool {
-        let top = pursuitIconFrame.height > 1 ? pursuitIconFrame.minY : pursuitItemFrame.minY
-        return top < 36
-    }
-
-    private var pursuitStylePanel: some View {
-        PursuitStylePanel(
-            block: $block,
-            onChange: onStyleChange,
-            onPickImage: onPursuitImage
-        )
-        .fixedSize()
-    }
-
-    private var pursuitIconStack: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showsMediaMenu, !pursuitPanelBelow {
-                pursuitStylePanel
-            }
-            pursuitStyleIcon
-            if showsMediaMenu, pursuitPanelBelow {
-                pursuitStylePanel
-            }
-        }
-        .offset(x: pursuitIconPlacement.x, y: -2)
-    }
-
-    private var pursuitStyleIcon: some View {
-        Image(systemName: "square.grid.2x2")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.92))
-            .frame(width: 32, height: 32)
-            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
-            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
-            .contentShape(Circle())
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
-            } action: { frame in
-                pursuitIconFrame = frame
-            }
-            .preference(
-                key: ComposerChromeIconFrameKey.self,
-                value: [block.id: pursuitIconFrame]
-            )
-            .highPriorityGesture(TapGesture().onEnded { onOpenMediaMenu() })
-            .accessibilityLabel("Pursuit style")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityIdentifier("composer.pursuit.style.\(block.id.rawValue)")
     }
 
     private var pursuitWidget: some View {
@@ -255,14 +202,7 @@ struct ComposerCanvasBlockView: View {
         .frame(width: size.width, height: size.height)
         .shadow(color: .white.opacity(moving ? 0.95 : 0), radius: moving ? 2 : 0)
         .shadow(color: .white.opacity(moving ? 0.55 : 0), radius: moving ? 10 : 0)
-        .contentShape(
-            PursuitStyleHitShape(
-                showsIcon: isSelected && !isEditing && !isLifted && !isRelocating,
-                iconX: pursuitIconPlacement.x,
-                showsPanel: showsMediaMenu,
-                panelBelow: pursuitPanelBelow
-            )
-        )
+        .contentShape(Rectangle())
         .accessibilityLabel(block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Pursuit" : block.text)
         .accessibilityIdentifier(block.pursuitID.map { "composer.pursuit.open.\($0.rawValue)" } ?? "composer.pursuit.open")
     }
@@ -285,32 +225,6 @@ struct ComposerCanvasBlockView: View {
             .accessibilityLabel("Edit Pursuit")
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("composer.pursuit.edit.\(block.id.rawValue)")
-    }
-}
-
-private struct PursuitStyleHitShape: Shape {
-    var showsIcon: Bool
-    var iconX: CGFloat
-    var showsPanel: Bool
-    var panelBelow: Bool
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path(rect)
-        if showsIcon {
-            path.addEllipse(in: CGRect(x: rect.minX + iconX - 6, y: rect.minY - 10, width: 44, height: 44))
-        }
-        if showsPanel {
-            let height: CGFloat = 280
-            path.addRect(
-                CGRect(
-                    x: rect.minX + iconX - 8,
-                    y: panelBelow ? rect.minY + 28 : rect.minY - height,
-                    width: 260,
-                    height: height
-                )
-            )
-        }
-        return path
     }
 }
 

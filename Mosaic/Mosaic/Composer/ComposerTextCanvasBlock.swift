@@ -12,14 +12,22 @@ struct ComposerTextCanvasBlock: View {
     let onCommit: () -> Void
     let onStyleChange: () -> Void
     var showsFormatButton: Bool = true
+    var onStyleMenuChange: (Bool) -> Void = { _ in }
 
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
+    @State private var styleIconFrame: CGRect = .zero
+    @State private var contentWidth: CGFloat = 0
 
     @Environment(\.composerViewportWidth) private var viewportWidth
 
     private var iconPlacement: ComposerChromePlacement {
-        ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
+        let visible = contentWidth > 1 ? contentWidth : nil
+        return ComposerChromePlacement.resolve(
+            itemFrame: itemFrame,
+            viewportWidth: viewportWidth,
+            contentWidth: visible
+        )
     }
 
     private var isHeading: Bool { block.kind == .heading }
@@ -36,9 +44,23 @@ struct ComposerTextCanvasBlock: View {
 
     var body: some View {
         textContent
+            .background(alignment: .topLeading) {
+                Text(measuredLine)
+                    .font(activeFont)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .hidden()
+                    .allowsHitTesting(false)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        guard abs(width - contentWidth) > 0.5 else { return }
+                        contentWidth = width
+                    }
+            }
             .overlay(alignment: .topLeading) {
                 if showsFormatButton, isSelected, !isRelocating, !isLifted {
-                    formatIconButton
+                    formatIconStack
                         .offset(x: iconPlacement.x, y: -2)
                         .animation(.easeOut(duration: 0.16), value: iconPlacement.x)
                 }
@@ -55,6 +77,9 @@ struct ComposerTextCanvasBlock: View {
                 showsStyleDialog = false
             }
         }
+        .onChange(of: showsStyleDialog) { _, isOpen in
+            onStyleMenuChange(isOpen)
+        }
         .onChange(of: isEditing) { _, editing in
             guard editing else { return }
             showsStyleDialog = false
@@ -70,24 +95,51 @@ struct ComposerTextCanvasBlock: View {
         }
     }
 
-    private var formatIconButton: some View {
-        Button {
-            showsStyleDialog = true
-        } label: {
-            Image(systemName: "textformat")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.92))
-                .frame(width: 32, height: 32)
-                .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+    private var formatIconStack: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            formatIcon
+            if showsStyleDialog {
+                stylePanel
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Text style")
-        .accessibilityIdentifier("composer.text.style.\(block.id.rawValue)")
-        .popover(isPresented: $showsStyleDialog, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
-            ComposerTextStylePanel(style: $block.style, onChange: onStyleChange)
-                .presentationCompactAdaptation(.popover)
+    }
+
+    private var measuredLine: String {
+        let raw = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty {
+            return isHeading ? "Heading" : "Text"
         }
+        return raw
+    }
+
+    private var stylePanel: some View {
+        ComposerTextStylePanel(style: $block.style, onChange: onStyleChange)
+            .fixedSize()
+    }
+
+    private var formatIcon: some View {
+        Image(systemName: "textformat")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(width: 32, height: 32)
+            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .contentShape(Circle())
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named("composerRoot"))
+            } action: { frame in
+                styleIconFrame = frame
+            }
+            .preference(
+                key: ComposerTextStyleIconFrameKey.self,
+                value: [block.id: styleIconFrame]
+            )
+            .highPriorityGesture(TapGesture().onEnded {
+                showsStyleDialog.toggle()
+            })
+            .accessibilityLabel("Text style")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("composer.text.style.\(block.id.rawValue)")
     }
 
     @ViewBuilder

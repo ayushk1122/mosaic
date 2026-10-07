@@ -72,6 +72,31 @@ struct ComposerStoreTests {
     }
 
     @Test
+    func mosaicTitleBecomesAHeadingOnce() {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.placeMosaicTitleIfNeeded()
+        let blocks = store.blocks(for: nil)
+        #expect(blocks.count == 1)
+        #expect(blocks[0].kind == .heading)
+        #expect(blocks[0].text == "Mosaic")
+
+        store.placeMosaicTitleIfNeeded()
+        #expect(store.blocks(for: nil).count == 1)
+
+        store.deleteBlock(blocks[0].id, in: nil)
+        store.placeMosaicTitleIfNeeded()
+        #expect(store.blocks(for: nil).isEmpty)
+    }
+
+    @Test
+    func olderSnapshotWithoutTitleFlagStillDecodes() throws {
+        let json = #"{"mosaicTitle":"My Mosaic","mosaicBlocks":[],"pursuits":[]}"#
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: Data(json.utf8))
+        #expect(decoded.mosaicTitlePlaced == false)
+        #expect(decoded.mosaicTitle == "My Mosaic")
+    }
+
+    @Test
     func snapshotEncodesAndDecodes() throws {
         let snapshot = ComposerSnapshot(
             mosaicTitle: "My Mosaic",

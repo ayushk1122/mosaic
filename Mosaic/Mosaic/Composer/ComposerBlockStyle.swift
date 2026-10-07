@@ -40,9 +40,7 @@ extension TextBlockStyle {
 }
 
 enum ComposerInstalledFont {
-    static var familyNames: [String] {
-        UIFont.familyNames.sorted()
-    }
+    static let familyNames: [String] = UIFont.familyNames.sorted()
 
     static func font(family: String, size: CGFloat) -> Font {
         let names = UIFont.fontNames(forFamilyName: family)

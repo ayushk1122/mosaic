@@ -40,6 +40,18 @@ final class ComposerStore {
         blocks(for: documentID).first(where: { $0.id == id })
     }
 
+    /// Turns the fixed Mosaic title into a heading on the board, once.
+    func placeMosaicTitleIfNeeded() {
+        guard !snapshot.mosaicTitlePlaced else { return }
+        var block = ComposerBlock.make(kind: .heading, position: BlockPosition(x: 0.06, y: 0.03))
+        block.text = "Mosaic"
+        block.style.fontSize = 34
+        snapshot.mosaicBlocks.insert(block, at: 0)
+        snapshot.mosaicTitle = "Mosaic"
+        snapshot.mosaicTitlePlaced = true
+        persist()
+    }
+
     func title(for documentID: ComposerDocumentID?) -> String {
         if let documentID {
             let title = snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? ""
