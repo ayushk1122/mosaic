@@ -23,15 +23,29 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
-    func testHomeOpensGolfOverview() throws {
+    func testLaunchShowsFourTabShellWithMosaicSelected() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
         app.launch()
 
-        XCTAssertTrue(app.descendants(matching: .any)["home.screen"].waitForExistence(timeout: 5))
-        let golf = app.buttons["pursuit.golf.open"]
-        XCTAssertTrue(golf.exists)
-        golf.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["golf.overview"].waitForExistence(timeout: 5))
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Mosaic"].waitForExistence(timeout: 2))
+
+        for title in ["Feed", "Mosaic", "Circle", "Search"] {
+            XCTAssertTrue(tabBar.buttons[title].exists)
+        }
+
+        tabBar.buttons["Feed"].tap()
+        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.descendants(matching: .any)["feed.screen"].exists)
+
+        tabBar.buttons["Circle"].tap()
+        XCTAssertTrue(app.navigationBars["Circle"].waitForExistence(timeout: 2))
+
+        tabBar.buttons["Search"].tap()
+        XCTAssertTrue(app.navigationBars["Search"].waitForExistence(timeout: 2))
     }
 
     @MainActor
