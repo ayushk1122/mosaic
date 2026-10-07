@@ -52,6 +52,16 @@ final class ComposerStore {
         persist()
     }
 
+    /// Clears anything already saved inside Pursuit pages, once, so each page opens empty.
+    func blankPursuitPagesIfNeeded() {
+        guard !snapshot.pursuitPagesBlanked else { return }
+        for index in snapshot.pursuits.indices {
+            snapshot.pursuits[index].blocks.removeAll()
+        }
+        snapshot.pursuitPagesBlanked = true
+        persist()
+    }
+
     func title(for documentID: ComposerDocumentID?) -> String {
         if let documentID {
             let title = snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? ""

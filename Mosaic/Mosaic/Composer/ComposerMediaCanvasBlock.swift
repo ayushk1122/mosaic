@@ -1,5 +1,7 @@
 import AVFoundation
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerMediaCanvasBlock: View {
     @Binding var block: ComposerBlock
@@ -326,6 +328,22 @@ final class ComposerPlayerView: UIView {
             playerLayer.player = newValue
             playerLayer.videoGravity = .resizeAspect
         }
+    }
+}
+
+enum ComposerMediaImport {
+    @MainActor
+    static func save(_ item: PhotosPickerItem, to store: ComposerStore) async -> String? {
+        let isVideo = item.supportedContentTypes.contains { type in
+            type.conforms(to: .movie) || type.conforms(to: .video)
+        }
+        if isVideo, let movie = try? await item.loadTransferable(type: ComposerMovieFile.self) {
+            return try? store.saveMediaFile(from: movie.url)
+        }
+        if let data = try? await item.loadTransferable(type: Data.self) {
+            return try? store.saveMediaData(data)
+        }
+        return nil
     }
 }
 

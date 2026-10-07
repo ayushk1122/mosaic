@@ -21,6 +21,7 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
     case text
     case heading
     case media
+    case carousel
     case link
     case pursuit
 }
@@ -29,6 +30,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case text
     case heading
     case media
+    case carousel
     case link
     case pursuit
 
@@ -39,6 +41,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "Text"
         case .heading: "Heading"
         case .media: "Media"
+        case .carousel: "Carousel"
         case .link: "Link"
         case .pursuit: "Pursuit"
         }
@@ -49,6 +52,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "textformat"
         case .heading: "textformat.size.larger"
         case .media: "photo"
+        case .carousel: "rectangle.stack"
         case .link: "link"
         case .pursuit: "square.grid.2x2"
         }
@@ -59,6 +63,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "T"
         case .heading: "H"
         case .media: "▣"
+        case .carousel: "◎"
         case .link: "🔗"
         case .pursuit: "P"
         }
@@ -69,6 +74,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: .text
         case .heading: .heading
         case .media: .media
+        case .carousel: .carousel
         case .link: .link
         case .pursuit: .pursuit
         }
@@ -80,14 +86,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "text paragraph write"
         case .heading: "heading title headline"
         case .media: "media photo image picture"
+        case .carousel: "carousel carosoul slider"
         case .link: "link url web"
         case .pursuit: "pursuit project goal"
         }
     }
 
-    static func menuOptions(matching query: String) -> [BlockMenuOption] {
+    static func menuOptions(matching query: String, includingPursuit: Bool = true) -> [BlockMenuOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let ordered = Array(allCases.reversed())
+        var ordered = Array(allCases.reversed())
+        if !includingPursuit {
+            ordered.removeAll { $0 == .pursuit }
+        }
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { $0.searchTokens.contains(trimmed) }
     }
@@ -442,6 +452,63 @@ struct MediaEdgeGrid: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+struct CarouselMediaItem: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var fileName: String
+
+    init(id: String = UUID().uuidString, fileName: String) {
+        self.id = id
+        self.fileName = fileName
+    }
+}
+
+/// How a carousel turns. One swipe moves a single step, and the strip wraps.
+enum CarouselMotion {
+    static let minimumCount = 3
+
+    static func wrapped(_ index: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        let remainder = index % count
+        return remainder >= 0 ? remainder : remainder + count
+    }
+
+    /// Shortest signed steps from the centered item to `item`.
+    static func shortestOffset(item: Int, center: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        var delta = item - center
+        delta %= count
+        if delta > count / 2 {
+            delta -= count
+        } else if delta <= -(count / 2) {
+            delta += count
+        }
+        return delta
+    }
+
+    /// Finger moving right (`drag` > 0) reveals the previous item.
+    static func shift(drag: CGFloat, predicted: CGFloat, step: CGFloat) -> Int {
+        guard step > 1 else { return 0 }
+        let fraction = drag / step
+        let predictedFraction = predicted / step
+        let useFlick = abs(predictedFraction) > abs(fraction) && abs(predictedFraction) > 0.45
+        let amount = useFlick ? predictedFraction : fraction
+        if amount > 0.22 { return -1 }
+        if amount < -0.22 { return 1 }
+        return 0
+    }
+
+    static func indexAfterRemoval(index: Int, removedAt: Int, countAfter: Int) -> Int {
+        guard countAfter > 0 else { return 0 }
+        var next = index
+        if removedAt < index {
+            next -= 1
+        } else if removedAt == index {
+            next = min(index, countAfter - 1)
+        }
+        return wrapped(next, count: countAfter)
+    }
+}
+
 struct BlockPosition: Codable, Equatable, Sendable {
     var x: Double
     var y: Double
@@ -475,9 +542,11 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var pursuitImagePanY: Double
     var pursuitFill: ComposerRGBColor?
     var pursuitImageFileName: String?
+    var carouselItems: [CarouselMediaItem]
+    var carouselIndex: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex
     }
 
     init(
@@ -503,7 +572,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitImagePanX: Double = 0,
         pursuitImagePanY: Double = 0,
         pursuitFill: ComposerRGBColor? = nil,
-        pursuitImageFileName: String? = nil
+        pursuitImageFileName: String? = nil,
+        carouselItems: [CarouselMediaItem] = [],
+        carouselIndex: Int = 0
     ) {
         self.id = id
         self.kind = kind
@@ -528,6 +599,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.pursuitImagePanY = pursuitImagePanY
         self.pursuitFill = pursuitFill
         self.pursuitImageFileName = pursuitImageFileName
+        self.carouselItems = carouselItems
+        self.carouselIndex = carouselIndex
     }
 
     init(from decoder: Decoder) throws {
@@ -556,6 +629,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitImagePanY = try container.decodeIfPresent(Double.self, forKey: .pursuitImagePanY) ?? 0
         pursuitFill = try container.decodeIfPresent(ComposerRGBColor.self, forKey: .pursuitFill)
         pursuitImageFileName = try container.decodeIfPresent(String.self, forKey: .pursuitImageFileName)
+        carouselItems = try container.decodeIfPresent([CarouselMediaItem].self, forKey: .carouselItems) ?? []
+        carouselIndex = try container.decodeIfPresent(Int.self, forKey: .carouselIndex) ?? 0
     }
 
     static func make(kind: BlockKind, position: BlockPosition) -> ComposerBlock {
@@ -580,6 +655,14 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
             ComposerBlock(
                 id: ComposerBlockID(),
                 kind: .media,
+                text: "",
+                style: .bodyDefault,
+                position: position
+            )
+        case .carousel:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .carousel,
                 text: "",
                 style: .bodyDefault,
                 position: position
@@ -633,28 +716,33 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     var pursuits: [ComposerPursuit]
     /// True after the board title has been placed as canvas text. Deleting that text does not restore a fixed title.
     var mosaicTitlePlaced: Bool
+    /// True after existing Pursuit pages were cleared to an empty composer.
+    var pursuitPagesBlanked: Bool
 
     static let empty = ComposerSnapshot(
         mosaicTitle: "My Mosaic",
         mosaicBlocks: [],
         pursuits: [],
-        mosaicTitlePlaced: false
+        mosaicTitlePlaced: false,
+        pursuitPagesBlanked: false
     )
 
     init(
         mosaicTitle: String,
         mosaicBlocks: [ComposerBlock],
         pursuits: [ComposerPursuit],
-        mosaicTitlePlaced: Bool = false
+        mosaicTitlePlaced: Bool = false,
+        pursuitPagesBlanked: Bool = false
     ) {
         self.mosaicTitle = mosaicTitle
         self.mosaicBlocks = mosaicBlocks
         self.pursuits = pursuits
         self.mosaicTitlePlaced = mosaicTitlePlaced
+        self.pursuitPagesBlanked = pursuitPagesBlanked
     }
 
     enum CodingKeys: String, CodingKey {
-        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced
+        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked
     }
 
     init(from decoder: Decoder) throws {
@@ -663,6 +751,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         mosaicBlocks = try container.decode([ComposerBlock].self, forKey: .mosaicBlocks)
         pursuits = try container.decode([ComposerPursuit].self, forKey: .pursuits)
         mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced) ?? false
+        pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -671,5 +760,6 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         try container.encode(mosaicBlocks, forKey: .mosaicBlocks)
         try container.encode(pursuits, forKey: .pursuits)
         try container.encode(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
+        try container.encode(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
     }
 }

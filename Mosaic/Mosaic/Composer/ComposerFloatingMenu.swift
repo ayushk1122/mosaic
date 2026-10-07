@@ -42,16 +42,17 @@ struct ComposerFloatingMenu: View {
     @Binding var isExpanded: Bool
     var showsTrashDropZone: Bool
     var isTrashHighlighted: Bool
+    var includesPursuit: Bool = true
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
 
     private let plusSize: CGFloat = 56
     private let rowWidth: CGFloat = 184
-    private let listMaxHeight: CGFloat = 300
+    private let listMaxHeight: CGFloat = 360
 
     private var filteredOptions: [BlockMenuOption] {
-        BlockMenuOption.menuOptions(matching: searchText)
+        BlockMenuOption.menuOptions(matching: searchText, includingPursuit: includesPursuit)
     }
 
     var body: some View {

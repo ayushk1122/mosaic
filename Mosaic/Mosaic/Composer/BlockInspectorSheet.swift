@@ -36,6 +36,11 @@ struct BlockInspectorSheet: View {
                     Section("Pursuit") {
                         TextField("Name", text: $block.text)
                     }
+                case .carousel:
+                    Section("Carousel") {
+                        Text("Add, replace, or remove items from the carousel on the page.")
+                            .foregroundStyle(.secondary)
+                    }
                 case .media:
                     Section("Photo") {
                         PhotosPicker(selection: $photoItem, matching: .images) {

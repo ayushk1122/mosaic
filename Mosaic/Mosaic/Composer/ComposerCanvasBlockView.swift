@@ -72,6 +72,8 @@ struct ComposerCanvasBlockView: View {
     var onCropMedia: () -> Void
     var showsPursuitPencil: Bool
     var onEditPursuit: () -> Void
+    var allowsCarouselControl: Bool
+    var onEditCarousel: () -> Void
 
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
@@ -91,6 +93,17 @@ struct ComposerCanvasBlockView: View {
                     onCommit: onCommit,
                     onStyleChange: onStyleChange,
                     onStyleMenuChange: onStyleMenuChange
+                )
+            case .carousel:
+                ComposerCarouselCanvasBlock(
+                    block: $block,
+                    scale: CGFloat(block.style.scale),
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    allowsDirectControl: allowsCarouselControl,
+                    onEdit: onEditCarousel
                 )
             case .media:
                 ComposerMediaCanvasBlock(
@@ -113,12 +126,12 @@ struct ComposerCanvasBlockView: View {
             }
         }
         .frame(
-            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit ? nil : 280,
+            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit || block.kind == .carousel ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit,
+            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit || block.kind == .carousel,
             editsOnTap: block.kind != .pursuit,
             onTap: onBeginEditing,
             onDelete: onDelete
