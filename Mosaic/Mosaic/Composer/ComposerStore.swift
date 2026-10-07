@@ -115,12 +115,25 @@ final class ComposerStore {
         persist()
     }
 
-    func saveMediaData(_ data: Data) throws -> String {
+    func saveMediaData(_ data: Data, fileExtension: String = "jpg") throws -> String {
         let directory = Self.mediaDirectory(fileManager: fileManager)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fileName = "\(UUID().uuidString).jpg"
+        let fileName = "\(UUID().uuidString).\(fileExtension)"
         let url = directory.appendingPathComponent(fileName)
         try data.write(to: url, options: .atomic)
+        return fileName
+    }
+
+    func saveMediaFile(from source: URL) throws -> String {
+        let directory = Self.mediaDirectory(fileManager: fileManager)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+        let fileName = "\(UUID().uuidString).\(ext)"
+        let destination = directory.appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: source, to: destination)
         return fileName
     }
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Mosaic uses your photo library to add media blocks to your Mosaic and Pursuits.</string>
+	<string>Mosaic uses your photo library so you can place photos and videos on your Mosaic.</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

@@ -1,5 +1,7 @@
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct MosaicComposerView: View {
     let documentID: ComposerDocumentID?
@@ -16,6 +18,12 @@ struct MosaicComposerView: View {
     @GestureState private var textDragVisual = TextDragVisual.inactive
     @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
+    @State private var showMediaPicker = false
+    @State private var pickedMediaItem: PhotosPickerItem?
+    @State private var pendingMediaBlockID: ComposerBlockID?
+    @State private var playingMediaIDs: Set<ComposerBlockID> = []
+    @State private var mediaEditRequest: MediaEditRequest?
+    @State private var mediaMenuBlockID: ComposerBlockID?
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -64,12 +72,13 @@ struct MosaicComposerView: View {
                         ForEach(blocks) { block in
                             blockView(for: block)
                                 .id(block.id)
+                                .zIndex(mediaMenuBlockID == block.id ? 2 : 0)
                                 .offset(liveOffset(for: block))
                                 .opacity(textDragVisual.blockID == block.id && textDragVisual.isMoving ? 0.96 : 1)
                                 .modifier(
                                     RelocateGestureModifier(
-                                        isEnabled: isTextLikeKind(block.kind) && placingOption == nil,
-                                        claimsTouches: editingBlockID != block.id,
+                                        isEnabled: supportsCanvasGestures(block.kind) && placingOption == nil && mediaMenuBlockID != block.id,
+                                        claimsTouches: claimsCanvasTouches(for: block),
                                         gesture: textPressGesture(for: block),
                                         pinch: textPinchGesture(for: block)
                                     )
@@ -150,6 +159,34 @@ struct MosaicComposerView: View {
             MosaicComposerView(documentID: pursuitID)
         }
         .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
+        .photosPicker(
+            isPresented: $showMediaPicker,
+            selection: $pickedMediaItem,
+            matching: .any(of: [.images, .videos])
+        )
+        .onChange(of: pickedMediaItem) { _, item in
+            guard let item, let blockID = pendingMediaBlockID else { return }
+            pendingMediaBlockID = nil
+            Task {
+                await importMedia(item, into: blockID)
+                pickedMediaItem = nil
+            }
+        }
+        .fullScreenCover(item: $mediaEditRequest) { request in
+            mediaEditor(for: request)
+        }
+        .onChange(of: showMediaPicker) { _, isPresented in
+            guard !isPresented else { return }
+            let blockID = pendingMediaBlockID
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let blockID, pendingMediaBlockID == blockID, pickedMediaItem == nil else { return }
+                pendingMediaBlockID = nil
+                if store.block(with: blockID, in: documentID)?.mediaFileName == nil {
+                    store.deleteBlock(blockID, in: documentID)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -165,6 +202,7 @@ struct MosaicComposerView: View {
                 livePinchScale: textPinchVisual.blockID == block.id ? textPinchVisual.scale : 1,
                 focusBlockID: $focusedTextBlockID,
                 mediaURL: block.mediaFileName.map { store.mediaURL(for: $0) },
+                isMediaPaused: !playingMediaIDs.contains(block.id),
                 opensPursuitInParentStack: documentID == nil,
                 onCommit: commitTextEditing,
                 onBeginEditing: {
@@ -195,6 +233,10 @@ struct MosaicComposerView: View {
                         return
                     }
                     store.updateBlock(current, in: documentID)
+                },
+                showsMediaMenu: mediaMenuBlockID == block.id,
+                onOpenMediaMenu: {
+                    handleMediaIconTap(block.id)
                 }
             )
         }
@@ -222,6 +264,8 @@ struct MosaicComposerView: View {
                 let point = clamped(point: value.location)
                 if isTextLikeKind(placingOption.blockKind) {
                     placeTextAndBeginEditing(option: placingOption, at: point)
+                } else if placingOption.blockKind == .media {
+                    placeMedia(at: point)
                 } else {
                     place(option: placingOption, at: point)
                 }
@@ -238,6 +282,34 @@ struct MosaicComposerView: View {
                 y: canvasSize.height * 0.35
             )
         )
+    }
+
+    private func placeMedia(at point: CGPoint) {
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        let position = normalizedPosition(from: point)
+        let newID = store.addBlock(.media, at: position, to: documentID)
+        pendingMediaBlockID = newID
+        showMediaPicker = true
+    }
+
+    private func importMedia(_ item: PhotosPickerItem, into blockID: ComposerBlockID) async {
+        let isVideo = item.supportedContentTypes.contains { type in
+            type.conforms(to: .movie) || type.conforms(to: .video)
+        }
+        let fileName: String?
+        if isVideo, let movie = try? await item.loadTransferable(type: ComposerMovieFile.self) {
+            fileName = try? store.saveMediaFile(from: movie.url)
+        } else if let data = try? await item.loadTransferable(type: Data.self) {
+            fileName = try? store.saveMediaData(data)
+        } else {
+            fileName = nil
+        }
+
+        if let fileName {
+            store.setMedia(fileName, for: blockID, in: documentID)
+        } else {
+            store.deleteBlock(blockID, in: documentID)
+        }
     }
 
     private func place(option: BlockMenuOption, at point: CGPoint) {
@@ -278,7 +350,14 @@ struct MosaicComposerView: View {
         editingBlockID = nil
         selectedBlockID = nil
         focusedTextBlockID = nil
+        mediaMenuBlockID = nil
         textDragSession.reset()
+    }
+
+    private func handleMediaIconTap(_ blockID: ComposerBlockID) {
+        textDragSession.didHandleMediaIconTap = true
+        selectedBlockID = blockID
+        mediaMenuBlockID = mediaMenuBlockID == blockID ? nil : blockID
     }
 
     private func textPressGesture(for block: ComposerBlock) -> some Gesture {
@@ -294,6 +373,8 @@ struct MosaicComposerView: View {
                     session.started = Date()
                     session.baseline = nil
                     session.didHaptic = false
+                    session.menuWasOpen = mediaMenuBlockID == block.id
+                    session.didHandleMediaIconTap = false
                 }
 
                 let elapsed = Date().timeIntervalSince(session.started)
@@ -331,11 +412,14 @@ struct MosaicComposerView: View {
                 let didMove = textDragSession.baseline != nil && !textDragSession.isPinching
                 let translation = textDragSession.lastTranslation
                 let shouldDelete = textDragSession.hoveringTrash
+                let iconAlreadyHandled = textDragSession.didHandleMediaIconTap
+                textDragSession.lastEnded = Date()
                 textDragSession.reset()
 
                 if didMove {
                     editingBlockID = nil
                     focusedTextBlockID = nil
+                    mediaMenuBlockID = nil
                     if shouldDelete {
                         deleteBlock(block.id)
                         selectedBlockID = nil
@@ -350,8 +434,14 @@ struct MosaicComposerView: View {
                         )
                         selectedBlockID = block.id
                     }
-                } else if distance < 12, elapsed < 0.32, editingBlockID != block.id {
+                } else if distance < 12, elapsed < 0.32, isTextLikeKind(block.kind), editingBlockID != block.id {
                     beginTextEditing(block.id)
+                } else if distance < 12, elapsed < 0.32, block.kind == .media, !iconAlreadyHandled {
+                    if selectedBlockID != block.id {
+                        selectedBlockID = block.id
+                    } else if mediaMenuBlockID != block.id {
+                        toggleMediaPlayback(block.id)
+                    }
                 }
             }
     }
@@ -367,9 +457,14 @@ struct MosaicComposerView: View {
                 textDragSession.isPinching = false
                 textDragSession.baseline = nil
                 guard var current = store.block(with: block.id, in: documentID) else { return }
-                let next = current.style.fontSize * current.style.scale * Double(value)
-                current.style.fontSize = min(max(next, 12), 80)
-                current.style.scale = 1
+                if current.kind == .media {
+                    let next = current.style.scale * Double(value)
+                    current.style.scale = min(max(next, 0.45), 3.2)
+                } else {
+                    let next = current.style.fontSize * current.style.scale * Double(value)
+                    current.style.fontSize = min(max(next, 12), 80)
+                    current.style.scale = 1
+                }
                 store.updateBlock(current, in: documentID)
             }
     }
@@ -393,6 +488,75 @@ struct MosaicComposerView: View {
 
     private func isTextLikeKind(_ kind: BlockKind) -> Bool {
         kind == .text || kind == .heading
+    }
+
+    @ViewBuilder
+    private func mediaEditor(for request: MediaEditRequest) -> some View {
+        switch request {
+        case .crop(let blockID):
+            if let url = store.block(with: blockID, in: documentID)?.mediaFileName.map({ store.mediaURL(for: $0) }),
+               let image = UIImage(contentsOfFile: url.path) {
+                ComposerImageCropEditor(image: image) {
+                    mediaEditRequest = nil
+                } onChoose: { cropped in
+                    if let data = cropped.jpegData(compressionQuality: 0.9),
+                       let fileName = try? store.saveMediaData(data) {
+                        store.setMedia(fileName, for: blockID, in: documentID)
+                    }
+                    mediaEditRequest = nil
+                }
+            }
+        case .trim(let blockID, let url):
+            ComposerVideoTrimEditor(url: url) {
+                mediaEditRequest = nil
+            } onSave: { editedURL in
+                if let fileName = try? store.saveMediaFile(from: editedURL) {
+                    store.setMedia(fileName, for: blockID, in: documentID)
+                }
+                mediaEditRequest = nil
+            }
+            .ignoresSafeArea()
+        case .trimUnavailable:
+            VStack(spacing: 12) {
+                Text("This video can’t be trimmed on this device.")
+                    .foregroundStyle(.white)
+                Button("Close") { mediaEditRequest = nil }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+        }
+    }
+
+    private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
+        if block.kind == .media {
+            return selectedBlockID != block.id
+        }
+        return editingBlockID != block.id
+    }
+
+    private func beginVideoTrim(_ blockID: ComposerBlockID) {
+        guard let fileName = store.block(with: blockID, in: documentID)?.mediaFileName else { return }
+        let sourceURL = store.mediaURL(for: fileName)
+        playingMediaIDs.remove(blockID)
+        Task {
+            if let editableURL = await ComposerVideoCompatibility.editableURL(for: sourceURL) {
+                mediaEditRequest = .trim(blockID, editableURL)
+            } else {
+                mediaEditRequest = .trimUnavailable
+            }
+        }
+    }
+
+    private func toggleMediaPlayback(_ blockID: ComposerBlockID) {
+        if playingMediaIDs.contains(blockID) {
+            playingMediaIDs.remove(blockID)
+        } else {
+            playingMediaIDs.insert(blockID)
+        }
+    }
+
+    private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
+        isTextLikeKind(kind) || kind == .media
     }
 
     private func liveOffset(for block: ComposerBlock) -> CGSize {
@@ -459,6 +623,20 @@ private struct PlacementGestureModifier<G: Gesture>: ViewModifier {
     }
 }
 
+private enum MediaEditRequest: Identifiable {
+    case crop(ComposerBlockID)
+    case trim(ComposerBlockID, URL)
+    case trimUnavailable
+
+    var id: String {
+        switch self {
+        case .crop(let blockID): "crop-\(blockID.rawValue)"
+        case .trim(let blockID, _): "trim-\(blockID.rawValue)"
+        case .trimUnavailable: "trim-unavailable"
+        }
+    }
+}
+
 private struct TextDragVisual: Equatable {
     var blockID: ComposerBlockID?
     var lifted: Bool
@@ -483,6 +661,9 @@ private final class TextDragSession {
     var hoveringTrash = false
     var didHaptic = false
     var isPinching = false
+    var menuWasOpen = false
+    var didHandleMediaIconTap = false
+    var lastEnded = Date.distantPast
 
     func reset() {
         blockID = nil
@@ -492,6 +673,8 @@ private final class TextDragSession {
         hoveringTrash = false
         didHaptic = false
         isPinching = false
+        menuWasOpen = false
+        didHandleMediaIconTap = false
     }
 }
 

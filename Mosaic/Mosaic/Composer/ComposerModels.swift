@@ -227,6 +227,82 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
     static let headingDefault = TextBlockStyle(size: .title, color: .canvas, alignment: .leading, fontSize: 28)
 }
 
+enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
+    case rectangle
+    case square
+    case rounded
+    case circle
+    case triangle
+
+    var label: String {
+        switch self {
+        case .rectangle: "Rectangle"
+        case .square: "Square"
+        case .rounded: "Rounded"
+        case .circle: "Circle"
+        case .triangle: "Triangle"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .rectangle: "rectangle"
+        case .square: "square"
+        case .rounded: "rectangle.roundedtop"
+        case .circle: "circle"
+        case .triangle: "triangle"
+        }
+    }
+
+    var usesSquareFrame: Bool {
+        switch self {
+        case .square, .circle, .triangle: true
+        case .rectangle, .rounded: false
+        }
+    }
+}
+
+struct MediaGridPoint: Codable, Equatable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+}
+
+struct MediaEdgeGrid: Codable, Equatable, Hashable, Sendable {
+    static let columns = 4
+    static let rows = 4
+
+    var points: [MediaGridPoint]
+
+    static var straight: MediaEdgeGrid {
+        var points: [MediaGridPoint] = []
+        for row in 0..<rows {
+            for column in 0..<columns {
+                points.append(MediaGridPoint(
+                    x: Double(column) / Double(columns - 1),
+                    y: Double(row) / Double(rows - 1)
+                ))
+            }
+        }
+        return MediaEdgeGrid(points: points)
+    }
+
+    var isStraight: Bool {
+        let base = Self.straight.points
+        guard points.count == base.count else { return false }
+        return zip(points, base).allSatisfy { point, origin in
+            abs(point.x - origin.x) < 0.004 && abs(point.y - origin.y) < 0.004
+        }
+    }
+
+    func point(column: Int, row: Int) -> MediaGridPoint {
+        points[row * Self.columns + column]
+    }
+
+    mutating func setPoint(_ point: MediaGridPoint, column: Int, row: Int) {
+        points[row * Self.columns + column] = point
+    }
+}
+
 struct BlockPosition: Codable, Equatable, Sendable {
     var x: Double
     var y: Double
@@ -243,11 +319,13 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var style: TextBlockStyle
     var position: BlockPosition
     var mediaFileName: String?
+    var mediaShape: MediaFrameShape
+    var mediaWarp: MediaEdgeGrid?
     var linkURL: String?
     var pursuitID: ComposerDocumentID?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, linkURL, pursuitID
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, linkURL, pursuitID
     }
 
     init(
@@ -257,6 +335,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         style: TextBlockStyle,
         position: BlockPosition,
         mediaFileName: String? = nil,
+        mediaShape: MediaFrameShape = .rectangle,
+        mediaWarp: MediaEdgeGrid? = nil,
         linkURL: String? = nil,
         pursuitID: ComposerDocumentID? = nil
     ) {
@@ -266,6 +346,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.style = style
         self.position = position
         self.mediaFileName = mediaFileName
+        self.mediaShape = mediaShape
+        self.mediaWarp = mediaWarp
         self.linkURL = linkURL
         self.pursuitID = pursuitID
     }
@@ -279,6 +361,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         position = try container.decodeIfPresent(BlockPosition.self, forKey: .position)
             ?? BlockPosition(x: 0.08, y: 0.08)
         mediaFileName = try container.decodeIfPresent(String.self, forKey: .mediaFileName)
+        mediaShape = try container.decodeIfPresent(MediaFrameShape.self, forKey: .mediaShape) ?? .rectangle
+        mediaWarp = try container.decodeIfPresent(MediaEdgeGrid.self, forKey: .mediaWarp)
         linkURL = try container.decodeIfPresent(String.self, forKey: .linkURL)
         pursuitID = try container.decodeIfPresent(ComposerDocumentID.self, forKey: .pursuitID)
     }

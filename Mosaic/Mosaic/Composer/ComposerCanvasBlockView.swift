@@ -1,4 +1,3 @@
-import PhotosUI
 import SwiftUI
 
 struct ComposerCanvasBlockView: View {
@@ -11,14 +10,15 @@ struct ComposerCanvasBlockView: View {
     var livePinchScale: CGFloat
     var focusBlockID: FocusState<ComposerBlockID?>.Binding
     let mediaURL: URL?
+    var isMediaPaused: Bool
     var opensPursuitInParentStack: Bool
     var onCommit: () -> Void
     var onBeginEditing: () -> Void
     var onDelete: () -> Void
     var onMediaData: (Data) -> Void
     var onStyleChange: () -> Void
-
-    @State private var photoItem: PhotosPickerItem?
+    var showsMediaMenu: Bool
+    var onOpenMediaMenu: () -> Void
 
     var body: some View {
         Group {
@@ -36,45 +36,34 @@ struct ComposerCanvasBlockView: View {
                     onStyleChange: onStyleChange
                 )
             case .media:
-                mediaView
+                ComposerMediaCanvasBlock(
+                    block: $block,
+                    mediaURL: mediaURL,
+                    scale: CGFloat(block.style.scale),
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isPaused: isMediaPaused,
+                    showsMenu: showsMediaMenu,
+                    onOpenMenu: onOpenMediaMenu
+                )
             case .link:
                 linkEditor
             case .pursuit:
                 pursuitView
             }
         }
-        .frame(maxWidth: block.kind == .text || block.kind == .heading ? 260 : 280, alignment: .topLeading)
+        .frame(
+            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .media ? nil : 280,
+            alignment: .topLeading
+        )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            isText: block.kind == .text || block.kind == .heading,
+            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .media,
             onTap: onBeginEditing,
             onDelete: onDelete
         ))
-    }
-
-    @ViewBuilder
-    private var mediaView: some View {
-        if let mediaURL, let uiImage = UIImage(contentsOfFile: mediaURL.path) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 240)
-        } else {
-            PhotosPicker(selection: $photoItem, matching: .images) {
-                Label("Add photo", systemImage: "photo")
-                    .font(.subheadline)
-                    .foregroundStyle(MosaicBrand.inkBlack)
-            }
-            .onChange(of: photoItem) { _, newItem in
-                guard let newItem else { return }
-                Task {
-                    if let data = try? await newItem.loadTransferable(type: Data.self) {
-                        onMediaData(data)
-                        onCommit()
-                    }
-                }
-            }
-        }
     }
 
     private var linkEditor: some View {
@@ -125,12 +114,12 @@ struct ComposerCanvasBlockView: View {
 }
 
 private struct NonTextInteractionModifier: ViewModifier {
-    let isText: Bool
+    let handlesCanvasGestures: Bool
     let onTap: () -> Void
     let onDelete: () -> Void
 
     func body(content: Content) -> some View {
-        if isText {
+        if handlesCanvasGestures {
             content
         } else {
             content
