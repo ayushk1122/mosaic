@@ -74,6 +74,7 @@ struct ComposerCanvasBlockView: View {
     var onEditPursuit: () -> Void
     var allowsCarouselControl: Bool
     var onEditCarousel: () -> Void
+    var isViewing: Bool
 
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
@@ -94,6 +95,19 @@ struct ComposerCanvasBlockView: View {
                     onStyleChange: onStyleChange,
                     onStyleMenuChange: onStyleMenuChange
                 )
+            case .list:
+                ComposerListCanvasBlock(
+                    block: $block,
+                    isEditing: isEditing,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    livePinchScale: livePinchScale,
+                    isViewing: isViewing,
+                    onCommit: onCommit,
+                    onStyleChange: onStyleChange,
+                    onStyleMenuChange: onStyleMenuChange
+                )
             case .carousel:
                 ComposerCarouselCanvasBlock(
                     block: $block,
@@ -104,6 +118,24 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     allowsDirectControl: allowsCarouselControl,
                     onEdit: onEditCarousel
+                )
+            case .calendar:
+                ComposerCalendarCanvasBlock(
+                    block: $block,
+                    scale: CGFloat(block.style.scale),
+                    livePinchScale: livePinchScale,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isViewing: isViewing
+                )
+            case .graph:
+                ComposerGraphCanvasBlock(
+                    block: $block,
+                    scale: CGFloat(block.style.scale),
+                    livePinchScale: livePinchScale,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isViewing: isViewing
                 )
             case .media:
                 ComposerMediaCanvasBlock(
@@ -126,12 +158,12 @@ struct ComposerCanvasBlockView: View {
             }
         }
         .frame(
-            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit || block.kind == .carousel ? nil : 280,
+            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .carousel || block.kind == .calendar || block.kind == .graph ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .media || block.kind == .pursuit || block.kind == .carousel,
+            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .carousel || block.kind == .calendar || block.kind == .graph,
             editsOnTap: block.kind != .pursuit,
             onTap: onBeginEditing,
             onDelete: onDelete

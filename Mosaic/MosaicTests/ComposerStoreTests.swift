@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import Mosaic
 
 @MainActor
@@ -62,6 +63,21 @@ struct ComposerStoreTests {
         #expect(pursuitPage.count == BlockMenuOption.allCases.count - 1)
         #expect(!pursuitPage.contains(.pursuit))
         #expect(pursuitPage.contains(.carousel))
+        #expect(pursuitPage.contains(.calendar))
+
+        let mosaicMenu = BlockMenuOption.menuOptions(matching: "", includingCalendar: false, includingGraph: false)
+        #expect(!mosaicMenu.contains(.calendar))
+        #expect(!mosaicMenu.contains(.graph))
+        #expect(mosaicMenu.contains(.pursuit))
+        #expect(mosaicMenu.contains(.list))
+        #expect(pursuitPage.contains(.list))
+        #expect(pursuitPage.contains(.graph))
+
+        let todo = BlockMenuOption.menuOptions(matching: "todo")
+        #expect(todo == [.list])
+
+        let chart = BlockMenuOption.menuOptions(matching: "chart")
+        #expect(chart == [.graph])
 
         let carousel = BlockMenuOption.menuOptions(matching: "carosoul")
         #expect(carousel == [.carousel])
@@ -101,6 +117,159 @@ struct ComposerStoreTests {
         #expect(CarouselMotion.indexAfterRemoval(index: 1, removedAt: 1, countAfter: 3) == 1)
         #expect(CarouselMotion.indexAfterRemoval(index: 2, removedAt: 0, countAfter: 3) == 1)
         #expect(CarouselMotion.indexAfterRemoval(index: 2, removedAt: 2, countAfter: 2) == 1)
+    }
+
+    @Test
+    func textStyleKeepsBoldItalicAndUnderline() throws {
+        var block = ComposerBlock.make(kind: .heading, position: BlockPosition(x: 0.1, y: 0.1))
+        block.style.isBold = true
+        block.style.isItalic = true
+        block.style.isUnderlined = true
+        let data = try JSONEncoder().encode(block)
+        let decoded = try JSONDecoder().decode(ComposerBlock.self, from: data)
+        #expect(decoded.style.isBold)
+        #expect(decoded.style.isItalic)
+        #expect(decoded.style.isUnderlined)
+    }
+
+    @Test
+    func carouselPhotosArePreparedSmaller() throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40))
+        let image = renderer.image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
+        }
+        let data = try #require(image.jpegData(compressionQuality: 0.9))
+        let prepared = try #require(ComposerImagePreparation.jpeg(from: data, maxPixel: 20))
+        let result = try #require(UIImage(data: prepared))
+        #expect(max(result.size.width, result.size.height) <= 20)
+    }
+
+    @Test
+    func calendarOpensOnAMonthAndKeepsADay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.firstWeekday = 1
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let weeks = CalendarMonthModel.weeks(year: 2026, month: 10, calendar: calendar)
+        #expect(weeks.count == 5)
+        #expect(weeks[0][4]?.day == 1)
+        #expect(weeks.flatMap { $0 }.compactMap(\.self).count == 31)
+        let august = CalendarMonthModel.weeks(year: 2026, month: 8, calendar: calendar)
+        #expect(august.count == 6)
+        #expect(august[0][6]?.day == 1)
+
+        let next = CalendarMonthModel.shifting(year: 2026, month: 12, by: 1, calendar: calendar)
+        #expect(next.year == 2027)
+        #expect(next.month == 1)
+
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.addBlock(.pursuit, to: nil)
+        let pursuitID = store.snapshot.pursuits[0].id
+        let blockID = store.addBlock(.calendar, to: pursuitID)
+        var block = try #require(store.block(with: blockID, in: pursuitID))
+        block.calendarEntries = [
+            CalendarDayEntry(
+                year: 2026,
+                month: 10,
+                day: 7,
+                note: "Range day",
+                media: [
+                    CarouselMediaItem(id: "swing", fileName: "swing.jpg"),
+                    CarouselMediaItem(id: "green", fileName: "green.jpg"),
+                    CarouselMediaItem(id: "putt", fileName: "putt.mov")
+                ],
+                mediaIndex: 1
+            )
+        ]
+        store.updateBlock(block, in: pursuitID)
+        let data = try JSONEncoder().encode(store.snapshot)
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
+        let saved = try #require(decoded.pursuits[0].blocks.first?.calendarEntries.first)
+        #expect(saved.note == "Range day")
+        #expect(saved.media.map(\.fileName) == ["swing.jpg", "green.jpg", "putt.mov"])
+        #expect(saved.mediaIndex == 1)
+        #expect(saved.hasContent)
+
+        let legacy = Data(#"{"year":2026,"month":10,"day":1,"note":"","mediaFileName":"swing.jpg"}"#.utf8)
+        let migrated = try JSONDecoder().decode(CalendarDayEntry.self, from: legacy)
+        #expect(migrated.media.map(\.fileName) == ["swing.jpg"])
+        #expect(migrated.hasContent)
+    }
+
+    @Test
+    func lineGraphPlacesPointsByDateAndKeepsThem() throws {
+        let early = Date(timeIntervalSince1970: 1_700_000_000)
+        let later = Date(timeIntervalSince1970: 1_700_086_400)
+        let placed = ComposerLineGraph.placed([
+            ComposerGraphPoint(id: "later", x: later, y: 80),
+            ComposerGraphPoint(id: "early", x: early, y: 20)
+        ])
+        #expect(placed.map(\.id) == ["early", "later"])
+        #expect(placed[0].nx == 0)
+        #expect(placed[1].nx == 1)
+        #expect(placed[0].ny < placed[1].ny)
+
+        let flat = ComposerLineGraph.placed([
+            ComposerGraphPoint(id: "a", x: early, y: 5),
+            ComposerGraphPoint(id: "b", x: later, y: 5)
+        ])
+        #expect(flat[0].ny == 0.5)
+        #expect(flat[1].ny == 0.5)
+
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.addBlock(.pursuit, to: nil)
+        let pursuitID = store.snapshot.pursuits[0].id
+        let blockID = store.addBlock(.graph, to: pursuitID)
+        var block = try #require(store.block(with: blockID, in: pursuitID))
+        #expect(block.graphKind == .line)
+        #expect(block.graphXAxis == .date)
+        #expect(block.graphYAxis == .integer)
+        #expect(block.graphXUnitName == "Date")
+        #expect(block.graphYUnitName == "Value")
+        block.graphTitle = "Scores"
+        block.graphYUnitName = "Score"
+        block.graphPoints = [
+            ComposerGraphPoint(id: "early", x: early, y: 20),
+            ComposerGraphPoint(id: "later", x: later, y: 80)
+        ]
+        store.updateBlock(block, in: pursuitID)
+        let data = try JSONEncoder().encode(store.snapshot)
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
+        let saved = try #require(decoded.pursuits[0].blocks.first)
+        #expect(saved.graphTitle == "Scores")
+        #expect(saved.graphYUnitName == "Score")
+        #expect(saved.graphPoints.map(\.y) == [20, 80])
+        #expect(saved.graphPoints.map(\.id) == ["early", "later"])
+        #expect(ComposerGraphStretch.resized(base: 1, translation: 320, span: 320, leadingOrTop: false) == 2)
+        #expect(ComposerGraphStretch.resized(base: 1, translation: -236, span: 236, leadingOrTop: true) == 2)
+        #expect(ComposerGraphStretch.clamped(8) == ComposerGraphStretch.maximum)
+    }
+
+    @Test
+    func listStartsBulletedAndKeepsItsRows() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let blockID = store.addBlock(.list, to: nil)
+        var block = try #require(store.block(with: blockID, in: nil))
+        #expect(block.kind == .list)
+        #expect(block.listMarker == .bullet)
+        #expect(block.listItems.count == 1)
+        #expect(ComposerListMarker.number.marker(at: 2) == "3.")
+        #expect(ComposerListMarker.letter.marker(at: 0) == "a.")
+        #expect(ComposerListMarker.letter.marker(at: 26) == "aa.")
+
+        block.listMarker = .checkbox
+        block.listItems = [
+            ComposerListItem(id: "stretch", text: "Stretch", isChecked: true),
+            ComposerListItem(id: "range", text: "Range", isChecked: false)
+        ]
+        store.updateBlock(block, in: nil)
+        let data = try JSONEncoder().encode(store.snapshot)
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
+        let saved = try #require(decoded.mosaicBlocks.first)
+        #expect(saved.listMarker == .checkbox)
+        #expect(saved.listItems.map(\.text) == ["Stretch", "Range"])
+        #expect(saved.listItems[0].isChecked)
+        #expect(!saved.listItems[1].isChecked)
     }
 
     @Test

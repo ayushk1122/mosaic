@@ -30,6 +30,7 @@ struct MosaicComposerView: View {
     @State private var openedPursuitID: ComposerDocumentID?
     @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
     @State private var textStyleIconFrames: [ComposerBlockID: CGRect] = [:]
+    @State private var graphResizeFrames: [ComposerBlockID: ComposerGraphResizeFrames] = [:]
     @State private var pursuitEditRequest: PursuitEditRequest?
     @State private var showCarouselPicker = false
     @State private var pickedCarouselItems: [PhotosPickerItem] = []
@@ -83,6 +84,7 @@ struct MosaicComposerView: View {
                                     RelocateGestureModifier(
                                         isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && styleMenuBlockID != block.id,
                                         claimsTouches: claimsCanvasTouches(for: block),
+                                        pinchPriority: block.kind == .calendar || block.kind == .graph,
                                         gesture: textPressGesture(for: block),
                                         pinch: textPinchGesture(for: block)
                                     )
@@ -135,7 +137,9 @@ struct MosaicComposerView: View {
                         isExpanded: $menuExpanded,
                         showsTrashDropZone: textDragVisual.isMoving,
                         isTrashHighlighted: textDragVisual.hoveringTrash,
-                        includesPursuit: documentID == nil
+                        includesPursuit: documentID == nil,
+                        includesCalendar: documentID != nil,
+                        includesGraph: documentID != nil
                     ) { option in
                         beginPlacement(for: option)
                     }
@@ -156,6 +160,9 @@ struct MosaicComposerView: View {
         }
         .onPreferenceChange(ComposerTextStyleIconFrameKey.self) { frames in
             textStyleIconFrames = frames
+        }
+        .onPreferenceChange(ComposerGraphResizeFrameKey.self) { frames in
+            graphResizeFrames = frames
         }
         .onPreferenceChange(ComposerTrashDropZoneFrameKey.self) { frame in
             let rounded = CGRect(
@@ -327,7 +334,8 @@ struct MosaicComposerView: View {
                 allowsCarouselControl: chrome.isViewing || selectedBlockID == block.id,
                 onEditCarousel: {
                     beginCarouselEdit(block.id)
-                }
+                },
+                isViewing: chrome.isViewing
             )
         }
     }
@@ -402,21 +410,34 @@ struct MosaicComposerView: View {
     }
 
     private func importCarousel(_ items: [PhotosPickerItem], into blockID: ComposerBlockID) async {
-        var saved: [CarouselMediaItem] = []
-        for item in items {
-            if let fileName = await ComposerMediaImport.save(item, to: store) {
-                saved.append(CarouselMediaItem(fileName: fileName))
-            }
-        }
+        let placeholders = items.map { _ in CarouselMediaItem(fileName: "") }
         guard var block = store.block(with: blockID, in: documentID) else { return }
-        guard !saved.isEmpty else {
+        block.carouselItems.append(contentsOf: placeholders)
+        store.updateBlock(block, in: documentID)
+        selectedBlockID = blockID
+
+        await ComposerMediaImport.importCarouselItems(
+            items,
+            ids: placeholders.map(\.id),
+            store: store
+        ) { id, fileName in
+            guard var current = store.block(with: blockID, in: documentID) else { return }
+            if let fileName, let index = current.carouselItems.firstIndex(where: { $0.id == id }) {
+                current.carouselItems[index].fileName = fileName
+            } else {
+                current.carouselItems.removeAll { $0.id == id }
+            }
+            store.updateBlock(current, in: documentID)
+        }
+
+        guard var finished = store.block(with: blockID, in: documentID) else { return }
+        finished.carouselItems.removeAll { $0.fileName.isEmpty }
+        if finished.carouselItems.isEmpty {
             store.deleteBlock(blockID, in: documentID)
             return
         }
-        block.carouselItems.append(contentsOf: saved)
-        store.updateBlock(block, in: documentID)
-        selectedBlockID = blockID
-        if block.carouselItems.count < CarouselMotion.minimumCount {
+        store.updateBlock(finished, in: documentID)
+        if finished.carouselItems.count < CarouselMotion.minimumCount {
             carouselEditRequest = CarouselEditRequest(blockID: blockID)
         }
     }
@@ -482,6 +503,12 @@ struct MosaicComposerView: View {
                         visual = .inactive
                         return
                     }
+                    if touchHitsGraphResize(block.id, at: value.startLocation) {
+                        session.graphResizing = true
+                        session.blockID = block.id
+                        visual = .inactive
+                        return
+                    }
                     session.blockID = block.id
                     session.started = Date()
                     session.baseline = nil
@@ -489,6 +516,11 @@ struct MosaicComposerView: View {
                     session.menuWasOpen = styleMenuBlockID == block.id
                     session.didHandleMediaIconTap = false
                     session.carouselPan = false
+                }
+
+                if session.graphResizing {
+                    visual = .inactive
+                    return
                 }
 
                 let elapsed = Date().timeIntervalSince(session.started)
@@ -531,7 +563,7 @@ struct MosaicComposerView: View {
                 visual = next
             }
             .onEnded { value in
-                if touchHitsTextStyleIcon(block.id, at: value.startLocation) {
+                if touchHitsTextStyleIcon(block.id, at: value.startLocation) || textDragSession.graphResizing || touchHitsGraphResize(block.id, at: value.startLocation) {
                     textDragSession.reset()
                     return
                 }
@@ -573,12 +605,7 @@ struct MosaicComposerView: View {
                 } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, tappedPencil {
                     beginPursuitEdit(block.id)
                 } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, !iconAlreadyHandled {
-                    if selectedBlockID != block.id {
-                        selectedBlockID = block.id
-                        styleMenuBlockID = nil
-                    } else if styleMenuBlockID != block.id {
-                        openPursuit(block)
-                    }
+                    openPursuit(block)
                 } else if distance < 12, elapsed < 0.32, isTextLikeKind(block.kind), editingBlockID != block.id {
                     beginTextEditing(block.id)
                 } else if distance < 12, elapsed < 0.32, block.kind == .media, !iconAlreadyHandled {
@@ -605,7 +632,13 @@ struct MosaicComposerView: View {
                 textDragSession.isPinching = false
                 textDragSession.baseline = nil
                 guard var current = store.block(with: block.id, in: documentID) else { return }
-                if current.kind == .media || current.kind == .pursuit || current.kind == .carousel {
+                if current.kind == .graph {
+                    let width = current.graphWidthScale * current.style.scale * Double(value)
+                    let height = current.graphHeightScale * current.style.scale * Double(value)
+                    current.graphWidthScale = ComposerGraphStretch.clamped(width)
+                    current.graphHeightScale = ComposerGraphStretch.clamped(height)
+                    current.style.scale = 1
+                } else if current.kind == .media || current.kind == .pursuit || current.kind == .carousel || current.kind == .calendar {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, 0.45), 3.2)
                 } else {
@@ -635,7 +668,7 @@ struct MosaicComposerView: View {
     }
 
     private func isTextLikeKind(_ kind: BlockKind) -> Bool {
-        kind == .text || kind == .heading
+        kind == .text || kind == .heading || kind == .list
     }
 
     @ViewBuilder
@@ -709,7 +742,12 @@ struct MosaicComposerView: View {
     }
 
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
-        selectedBlockID != block.id
+        if block.kind == .calendar || block.kind == .graph { return false }
+        return selectedBlockID != block.id
+    }
+
+    private func touchHitsGraphResize(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        graphResizeFrames[blockID]?.contains(point) ?? false
     }
 
     private func touchHitsTextStyleIcon(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
@@ -739,7 +777,7 @@ struct MosaicComposerView: View {
     }
 
     private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
-        isTextLikeKind(kind) || kind == .media || kind == .pursuit || kind == .carousel
+        isTextLikeKind(kind) || kind == .media || kind == .pursuit || kind == .carousel || kind == .calendar || kind == .graph
     }
 
     private func beginCarouselEdit(_ blockID: ComposerBlockID) {
@@ -959,6 +997,7 @@ private final class TextDragSession {
     var menuWasOpen = false
     var didHandleMediaIconTap = false
     var carouselPan = false
+    var graphResizing = false
     var lastEnded = Date.distantPast
 
     func reset() {
@@ -972,6 +1011,7 @@ private final class TextDragSession {
         menuWasOpen = false
         didHandleMediaIconTap = false
         carouselPan = false
+        graphResizing = false
     }
 }
 
@@ -988,7 +1028,7 @@ private struct ViewingMediaTapModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if isEnabled {
-            content.onTapGesture(perform: onTap)
+            content.highPriorityGesture(TapGesture().onEnded { onTap() })
         } else {
             content
         }
@@ -998,6 +1038,7 @@ private struct ViewingMediaTapModifier: ViewModifier {
 private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModifier {
     let isEnabled: Bool
     let claimsTouches: Bool
+    var pinchPriority: Bool = false
     let gesture: Drag
     let pinch: Pinch
 
@@ -1008,6 +1049,10 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
             content
                 .highPriorityGesture(gesture)
                 .simultaneousGesture(pinch)
+        } else if pinchPriority {
+            content
+                .simultaneousGesture(gesture)
+                .highPriorityGesture(pinch)
         } else {
             content
                 .simultaneousGesture(gesture)

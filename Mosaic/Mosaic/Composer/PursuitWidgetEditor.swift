@@ -16,6 +16,18 @@ struct PursuitWidgetEdits {
     var removeImage: Bool
 }
 
+private struct PursuitNameWeight: ViewModifier {
+    var keepsSemibold: Bool
+
+    func body(content: Content) -> some View {
+        if keepsSemibold {
+            content.fontWeight(.semibold)
+        } else {
+            content
+        }
+    }
+}
+
 struct PursuitWidgetFace: View {
     @Binding var text: String
     var textX: Double
@@ -184,7 +196,7 @@ struct PursuitWidgetFace: View {
             )
             .textFieldStyle(.plain)
             .font(displayFont)
-            .fontWeight(.semibold)
+            .modifier(PursuitNameWeight(keepsSemibold: !style.isBold && !style.isItalic))
             .foregroundStyle(titleColor)
             .tint(titleColor)
             .focused(focusBlockID, equals: focusID)
@@ -193,7 +205,8 @@ struct PursuitWidgetFace: View {
         } else {
             Text(text)
                 .font(displayFont)
-                .fontWeight(.semibold)
+                .modifier(PursuitNameWeight(keepsSemibold: !style.isBold && !style.isItalic))
+                .underline(style.isUnderlined, color: titleColor)
                 .foregroundStyle(titleColor)
                 .multilineTextAlignment(.leading)
                 .lineLimit(3)
@@ -220,10 +233,7 @@ struct PursuitWidgetFace: View {
 
     private var displayFont: Font {
         let size = style.fontSize * style.scale * Double(liveScale)
-        if let family = style.fontFamilyName {
-            return ComposerInstalledFont.font(family: family, size: size)
-        }
-        return style.fontChoice.font(size: size)
+        return style.displayFont(at: size)
     }
 
     private var titleColor: Color {

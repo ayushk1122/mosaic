@@ -152,7 +152,7 @@ final class ComposerStore {
         return fileName
     }
 
-    func saveMediaFile(from source: URL) throws -> String {
+    func saveMediaFile(from source: URL, removeSource: Bool = false) throws -> String {
         let directory = Self.mediaDirectory(fileManager: fileManager)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
@@ -161,8 +161,28 @@ final class ComposerStore {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
+        if removeSource {
+            do {
+                try fileManager.moveItem(at: source, to: destination)
+                return fileName
+            } catch {
+                try fileManager.copyItem(at: source, to: destination)
+                try? fileManager.removeItem(at: source)
+                return fileName
+            }
+        }
         try fileManager.copyItem(at: source, to: destination)
         return fileName
+    }
+
+    func storePreparedCarouselMedia(_ prepared: PreparedCarouselMedia) throws -> String {
+        if let videoURL = prepared.videoURL {
+            return try saveMediaFile(from: videoURL, removeSource: true)
+        }
+        if let jpegData = prepared.jpegData {
+            return try saveMediaData(jpegData)
+        }
+        throw CocoaError(.fileWriteUnknown)
     }
 
     func mediaURL(for fileName: String) -> URL {

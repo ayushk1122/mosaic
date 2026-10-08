@@ -31,14 +31,16 @@ enum ComposerMediaStill {
         if isVideo(url) {
             return await videoPoster(at: url)
         }
-        return UIImage(contentsOfFile: url.path)
+        return await Task.detached(priority: .userInitiated) {
+            UIImage(contentsOfFile: url.path)
+        }.value
     }
 
     private static func videoPoster(at url: URL) async -> UIImage? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 640, height: 640)
+        generator.maximumSize = CGSize(width: 480, height: 480)
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
         guard let image = try? await generator.image(at: time).image else { return nil }
         return UIImage(cgImage: image)
@@ -62,6 +64,7 @@ struct ComposerCarouselCanvasBlock: View {
     @State private var settle: CGFloat = 0
     @State private var playing = false
     @State private var posters: [String: UIImage] = [:]
+    @State private var loadingPosters: Set<String> = []
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
 
@@ -104,8 +107,8 @@ struct ComposerCarouselCanvasBlock: View {
             } action: { frame in
                 itemFrame = frame
             }
-            .task(id: posterKey) {
-                await loadPosters()
+            .onChange(of: posterKey, initial: true) { _, _ in
+                requestPosters()
             }
             .onChange(of: centerIndex) { _, _ in
                 playing = false
@@ -163,10 +166,14 @@ struct ComposerCarouselCanvasBlock: View {
     private func placeholderSlot(_ slot: Int) -> some View {
         let item = slot < count ? block.carouselItems[slot] : nil
         return ZStack {
-            if let item, let image = posters[item.fileName] {
+            if let item, !item.fileName.isEmpty, let image = posters[item.fileName] {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if item != nil {
+                Color.white.opacity(0.06)
+                ProgressView()
+                    .tint(.white)
             } else {
                 Color.white.opacity(0.06)
                 Image(systemName: "plus")
@@ -188,10 +195,11 @@ struct ComposerCarouselCanvasBlock: View {
 
     private func card(_ item: CarouselMediaItem, delta: CGFloat) -> some View {
         let isCenter = abs(delta) < 0.35
-        let url = store.mediaURL(for: item.fileName)
-        let isVideo = ComposerMediaStill.isVideo(url)
+        let hasFile = !item.fileName.isEmpty
+        let url = hasFile ? store.mediaURL(for: item.fileName) : nil
+        let isVideo = url.map(ComposerMediaStill.isVideo) ?? false
         return ZStack {
-            if isCenter, isVideo, playing {
+            if isCenter, isVideo, playing, let url {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: true)
             } else if let image = posters[item.fileName] {
                 Image(uiImage: image)
@@ -199,6 +207,8 @@ struct ComposerCarouselCanvasBlock: View {
                     .scaledToFill()
             } else {
                 Color.white.opacity(0.08)
+                ProgressView()
+                    .tint(.white)
             }
             if isCenter, isVideo, !playing {
                 Image(systemName: "play.fill")
@@ -216,6 +226,7 @@ struct ComposerCarouselCanvasBlock: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.white.opacity(isCenter ? 0.16 : 0.06), lineWidth: 1)
         }
+        .animation(.easeOut(duration: 0.18), value: posters[item.fileName] != nil)
         .scaleEffect(layout.scale(for: delta))
         .opacity(layout.opacity(for: delta))
         .offset(x: delta * layout.step)
@@ -283,13 +294,40 @@ struct ComposerCarouselCanvasBlock: View {
             .accessibilityAddTraits(.isButton)
     }
 
-    private func loadPosters() async {
-        for item in block.carouselItems {
-            if posters[item.fileName] != nil { continue }
-            let url = store.mediaURL(for: item.fileName)
-            if let image = await ComposerMediaStill.image(at: url) {
-                posters[item.fileName] = image
+    private func requestPosters() {
+        loadCarouselPosters(
+            items: block.carouselItems,
+            posters: posters,
+            loading: loadingPosters,
+            urlFor: { store.mediaURL(for: $0) }
+        ) { name in
+            loadingPosters.insert(name)
+        } finish: { name, image in
+            if let image {
+                posters[name] = image
             }
+            loadingPosters.remove(name)
+        }
+    }
+}
+
+@MainActor
+private func loadCarouselPosters(
+    items: [CarouselMediaItem],
+    posters: [String: UIImage],
+    loading: Set<String>,
+    urlFor: (String) -> URL,
+    markLoading: (String) -> Void,
+    finish: @escaping @MainActor (String, UIImage?) -> Void
+) {
+    for item in items {
+        let name = item.fileName
+        guard !name.isEmpty, posters[name] == nil, !loading.contains(name) else { continue }
+        markLoading(name)
+        let url = urlFor(name)
+        Task { @MainActor in
+            let image = await ComposerMediaStill.image(at: url)
+            finish(name, image)
         }
     }
 }
@@ -308,24 +346,47 @@ private struct CarouselScrollModifier<G: Gesture>: ViewModifier {
 }
 
 struct ComposerCarouselEditor: View {
-    let documentID: ComposerDocumentID?
-    let blockID: ComposerBlockID
+    private enum Source {
+        case stored(documentID: ComposerDocumentID?, blockID: ComposerBlockID)
+        case local(items: Binding<[CarouselMediaItem]>, index: Binding<Int>)
+    }
+
+    private let source: Source
+
+    init(documentID: ComposerDocumentID?, blockID: ComposerBlockID) {
+        source = .stored(documentID: documentID, blockID: blockID)
+    }
+
+    init(items: Binding<[CarouselMediaItem]>, index: Binding<Int>) {
+        source = .local(items: items, index: index)
+    }
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var posters: [String: UIImage] = [:]
+    @State private var loadingPosters: Set<String> = []
     @State private var showPicker = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var replacingID: String?
     @State private var isImporting = false
 
-    private var block: ComposerBlock? {
-        store.block(with: blockID, in: documentID)
+    private var items: [CarouselMediaItem] {
+        switch source {
+        case let .stored(documentID, blockID):
+            store.block(with: blockID, in: documentID)?.carouselItems ?? []
+        case let .local(items, _):
+            items.wrappedValue
+        }
     }
 
-    private var items: [CarouselMediaItem] {
-        block?.carouselItems ?? []
+    private var carouselIndex: Int {
+        switch source {
+        case let .stored(documentID, blockID):
+            store.block(with: blockID, in: documentID)?.carouselIndex ?? 0
+        case let .local(_, index):
+            index.wrappedValue
+        }
     }
 
     private var canRemove: Bool {
@@ -384,8 +445,8 @@ struct ComposerCarouselEditor: View {
             replacingID = nil
             Task { await importPicked(chosen, replacing: replacing) }
         }
-        .task(id: items.map(\.fileName).joined(separator: "|")) {
-            await loadPosters()
+        .onChange(of: items.map(\.fileName).joined(separator: "|"), initial: true) { _, _ in
+            requestPosters()
         }
     }
 
@@ -400,7 +461,7 @@ struct ComposerCarouselEditor: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Replace item")
 
-            if canRemove {
+            if canRemove, !item.fileName.isEmpty {
                 Button {
                     remove(item)
                 } label: {
@@ -465,15 +526,15 @@ struct ComposerCarouselEditor: View {
     }
 
     private func remove(_ item: CarouselMediaItem) {
-        guard canRemove, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        guard canRemove, let removedAt = items.firstIndex(where: { $0.id == item.id }) else { return }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-            update { block in
-                let current = CarouselMotion.wrapped(block.carouselIndex, count: block.carouselItems.count)
-                block.carouselItems.removeAll { $0.id == item.id }
-                block.carouselIndex = CarouselMotion.indexAfterRemoval(
+            update { media, index in
+                let current = CarouselMotion.wrapped(carouselIndex, count: media.count)
+                media.removeAll { $0.id == item.id }
+                index = CarouselMotion.indexAfterRemoval(
                     index: current,
-                    removedAt: index,
-                    countAfter: block.carouselItems.count
+                    removedAt: removedAt,
+                    countAfter: media.count
                 )
             }
         }
@@ -482,39 +543,68 @@ struct ComposerCarouselEditor: View {
     private func importPicked(_ picked: [PhotosPickerItem], replacing: String?) async {
         isImporting = true
         defer { isImporting = false }
-        var saved: [String] = []
-        for item in picked {
-            if let fileName = await ComposerMediaImport.save(item, to: store) {
-                saved.append(fileName)
+        if let replacing {
+            await ComposerMediaImport.importCarouselItems(picked, ids: [replacing], store: store) { id, fileName in
+                guard let fileName else { return }
+                update { media, _ in
+                    guard let index = media.firstIndex(where: { $0.id == id }) else { return }
+                    media[index].fileName = fileName
+                }
             }
+            return
         }
-        guard !saved.isEmpty else { return }
-        update { block in
-            if let replacing, let index = block.carouselItems.firstIndex(where: { $0.id == replacing }), let fileName = saved.first {
-                block.carouselItems[index].fileName = fileName
-            } else {
-                block.carouselItems.append(contentsOf: saved.map { CarouselMediaItem(fileName: $0) })
+
+        let placeholders = picked.map { _ in CarouselMediaItem(fileName: "") }
+        update { media, _ in
+            media.append(contentsOf: placeholders)
+        }
+        await ComposerMediaImport.importCarouselItems(
+            picked,
+            ids: placeholders.map(\.id),
+            store: store
+        ) { id, fileName in
+            update { media, _ in
+                if let fileName, let index = media.firstIndex(where: { $0.id == id }) {
+                    media[index].fileName = fileName
+                } else {
+                    media.removeAll { $0.id == id }
+                }
             }
         }
     }
 
-    private func update(_ body: (inout ComposerBlock) -> Void) {
-        guard var block = store.block(with: blockID, in: documentID) else { return }
-        body(&block)
-        if block.carouselItems.isEmpty {
-            block.carouselIndex = 0
-        } else {
-            block.carouselIndex = CarouselMotion.wrapped(block.carouselIndex, count: block.carouselItems.count)
+    private func requestPosters() {
+        loadCarouselPosters(
+            items: items,
+            posters: posters,
+            loading: loadingPosters,
+            urlFor: { store.mediaURL(for: $0) }
+        ) { name in
+            loadingPosters.insert(name)
+        } finish: { name, image in
+            if let image {
+                posters[name] = image
+            }
+            loadingPosters.remove(name)
         }
-        store.updateBlock(block, in: documentID)
     }
 
-    private func loadPosters() async {
-        for item in items {
-            if posters[item.fileName] != nil { continue }
-            if let image = await ComposerMediaStill.image(at: store.mediaURL(for: item.fileName)) {
-                posters[item.fileName] = image
-            }
+    private func update(_ body: (inout [CarouselMediaItem], inout Int) -> Void) {
+        switch source {
+        case let .stored(documentID, blockID):
+            guard var block = store.block(with: blockID, in: documentID) else { return }
+            body(&block.carouselItems, &block.carouselIndex)
+            block.carouselIndex = block.carouselItems.isEmpty
+                ? 0
+                : CarouselMotion.wrapped(block.carouselIndex, count: block.carouselItems.count)
+            store.updateBlock(block, in: documentID)
+        case let .local(items, index):
+            var nextItems = items.wrappedValue
+            var nextIndex = index.wrappedValue
+            body(&nextItems, &nextIndex)
+            nextIndex = nextItems.isEmpty ? 0 : CarouselMotion.wrapped(nextIndex, count: nextItems.count)
+            items.wrappedValue = nextItems
+            index.wrappedValue = nextIndex
         }
     }
 }

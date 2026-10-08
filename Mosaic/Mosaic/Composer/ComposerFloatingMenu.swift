@@ -43,6 +43,8 @@ struct ComposerFloatingMenu: View {
     var showsTrashDropZone: Bool
     var isTrashHighlighted: Bool
     var includesPursuit: Bool = true
+    var includesCalendar: Bool = true
+    var includesGraph: Bool = true
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
@@ -52,7 +54,12 @@ struct ComposerFloatingMenu: View {
     private let listMaxHeight: CGFloat = 360
 
     private var filteredOptions: [BlockMenuOption] {
-        BlockMenuOption.menuOptions(matching: searchText, includingPursuit: includesPursuit)
+        BlockMenuOption.menuOptions(
+            matching: searchText,
+            includingPursuit: includesPursuit,
+            includingCalendar: includesCalendar,
+            includingGraph: includesGraph
+        )
     }
 
     var body: some View {

@@ -31,18 +31,35 @@ extension TextBlockStyle {
     }
 
     func displayFont() -> Font {
-        let size = fontSize * scale
+        displayFont(at: fontSize * scale)
+    }
+
+    func displayFont(at size: CGFloat) -> Font {
         if let fontFamilyName {
-            return ComposerInstalledFont.font(family: fontFamilyName, size: size)
+            return ComposerInstalledFont.font(
+                family: fontFamilyName,
+                size: size,
+                bold: isBold,
+                italic: isItalic
+            )
         }
-        return fontChoice.font(size: size)
+        return fontChoice.font(size: size, bold: isBold, italic: isItalic)
     }
 }
 
 enum ComposerInstalledFont {
     static let familyNames: [String] = UIFont.familyNames.sorted()
 
-    static func font(family: String, size: CGFloat) -> Font {
+    static func font(family: String, size: CGFloat, bold: Bool = false, italic: Bool = false) -> Font {
+        if bold || italic {
+            var traits = UIFontDescriptor.SymbolicTraits()
+            if bold { traits.insert(.traitBold) }
+            if italic { traits.insert(.traitItalic) }
+            let base = UIFontDescriptor(fontAttributes: [.family: family])
+            if let described = base.withSymbolicTraits(traits) {
+                return Font(UIFont(descriptor: described, size: size))
+            }
+        }
         let names = UIFont.fontNames(forFamilyName: family)
         let preferred = names.first { $0.localizedCaseInsensitiveContains("Regular") }
             ?? names.first
@@ -52,23 +69,31 @@ enum ComposerInstalledFont {
 }
 
 extension ComposerFontChoice {
-    func font(size: CGFloat) -> Font {
+    func font(size: CGFloat, bold: Bool = false, italic: Bool = false) -> Font {
         switch self {
         case .system:
-            .system(size: size)
+            Self.systemFont(size: size, design: .default, bold: bold, italic: italic)
         case .rounded:
-            .system(size: size, weight: .regular, design: .rounded)
+            Self.systemFont(size: size, design: .rounded, bold: bold, italic: italic)
         case .serif:
-            .system(size: size, weight: .regular, design: .serif)
+            Self.systemFont(size: size, design: .serif, bold: bold, italic: italic)
         case .mono:
-            .system(size: size, weight: .regular, design: .monospaced)
+            Self.systemFont(size: size, design: .monospaced, bold: bold, italic: italic)
         case .avenir:
-            .custom("Avenir Next", size: size)
+            ComposerInstalledFont.font(family: "Avenir Next", size: size, bold: bold, italic: italic)
         case .georgia:
-            .custom("Georgia", size: size)
+            ComposerInstalledFont.font(family: "Georgia", size: size, bold: bold, italic: italic)
         case .futura:
-            .custom("Futura", size: size)
+            ComposerInstalledFont.font(family: "Futura", size: size, bold: bold, italic: italic)
         }
+    }
+
+    private static func systemFont(size: CGFloat, design: Font.Design, bold: Bool, italic: Bool) -> Font {
+        var font = Font.system(size: size, weight: bold ? .bold : .regular, design: design)
+        if italic {
+            font = font.italic()
+        }
+        return font
     }
 }
 

@@ -36,10 +36,7 @@ struct ComposerTextCanvasBlock: View {
 
     private var activeFont: Font {
         let size = block.style.fontSize * block.style.scale * Double(livePinchScale)
-        if let family = block.style.fontFamilyName {
-            return ComposerInstalledFont.font(family: family, size: size)
-        }
-        return block.style.fontChoice.font(size: size)
+        return block.style.displayFont(at: size)
     }
 
     var body: some View {
@@ -154,6 +151,7 @@ struct ComposerTextCanvasBlock: View {
     private var displayedText: some View {
         Text(block.text.isEmpty ? (isHeading ? "Heading" : "Text") : block.text)
             .font(activeFont)
+            .underline(block.style.isUnderlined, color: block.style.displayColor)
             .foregroundStyle(block.style.displayColor.opacity(block.text.isEmpty ? 0.28 : 1))
             .multilineTextAlignment(block.style.alignment.alignment)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.95 : 0), radius: showsMoveAffordance ? 2 : 0)
@@ -192,14 +190,20 @@ struct ComposerTextStylePanel: View {
     var showsSize: Bool = false
     var onDelete: (() -> Void)? = nil
     var fillsBar: Bool = false
+    var listMarker: Binding<ComposerListMarker>? = nil
 
     @State private var showsFonts = false
     @State private var showsColor = false
+
+    private var panelWidth: CGFloat { listMarker == nil ? 228 : 268 }
 
     private let families = ComposerInstalledFont.familyNames
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let listMarker {
+                listMarkerRow(listMarker)
+            }
             HStack(spacing: 8) {
                 Button {
                     withAnimation(.easeOut(duration: 0.16)) {
@@ -253,6 +257,21 @@ struct ComposerTextStylePanel: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Delete text")
+                }
+            }
+
+            HStack(spacing: 8) {
+                traitButton("Bold", systemImage: "bold", isOn: style.isBold) {
+                    style.isBold.toggle()
+                    onChange()
+                }
+                traitButton("Italic", systemImage: "italic", isOn: style.isItalic) {
+                    style.isItalic.toggle()
+                    onChange()
+                }
+                traitButton("Underline", systemImage: "underline", isOn: style.isUnderlined) {
+                    style.isUnderlined.toggle()
+                    onChange()
                 }
             }
 
@@ -312,9 +331,56 @@ struct ComposerTextStylePanel: View {
             }
         }
         .padding(fillsBar ? 0 : 12)
-        .frame(maxWidth: fillsBar ? .infinity : 228, alignment: .leading)
-        .frame(width: fillsBar ? nil : 228)
+        .frame(maxWidth: fillsBar ? .infinity : panelWidth, alignment: .leading)
+        .frame(width: fillsBar ? nil : panelWidth)
         .background(fillsBar ? Color.clear : Color(red: 0.20, green: 0.21, blue: 0.23))
+    }
+
+    private func traitButton(
+        _ title: String,
+        systemImage: String,
+        isOn: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(isOn ? 1 : 0.72))
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(
+                    Color.white.opacity(isOn ? 0.18 : 0.08),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "On" : "Off")
+    }
+
+    private func listMarkerRow(_ marker: Binding<ComposerListMarker>) -> some View {
+        HStack(spacing: 6) {
+            ForEach(ComposerListMarker.allCases) { option in
+                let isOn = marker.wrappedValue == option
+                Button {
+                    marker.wrappedValue = option
+                    onChange()
+                } label: {
+                    Image(systemName: option.systemImage)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(isOn ? 1 : 0.72))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 32)
+                        .background(
+                            Color.white.opacity(isOn ? 0.18 : 0.08),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(option.title)
+                .accessibilityValue(isOn ? "On" : "Off")
+            }
+        }
     }
 }
 

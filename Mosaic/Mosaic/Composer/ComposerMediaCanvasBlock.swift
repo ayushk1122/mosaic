@@ -1,4 +1,5 @@
 import AVFoundation
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -331,6 +332,33 @@ final class ComposerPlayerView: UIView {
     }
 }
 
+enum ComposerImagePreparation: Sendable {
+    nonisolated static func jpeg(from data: Data, maxPixel: CGFloat = 1800, quality: CGFloat = 0.82) -> Data? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        let destinationOptions = [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+        CGImageDestinationAddImage(destination, image, destinationOptions)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
+}
+
+struct PreparedCarouselMedia: Sendable {
+    var jpegData: Data?
+    var videoURL: URL?
+}
+
 enum ComposerMediaImport {
     @MainActor
     static func save(_ item: PhotosPickerItem, to store: ComposerStore) async -> String? {
@@ -344,6 +372,43 @@ enum ComposerMediaImport {
             return try? store.saveMediaData(data)
         }
         return nil
+    }
+
+    nonisolated static func prepareForCarousel(_ item: PhotosPickerItem) async -> PreparedCarouselMedia? {
+        let isVideo = item.supportedContentTypes.contains { type in
+            type.conforms(to: .movie) || type.conforms(to: .video)
+        }
+        if isVideo, let movie = try? await item.loadTransferable(type: ComposerMovieFile.self) {
+            return PreparedCarouselMedia(videoURL: movie.url)
+        }
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
+        let prepared = await Task.detached(priority: .userInitiated) {
+            ComposerImagePreparation.jpeg(from: data) ?? data
+        }.value
+        return PreparedCarouselMedia(jpegData: prepared)
+    }
+
+    @MainActor
+    static func importCarouselItems(
+        _ items: [PhotosPickerItem],
+        ids: [String],
+        store: ComposerStore,
+        apply: @MainActor (String, String?) -> Void
+    ) async {
+        await withTaskGroup(of: (String, PreparedCarouselMedia?).self) { group in
+            for pair in zip(ids, items) {
+                let id = pair.0
+                let item = pair.1
+                group.addTask {
+                    let prepared = await prepareForCarousel(item)
+                    return (id, prepared)
+                }
+            }
+            for await (id, prepared) in group {
+                let fileName = prepared.flatMap { try? store.storePreparedCarouselMedia($0) }
+                apply(id, fileName)
+            }
+        }
     }
 }
 

@@ -20,8 +20,11 @@ struct ComposerBlockID: Hashable, Codable, Sendable {
 enum BlockKind: String, Codable, CaseIterable, Sendable {
     case text
     case heading
+    case list
     case media
     case carousel
+    case calendar
+    case graph
     case link
     case pursuit
 }
@@ -29,8 +32,11 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
 enum BlockMenuOption: String, CaseIterable, Identifiable {
     case text
     case heading
+    case list
     case media
     case carousel
+    case calendar
+    case graph
     case link
     case pursuit
 
@@ -40,8 +46,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         switch self {
         case .text: "Text"
         case .heading: "Heading"
+        case .list: "List"
         case .media: "Media"
         case .carousel: "Carousel"
+        case .calendar: "Calendar"
+        case .graph: "Graph"
         case .link: "Link"
         case .pursuit: "Pursuit"
         }
@@ -51,8 +60,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         switch self {
         case .text: "textformat"
         case .heading: "textformat.size.larger"
+        case .list: "list.bullet"
         case .media: "photo"
         case .carousel: "rectangle.stack"
+        case .calendar: "calendar"
+        case .graph: "chart.xyaxis.line"
         case .link: "link"
         case .pursuit: "square.grid.2x2"
         }
@@ -62,8 +74,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         switch self {
         case .text: "T"
         case .heading: "H"
+        case .list: "•"
         case .media: "▣"
         case .carousel: "◎"
+        case .calendar: "▦"
+        case .graph: "↗"
         case .link: "🔗"
         case .pursuit: "P"
         }
@@ -73,8 +88,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         switch self {
         case .text: .text
         case .heading: .heading
+        case .list: .list
         case .media: .media
         case .carousel: .carousel
+        case .calendar: .calendar
+        case .graph: .graph
         case .link: .link
         case .pursuit: .pursuit
         }
@@ -85,21 +103,101 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         switch self {
         case .text: "text paragraph write"
         case .heading: "heading title headline"
+        case .list: "list bullet number numbered checkbox todo task dash letter"
         case .media: "media photo image picture"
         case .carousel: "carousel carosoul slider"
+        case .calendar: "calendar date day month year schedule"
+        case .graph: "graph chart line plot axis"
         case .link: "link url web"
         case .pursuit: "pursuit project goal"
         }
     }
 
-    static func menuOptions(matching query: String, includingPursuit: Bool = true) -> [BlockMenuOption] {
+    static func menuOptions(
+        matching query: String,
+        includingPursuit: Bool = true,
+        includingCalendar: Bool = true,
+        includingGraph: Bool = true
+    ) -> [BlockMenuOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var ordered = Array(allCases.reversed())
         if !includingPursuit {
             ordered.removeAll { $0 == .pursuit }
         }
+        if !includingCalendar {
+            ordered.removeAll { $0 == .calendar }
+        }
+        if !includingGraph {
+            ordered.removeAll { $0 == .graph }
+        }
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { $0.searchTokens.contains(trimmed) }
+    }
+}
+
+struct ComposerListItem: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var text: String
+    var isChecked: Bool
+
+    init(id: String = UUID().uuidString, text: String = "", isChecked: Bool = false) {
+        self.id = id
+        self.text = text
+        self.isChecked = isChecked
+    }
+}
+
+enum ComposerListMarker: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bullet
+    case number
+    case checkbox
+    case dash
+    case letter
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bullet: "Bulleted"
+        case .number: "Numbered"
+        case .checkbox: "Checkbox"
+        case .dash: "Dashed"
+        case .letter: "Lettered"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .bullet: "list.bullet"
+        case .number: "list.number"
+        case .checkbox: "checklist"
+        case .dash: "list.dash"
+        case .letter: "textformat.abc"
+        }
+    }
+
+    func marker(at index: Int) -> String {
+        switch self {
+        case .bullet: "•"
+        case .number: "\(index + 1)."
+        case .checkbox: ""
+        case .dash: "–"
+        case .letter: Self.letters(for: index) + "."
+        }
+    }
+
+    /// Spreadsheet-style letters: a, b, … z, aa.
+    private static func letters(for index: Int) -> String {
+        var value = max(index, 0) + 1
+        var result = ""
+        while value > 0 {
+            value -= 1
+            let remainder = value % 26
+            guard let scalar = UnicodeScalar(97 + remainder) else { break }
+            result = String(scalar) + result
+            value /= 26
+        }
+        return result
     }
 }
 
@@ -197,6 +295,9 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
     /// Installed font family. When set, this overrides `fontChoice`.
     var fontFamilyName: String?
     var customColor: ComposerRGBColor?
+    var isBold: Bool
+    var isItalic: Bool
+    var isUnderlined: Bool
 
     init(
         size: TextBlockSize,
@@ -206,7 +307,10 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
         fontSize: Double? = nil,
         fontChoice: ComposerFontChoice = .system,
         fontFamilyName: String? = nil,
-        customColor: ComposerRGBColor? = nil
+        customColor: ComposerRGBColor? = nil,
+        isBold: Bool = false,
+        isItalic: Bool = false,
+        isUnderlined: Bool = false
     ) {
         self.size = size
         self.color = color
@@ -216,10 +320,13 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
         self.fontChoice = fontChoice
         self.fontFamilyName = fontFamilyName
         self.customColor = customColor
+        self.isBold = isBold
+        self.isItalic = isItalic
+        self.isUnderlined = isUnderlined
     }
 
     enum CodingKeys: String, CodingKey {
-        case size, color, alignment, scale, fontSize, fontChoice, fontFamilyName, customColor
+        case size, color, alignment, scale, fontSize, fontChoice, fontFamilyName, customColor, isBold, isItalic, isUnderlined
     }
 
     init(from decoder: Decoder) throws {
@@ -232,6 +339,9 @@ struct TextBlockStyle: Codable, Equatable, Sendable {
         fontChoice = try container.decodeIfPresent(ComposerFontChoice.self, forKey: .fontChoice) ?? .system
         fontFamilyName = try container.decodeIfPresent(String.self, forKey: .fontFamilyName)
         customColor = try container.decodeIfPresent(ComposerRGBColor.self, forKey: .customColor)
+        isBold = try container.decodeIfPresent(Bool.self, forKey: .isBold) ?? false
+        isItalic = try container.decodeIfPresent(Bool.self, forKey: .isItalic) ?? false
+        isUnderlined = try container.decodeIfPresent(Bool.self, forKey: .isUnderlined) ?? false
     }
 
     static let bodyDefault = TextBlockStyle(size: .body, color: .canvas, alignment: .leading, fontSize: 17)
@@ -518,6 +628,142 @@ struct BlockPosition: Codable, Equatable, Sendable {
     }
 }
 
+struct CalendarDayEntry: Codable, Equatable, Identifiable, Sendable {
+    var year: Int
+    var month: Int
+    var day: Int
+    var note: String
+    var media: [CarouselMediaItem]
+    var mediaIndex: Int
+
+    var id: String { String(format: "%04d-%02d-%02d", year, month, day) }
+
+    var hasContent: Bool {
+        media.contains { !$0.fileName.isEmpty } || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    init(
+        year: Int,
+        month: Int,
+        day: Int,
+        note: String,
+        media: [CarouselMediaItem] = [],
+        mediaIndex: Int = 0
+    ) {
+        self.year = year
+        self.month = month
+        self.day = day
+        self.note = note
+        self.media = media
+        self.mediaIndex = mediaIndex
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case year, month, day, note, media, mediaIndex, mediaFileName
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        year = try container.decode(Int.self, forKey: .year)
+        month = try container.decode(Int.self, forKey: .month)
+        day = try container.decode(Int.self, forKey: .day)
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        mediaIndex = try container.decodeIfPresent(Int.self, forKey: .mediaIndex) ?? 0
+        if let media = try container.decodeIfPresent([CarouselMediaItem].self, forKey: .media) {
+            self.media = media
+        } else if let fileName = try container.decodeIfPresent(String.self, forKey: .mediaFileName) {
+            self.media = [CarouselMediaItem(fileName: fileName)]
+        } else {
+            self.media = []
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(year, forKey: .year)
+        try container.encode(month, forKey: .month)
+        try container.encode(day, forKey: .day)
+        try container.encode(note, forKey: .note)
+        try container.encode(media, forKey: .media)
+        try container.encode(mediaIndex, forKey: .mediaIndex)
+    }
+}
+
+struct ComposerGraphPoint: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var x: Date
+    var y: Int
+
+    init(id: String = UUID().uuidString, x: Date, y: Int) {
+        self.id = id
+        self.x = x
+        self.y = y
+    }
+}
+
+enum ComposerGraphKind: String, Codable, Sendable {
+    case line
+}
+
+enum ComposerGraphAxis: String, Codable, Sendable {
+    case date
+    case integer
+}
+
+/// Places line-graph points in date order. `nx` and `ny` run from 0 to 1, with 1 at the top.
+enum ComposerLineGraph {
+    struct Placed: Equatable {
+        var id: String
+        var nx: CGFloat
+        var ny: CGFloat
+    }
+
+    static func placed(_ points: [ComposerGraphPoint]) -> [Placed] {
+        let ordered = points.sorted { lhs, rhs in
+            if lhs.x != rhs.x { return lhs.x < rhs.x }
+            return lhs.id < rhs.id
+        }
+        guard !ordered.isEmpty else { return [] }
+        let minX = ordered.map(\.x.timeIntervalSinceReferenceDate).min() ?? 0
+        let maxX = ordered.map(\.x.timeIntervalSinceReferenceDate).max() ?? 0
+        let minY = ordered.map(\.y).min() ?? 0
+        let maxY = ordered.map(\.y).max() ?? 0
+        let xSpan = maxX - minX
+        let ySpan = maxY - minY
+        return ordered.map { point in
+            let nx: CGFloat = xSpan == 0 ? 0.5 : CGFloat((point.x.timeIntervalSinceReferenceDate - minX) / xSpan)
+            let ny: CGFloat = ySpan == 0 ? 0.5 : CGFloat(Double(point.y - minY) / Double(ySpan))
+            return Placed(id: point.id, nx: nx, ny: ny)
+        }
+    }
+
+    static func dateLabel(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = calendar.locale ?? .current
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        formatter.setLocalizedDateFormatFromTemplate(sameYear ? "MMM d" : "MMM d yyyy")
+        return formatter.string(from: date)
+    }
+}
+
+enum ComposerGraphStretch {
+    static let minimum = 0.35
+    static let maximum = 4.0
+    static let baseWidth: CGFloat = 320
+    static let baseHeight: CGFloat = 236
+
+    static func clamped(_ value: Double) -> Double {
+        min(max(value, minimum), maximum)
+    }
+
+    /// `leadingOrTop` means dragging toward the start of that axis grows the graph.
+    static func resized(base: Double, translation: CGFloat, span: CGFloat, leadingOrTop: Bool) -> Double {
+        let delta = Double(translation / max(span, 1))
+        return clamped(base + (leadingOrTop ? -delta : delta))
+    }
+}
+
 struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     let id: ComposerBlockID
     var kind: BlockKind
@@ -544,9 +790,21 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var pursuitImageFileName: String?
     var carouselItems: [CarouselMediaItem]
     var carouselIndex: Int
+    var calendarEntries: [CalendarDayEntry]
+    var listItems: [ComposerListItem]
+    var listMarker: ComposerListMarker
+    var graphTitle: String
+    var graphKind: ComposerGraphKind
+    var graphXAxis: ComposerGraphAxis
+    var graphYAxis: ComposerGraphAxis
+    var graphXUnitName: String
+    var graphYUnitName: String
+    var graphPoints: [ComposerGraphPoint]
+    var graphWidthScale: Double
+    var graphHeightScale: Double
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale
     }
 
     init(
@@ -574,7 +832,19 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitFill: ComposerRGBColor? = nil,
         pursuitImageFileName: String? = nil,
         carouselItems: [CarouselMediaItem] = [],
-        carouselIndex: Int = 0
+        carouselIndex: Int = 0,
+        calendarEntries: [CalendarDayEntry] = [],
+        listItems: [ComposerListItem] = [],
+        listMarker: ComposerListMarker = .bullet,
+        graphTitle: String = "",
+        graphKind: ComposerGraphKind = .line,
+        graphXAxis: ComposerGraphAxis = .date,
+        graphYAxis: ComposerGraphAxis = .integer,
+        graphXUnitName: String = "Date",
+        graphYUnitName: String = "Value",
+        graphPoints: [ComposerGraphPoint] = [],
+        graphWidthScale: Double = 1,
+        graphHeightScale: Double = 1
     ) {
         self.id = id
         self.kind = kind
@@ -601,6 +871,18 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.pursuitImageFileName = pursuitImageFileName
         self.carouselItems = carouselItems
         self.carouselIndex = carouselIndex
+        self.calendarEntries = calendarEntries
+        self.listItems = listItems
+        self.listMarker = listMarker
+        self.graphTitle = graphTitle
+        self.graphKind = graphKind
+        self.graphXAxis = graphXAxis
+        self.graphYAxis = graphYAxis
+        self.graphXUnitName = graphXUnitName
+        self.graphYUnitName = graphYUnitName
+        self.graphPoints = graphPoints
+        self.graphWidthScale = graphWidthScale
+        self.graphHeightScale = graphHeightScale
     }
 
     init(from decoder: Decoder) throws {
@@ -631,6 +913,18 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitImageFileName = try container.decodeIfPresent(String.self, forKey: .pursuitImageFileName)
         carouselItems = try container.decodeIfPresent([CarouselMediaItem].self, forKey: .carouselItems) ?? []
         carouselIndex = try container.decodeIfPresent(Int.self, forKey: .carouselIndex) ?? 0
+        calendarEntries = try container.decodeIfPresent([CalendarDayEntry].self, forKey: .calendarEntries) ?? []
+        listItems = try container.decodeIfPresent([ComposerListItem].self, forKey: .listItems) ?? []
+        listMarker = try container.decodeIfPresent(ComposerListMarker.self, forKey: .listMarker) ?? .bullet
+        graphTitle = try container.decodeIfPresent(String.self, forKey: .graphTitle) ?? ""
+        graphKind = try container.decodeIfPresent(ComposerGraphKind.self, forKey: .graphKind) ?? .line
+        graphXAxis = try container.decodeIfPresent(ComposerGraphAxis.self, forKey: .graphXAxis) ?? .date
+        graphYAxis = try container.decodeIfPresent(ComposerGraphAxis.self, forKey: .graphYAxis) ?? .integer
+        graphXUnitName = try container.decodeIfPresent(String.self, forKey: .graphXUnitName) ?? "Date"
+        graphYUnitName = try container.decodeIfPresent(String.self, forKey: .graphYUnitName) ?? "Value"
+        graphPoints = try container.decodeIfPresent([ComposerGraphPoint].self, forKey: .graphPoints) ?? []
+        graphWidthScale = try container.decodeIfPresent(Double.self, forKey: .graphWidthScale) ?? 1
+        graphHeightScale = try container.decodeIfPresent(Double.self, forKey: .graphHeightScale) ?? 1
     }
 
     static func make(kind: BlockKind, position: BlockPosition) -> ComposerBlock {
@@ -651,6 +945,16 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 style: .headingDefault,
                 position: position
             )
+        case .list:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .list,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                listItems: [ComposerListItem()],
+                listMarker: .bullet
+            )
         case .media:
             ComposerBlock(
                 id: ComposerBlockID(),
@@ -666,6 +970,27 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 text: "",
                 style: .bodyDefault,
                 position: position
+            )
+        case .calendar:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .calendar,
+                text: "",
+                style: .bodyDefault,
+                position: position
+            )
+        case .graph:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .graph,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                graphKind: .line,
+                graphXAxis: .date,
+                graphYAxis: .integer,
+                graphXUnitName: "Date",
+                graphYUnitName: "Value"
             )
         case .link:
             ComposerBlock(
