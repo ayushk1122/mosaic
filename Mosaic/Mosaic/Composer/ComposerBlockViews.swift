@@ -13,6 +13,18 @@ struct ComposerBlockRow: View {
                 textBlock
             case .media:
                 mediaBlock
+            case .carousel:
+                Label("Carousel", systemImage: "rectangle.stack")
+                    .font(.headline)
+            case .list:
+                Label("List", systemImage: "list.bullet")
+                    .font(.headline)
+            case .calendar:
+                Label("Calendar", systemImage: "calendar")
+                    .font(.headline)
+            case .graph:
+                Label("Graph", systemImage: "chart.xyaxis.line")
+                    .font(.headline)
             case .link:
                 linkBlock
             case .pursuit:

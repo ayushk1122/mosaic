@@ -36,6 +36,26 @@ struct BlockInspectorSheet: View {
                     Section("Pursuit") {
                         TextField("Name", text: $block.text)
                     }
+                case .calendar:
+                    Section("Calendar") {
+                        Text("Open a day on the calendar to add a carousel of photos and videos, or a note.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .list:
+                    Section("List") {
+                        Text("Starts as bullets. The style menu switches to numbers, checkboxes, dashes, or letters.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .graph:
+                    Section("Graph") {
+                        Text("A line graph. Add dated points and the line connects them.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .carousel:
+                    Section("Carousel") {
+                        Text("Add, replace, or remove items from the carousel on the page.")
+                            .foregroundStyle(.secondary)
+                    }
                 case .media:
                     Section("Photo") {
                         PhotosPicker(selection: $photoItem, matching: .images) {

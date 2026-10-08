@@ -40,9 +40,33 @@ final class ComposerStore {
         blocks(for: documentID).first(where: { $0.id == id })
     }
 
+    /// Turns the fixed Mosaic title into a heading on the board, once.
+    func placeMosaicTitleIfNeeded() {
+        guard !snapshot.mosaicTitlePlaced else { return }
+        var block = ComposerBlock.make(kind: .heading, position: BlockPosition(x: 0.06, y: 0.03))
+        block.text = "Mosaic"
+        block.style.fontSize = 34
+        snapshot.mosaicBlocks.insert(block, at: 0)
+        snapshot.mosaicTitle = "Mosaic"
+        snapshot.mosaicTitlePlaced = true
+        persist()
+    }
+
+    /// Clears anything already saved inside Pursuit pages, once, so each page opens empty.
+    func blankPursuitPagesIfNeeded() {
+        guard !snapshot.pursuitPagesBlanked else { return }
+        for index in snapshot.pursuits.indices {
+            snapshot.pursuits[index].blocks.removeAll()
+        }
+        snapshot.pursuitPagesBlanked = true
+        persist()
+    }
+
     func title(for documentID: ComposerDocumentID?) -> String {
         if let documentID {
-            return snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? "Pursuit"
+            let title = snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? ""
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Pursuit" : trimmed
         }
         return snapshot.mosaicTitle
     }
@@ -75,18 +99,22 @@ final class ComposerStore {
         mutateBlocks(for: documentID) { blocks in
             guard let index = blocks.firstIndex(where: { $0.id == block.id }) else { return }
             blocks[index] = block
-            if block.kind == .pursuit, let pursuitID = block.pursuitID {
-                if let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
-                    snapshot.pursuits[pursuitIndex].title = block.text
-                }
-            }
+        }
+        // Title lives on the pursuit document, outside the block array this method just borrowed.
+        if block.kind == .pursuit, let pursuitID = block.pursuitID,
+           let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
+            snapshot.pursuits[pursuitIndex].title = block.text
         }
         persist()
     }
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        let removed = block(with: blockID, in: documentID)
         mutateBlocks(for: documentID) { blocks in
             blocks.removeAll { $0.id == blockID }
+        }
+        if removed?.kind == .pursuit, let pursuitID = removed?.pursuitID {
+            snapshot.pursuits.removeAll { $0.id == pursuitID }
         }
         persist()
     }
@@ -115,13 +143,46 @@ final class ComposerStore {
         persist()
     }
 
-    func saveMediaData(_ data: Data) throws -> String {
+    func saveMediaData(_ data: Data, fileExtension: String = "jpg") throws -> String {
         let directory = Self.mediaDirectory(fileManager: fileManager)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fileName = "\(UUID().uuidString).jpg"
+        let fileName = "\(UUID().uuidString).\(fileExtension)"
         let url = directory.appendingPathComponent(fileName)
         try data.write(to: url, options: .atomic)
         return fileName
+    }
+
+    func saveMediaFile(from source: URL, removeSource: Bool = false) throws -> String {
+        let directory = Self.mediaDirectory(fileManager: fileManager)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+        let fileName = "\(UUID().uuidString).\(ext)"
+        let destination = directory.appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        if removeSource {
+            do {
+                try fileManager.moveItem(at: source, to: destination)
+                return fileName
+            } catch {
+                try fileManager.copyItem(at: source, to: destination)
+                try? fileManager.removeItem(at: source)
+                return fileName
+            }
+        }
+        try fileManager.copyItem(at: source, to: destination)
+        return fileName
+    }
+
+    func storePreparedCarouselMedia(_ prepared: PreparedCarouselMedia) throws -> String {
+        if let videoURL = prepared.videoURL {
+            return try saveMediaFile(from: videoURL, removeSource: true)
+        }
+        if let jpegData = prepared.jpegData {
+            return try saveMediaData(jpegData)
+        }
+        throw CocoaError(.fileWriteUnknown)
     }
 
     func mediaURL(for fileName: String) -> URL {

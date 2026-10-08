@@ -11,6 +11,22 @@ private enum ComposerAddMenuColors {
     static let secondaryIcon = Color.white.opacity(0.55)
 }
 
+struct ComposerPencilFrameKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: CGRect] = [:]
+
+    static func reduce(value: inout [ComposerBlockID: CGRect], nextValue: () -> [ComposerBlockID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+struct ComposerTextStyleIconFrameKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: CGRect] = [:]
+
+    static func reduce(value: inout [ComposerBlockID: CGRect], nextValue: () -> [ComposerBlockID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
 struct ComposerTrashDropZoneFrameKey: PreferenceKey {
     static var defaultValue: CGRect = .zero
 
@@ -26,16 +42,24 @@ struct ComposerFloatingMenu: View {
     @Binding var isExpanded: Bool
     var showsTrashDropZone: Bool
     var isTrashHighlighted: Bool
+    var includesPursuit: Bool = true
+    var includesCalendar: Bool = true
+    var includesGraph: Bool = true
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
 
     private let plusSize: CGFloat = 56
     private let rowWidth: CGFloat = 184
-    private let listMaxHeight: CGFloat = 300
+    private let listMaxHeight: CGFloat = 360
 
     private var filteredOptions: [BlockMenuOption] {
-        BlockMenuOption.menuOptions(matching: searchText)
+        BlockMenuOption.menuOptions(
+            matching: searchText,
+            includingPursuit: includesPursuit,
+            includingCalendar: includesCalendar,
+            includingGraph: includesGraph
+        )
     }
 
     var body: some View {

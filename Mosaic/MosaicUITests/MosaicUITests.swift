@@ -31,7 +31,7 @@ final class MosaicUITests: XCTestCase {
         let tabBar = app.tabBars.firstMatch
         XCTAssertTrue(tabBar.waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.navigationBars["Mosaic"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Mosaic"].waitForExistence(timeout: 2))
 
         for title in ["Feed", "Mosaic", "Circle", "Search"] {
             XCTAssertTrue(tabBar.buttons[title].exists)

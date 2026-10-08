@@ -32,11 +32,34 @@ enum MosaicTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct MosaicTabBarHiddenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var mosaicTabBarHidden: Bool {
+        get { self[MosaicTabBarHiddenKey.self] }
+        set { self[MosaicTabBarHiddenKey.self] = newValue }
+    }
+}
+
+@MainActor
+@Observable
+final class MosaicChrome {
+    var isViewing = false
+}
+
 struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
-    @State private var store = ComposerStore(
-        persistToDisk: !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
-    )
+    @State private var chrome = MosaicChrome()
+    @State private var store: ComposerStore
+
+    init(persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")) {
+        let store = ComposerStore(persistToDisk: persistToDisk)
+        store.placeMosaicTitleIfNeeded()
+        store.blankPursuitPagesIfNeeded()
+        _store = State(initialValue: store)
+    }
 
     var body: some View {
         TabView(selection: $selection) {
@@ -51,20 +74,26 @@ struct MosaicTabShell: View {
         .tint(.white)
         .toolbarBackground(MosaicBrand.inkBlack, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .animation(.easeOut(duration: 0.28), value: chrome.isViewing)
         .onAppear {
             MosaicTabBarStyling.apply()
         }
         .environment(store)
+        .environment(chrome)
+        .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }
 
     @ViewBuilder
     private func tabRoot(for tab: MosaicTab) -> some View {
         NavigationStack {
-            if tab == .mosaic {
-                MosaicComposerView(documentID: nil)
-            } else {
-                MosaicTabPlaceholder(tab: tab)
+            Group {
+                if tab == .mosaic {
+                    MosaicComposerView(documentID: nil)
+                } else {
+                    MosaicTabPlaceholder(tab: tab)
+                }
             }
+            .toolbar(chrome.isViewing ? .hidden : .visible, for: .tabBar)
         }
     }
 
@@ -120,6 +149,8 @@ private enum MosaicTabBarStyling {
 private struct MosaicTabPlaceholder: View {
     let tab: MosaicTab
 
+    @Environment(\.mosaicTabBarHidden) private var tabBarHidden
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
@@ -128,6 +159,7 @@ private struct MosaicTabPlaceholder: View {
         .background(Color(.systemBackground))
         .navigationTitle(tab.title)
         .navigationBarTitleDisplayMode(.large)
+        .toolbar(tabBarHidden ? .hidden : .visible, for: .tabBar)
         .accessibilityIdentifier(tab.screenAccessibilityIdentifier)
         .accessibilityLabel(tab.title)
     }
@@ -138,6 +170,6 @@ enum MosaicBrand {
     static let inkBlack = Color(red: 0.04, green: 0.04, blue: 0.04)
 }
 
-#Preview {
-    MosaicTabShell()
+#Preview("Mosaic") {
+    MosaicTabShell(persistToDisk: false)
 }
