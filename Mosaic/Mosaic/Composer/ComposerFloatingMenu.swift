@@ -45,6 +45,10 @@ struct ComposerFloatingMenu: View {
     var includesPursuit: Bool = true
     var includesCalendar: Bool = true
     var includesGraph: Bool = true
+    var includesNode: Bool = true
+    var includesTabs: Bool = true
+    var includesBanner: Bool = true
+    var includesTable: Bool = true
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
@@ -58,7 +62,11 @@ struct ComposerFloatingMenu: View {
             matching: searchText,
             includingPursuit: includesPursuit,
             includingCalendar: includesCalendar,
-            includingGraph: includesGraph
+            includingGraph: includesGraph,
+            includingNode: includesNode,
+            includingTabs: includesTabs,
+            includingBanner: includesBanner,
+            includingTable: includesTable
         )
     }
 

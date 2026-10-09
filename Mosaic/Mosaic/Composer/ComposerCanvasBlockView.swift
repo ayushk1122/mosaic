@@ -75,6 +75,11 @@ struct ComposerCanvasBlockView: View {
     var allowsCarouselControl: Bool
     var onEditCarousel: () -> Void
     var isViewing: Bool
+    var canvasSize: CGSize
+    var cornerResizing: Binding<Bool> = .constant(false)
+    var onSelectTabs: () -> Void = {}
+    var onEditSocial: () -> Void = {}
+    var onUngroup: () -> Void = {}
 
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
@@ -137,6 +142,52 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     isViewing: isViewing
                 )
+            case .tabs:
+                ComposerTabsCanvasBlock(
+                    documentID: documentID,
+                    block: $block,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isViewing: isViewing,
+                    onActivate: onSelectTabs
+                )
+            case .banner:
+                EmptyView()
+            case .table:
+                ComposerTableCanvasBlock(
+                    documentID: documentID,
+                    block: $block,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isViewing: isViewing,
+                    onActivate: onSelectTabs
+                )
+            case .group:
+                ComposerGroupCanvasBlock(
+                    block: $block,
+                    documentID: documentID,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isViewing: isViewing,
+                    onUngroup: onUngroup
+                )
+            case .social:
+                ComposerSocialCanvasBlock(
+                    block: $block,
+                    canvasSize: canvasSize,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isLifted: isLifted,
+                    isRelocating: isRelocating,
+                    isViewing: isViewing,
+                    cornerResizing: cornerResizing,
+                    onEdit: onEditSocial
+                )
             case .media:
                 ComposerMediaCanvasBlock(
                     block: $block,
@@ -153,18 +204,18 @@ struct ComposerCanvasBlockView: View {
                 )
             case .link:
                 linkEditor
-            case .pursuit:
+            case .node, .pursuit:
                 pursuitView
             }
         }
         .frame(
-            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .carousel || block.kind == .calendar || block.kind == .graph ? nil : 280,
+            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .carousel || block.kind == .calendar || block.kind == .graph,
-            editsOnTap: block.kind != .pursuit,
+            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group,
+            editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group,
             onTap: onBeginEditing,
             onDelete: onDelete
         ))
@@ -242,14 +293,15 @@ struct ComposerCanvasBlockView: View {
             showsField: isEditing,
             focusBlockID: focusBlockID,
             focusID: block.id,
-            onSubmit: onCommit
+            onSubmit: onCommit,
+            namePlaceholder: block.kind == .node ? "Node" : "Pursuit"
         )
         .frame(width: size.width, height: size.height)
         .shadow(color: .white.opacity(moving ? 0.95 : 0), radius: moving ? 2 : 0)
         .shadow(color: .white.opacity(moving ? 0.55 : 0), radius: moving ? 10 : 0)
         .contentShape(Rectangle())
-        .accessibilityLabel(block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Pursuit" : block.text)
-        .accessibilityIdentifier(block.pursuitID.map { "composer.pursuit.open.\($0.rawValue)" } ?? "composer.pursuit.open")
+        .accessibilityLabel(block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (block.kind == .node ? "Node" : "Pursuit") : block.text)
+        .accessibilityIdentifier(block.pursuitID.map { block.kind == .node ? "composer.node.open.\($0.rawValue)" : "composer.pursuit.open.\($0.rawValue)" } ?? "composer.pursuit.open")
     }
 
     private var pursuitPencil: some View {
@@ -267,7 +319,7 @@ struct ComposerCanvasBlockView: View {
             }
             .preference(key: ComposerPencilFrameKey.self, value: [block.id: pursuitPencilFrame])
             .highPriorityGesture(TapGesture().onEnded { onEditPursuit() })
-            .accessibilityLabel("Edit Pursuit")
+            .accessibilityLabel(block.kind == .node ? "Edit Node" : "Edit Pursuit")
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("composer.pursuit.edit.\(block.id.rawValue)")
     }

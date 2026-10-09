@@ -32,8 +32,8 @@ struct BlockInspectorSheet: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                     }
-                case .pursuit:
-                    Section("Pursuit") {
+                case .pursuit, .node:
+                    Section(block.kind == .node ? "Node" : "Pursuit") {
                         TextField("Name", text: $block.text)
                     }
                 case .calendar:
@@ -49,6 +49,31 @@ struct BlockInspectorSheet: View {
                 case .graph:
                     Section("Graph") {
                         Text("A line graph. Add dated points and the line connects them.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .tabs:
+                    Section("Tabs") {
+                        Text("Starts with three tabs. Tapping one shows that tab’s content on this page.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .banner:
+                    Section("Banner") {
+                        Text("A photo and title pinned to the top of this page. It stays in place when tabs change.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .table:
+                    Section("Table") {
+                        Text("A title is optional. Each column has a header, and each cell is a label.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .social:
+                    Section("Social") {
+                        Text("Choose Instagram, TikTok, Twitter, YouTube, or Twitch, then add the account link.")
+                            .foregroundStyle(.secondary)
+                    }
+                case .group:
+                    Section("Group") {
+                        Text("The selected components move and resize together. Ungroup puts them back on the page.")
                             .foregroundStyle(.secondary)
                     }
                 case .carousel:

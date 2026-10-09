@@ -114,10 +114,17 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private var shapeHeight: CGFloat {
-        if block.mediaShape.usesSquareFrame {
-            return displayWidth
+        displayWidth / max(frameAspect, MediaFrameShape.minimumAspect)
+    }
+
+    private var frameAspect: CGFloat {
+        if block.mediaFrameAspect > 0.05 {
+            return CGFloat(block.mediaFrameAspect)
         }
-        return displayWidth / max(isVideo ? videoAspect : imageAspect, 0.4)
+        if let preset = block.mediaShape.presetAspect {
+            return preset
+        }
+        return max(contentAspect, 0.4)
     }
 
     private var contentAspect: CGFloat {

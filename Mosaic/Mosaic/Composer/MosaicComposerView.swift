@@ -9,10 +9,13 @@ struct MosaicComposerView: View {
     @Environment(ComposerStore.self) private var store
     @Environment(MosaicChrome.self) private var chrome
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var menuExpanded = false
     @State private var placingOption: BlockMenuOption?
     @State private var ghostLocation: CGPoint = .zero
     @State private var canvasSize: CGSize = .zero
+    @State private var grownCanvasHeight: CGFloat = 0
     @State private var editingBlockID: ComposerBlockID?
     @State private var selectedBlockID: ComposerBlockID?
     @FocusState private var focusedTextBlockID: ComposerBlockID?
@@ -31,31 +34,113 @@ struct MosaicComposerView: View {
     @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
     @State private var textStyleIconFrames: [ComposerBlockID: CGRect] = [:]
     @State private var graphResizeFrames: [ComposerBlockID: ComposerGraphResizeFrames] = [:]
+    @State private var socialCornerFrames: [ComposerBlockID: ComposerSocialCornerFrames] = [:]
+    @State private var socialCornerResizing = false
+    @State private var isGrouping = false
+    @State private var groupSelection: Set<ComposerBlockID> = []
+    @State private var blockFrames: [ComposerBlockID: CGRect] = [:]
     @State private var pursuitEditRequest: PursuitEditRequest?
     @State private var showCarouselPicker = false
     @State private var pickedCarouselItems: [PhotosPickerItem] = []
     @State private var pendingCarouselBlockID: ComposerBlockID?
     @State private var carouselEditRequest: CarouselEditRequest?
+    @State private var socialEditRequest: SocialEditRequest?
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
     }
 
-    private var pageTitle: String {
-        if documentID == nil {
-            return "Mosaic"
-        }
-        return store.title(for: documentID)
+    private var visibleBlocks: [ComposerBlock] {
+        guard let tabs = blocks.first(where: { $0.kind == .tabs }),
+              let selected = tabs.selectedTabID else { return blocks }
+        return blocks.filter { $0.kind == .tabs || $0.kind == .banner || $0.tabID == selected }
     }
 
-    private var canvasHeight: CGFloat {
-        let lowest = blocks.map(\.position.y).max() ?? 0.15
+    private var scrollingBlocks: [ComposerBlock] {
+        visibleBlocks.filter { $0.kind != .banner }
+    }
+
+    private var backButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.14), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 16)
+        .padding(.top, 8)
+        .accessibilityLabel("Back")
+    }
+
+    private func bannerHeader(_ block: ComposerBlock) -> some View {
+        ComposerBannerBlock(
+            block: blockBinding(for: block.id, fallback: block),
+            mediaURL: block.mediaFileName.map { store.mediaURL(for: $0) },
+            isSelected: selectedBlockID == block.id,
+            isEditing: editingBlockID == block.id,
+            isViewing: chrome.isViewing,
+            focusBlockID: $focusedTextBlockID,
+            onSelect: {
+                selectedBlockID = block.id
+            },
+            onBeginEditing: {
+                selectedBlockID = block.id
+                editingBlockID = block.id
+                focusedTextBlockID = block.id
+            },
+            onCommit: commitTextEditing,
+            onReplaceMedia: {
+                selectedBlockID = block.id
+                pendingMediaBlockID = block.id
+                showMediaPicker = true
+            },
+            onDelete: {
+                store.deleteBlock(block.id, in: documentID)
+                if editingBlockID == block.id {
+                    editingBlockID = nil
+                    focusedTextBlockID = nil
+                }
+                if selectedBlockID == block.id {
+                    selectedBlockID = nil
+                }
+            }
+        )
+    }
+
+    /// Page height the saved positions were laid out against. It does not change when one block moves.
+    private var layoutHeight: CGFloat {
+        if let stored = store.layoutHeight(for: documentID), stored > 1 {
+            return CGFloat(stored)
+        }
+        return proposedLayoutHeight
+    }
+
+    private var proposedLayoutHeight: CGFloat {
+        let lowest = visibleBlocks.map(\.position.y).max() ?? 0.15
         return max(900, CGFloat(lowest + 0.3) * 1200)
     }
 
+    private var neededCanvasHeight: CGFloat {
+        let lowestPixel = visibleBlocks.map { CGFloat($0.position.y) * layoutHeight }.max() ?? 0
+        return max(layoutHeight, lowestPixel + 360)
+    }
+
+    /// Grows to fit a block that moves downward, and does not shrink when that block moves back up.
+    private var canvasHeight: CGFloat {
+        max(grownCanvasHeight, neededCanvasHeight)
+    }
+
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            ScrollView {
+        VStack(spacing: 0) {
+            if let banner = blocks.first(where: { $0.kind == .banner }) {
+                bannerHeader(banner)
+            }
+            ZStack(alignment: .bottomTrailing) {
+            ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
                         Color.clear
                             .contentShape(Rectangle())
@@ -74,24 +159,33 @@ struct MosaicComposerView: View {
                                 .padding(.top, 48)
                         }
 
-                        ForEach(blocks) { block in
+                        ForEach(scrollingBlocks) { block in
                             blockView(for: block)
                                 .id(block.id)
-                                .zIndex(styleMenuBlockID == block.id ? 2 : 0)
+                                .zIndex(styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
+                                .background {
+                                    GeometryReader { proxy in
+                                        Color.clear.preference(
+                                            key: ComposerBlockFrameKey.self,
+                                            value: [block.id: proxy.frame(in: .named("composerCanvas"))]
+                                        )
+                                    }
+                                }
                                 .offset(liveOffset(for: block))
-                                .opacity(textDragVisual.blockID == block.id && textDragVisual.isMoving ? 0.96 : 1)
+                                .opacity(blockOpacity(for: block))
                                 .modifier(
                                     RelocateGestureModifier(
                                         isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && styleMenuBlockID != block.id,
-                                        claimsTouches: claimsCanvasTouches(for: block),
-                                        pinchPriority: block.kind == .calendar || block.kind == .graph,
+                                        claimsTouches: !isGrouping && claimsCanvasTouches(for: block),
+                                        pinchPriority: block.kind == .calendar || block.kind == .graph || block.kind == .tabs,
+                                        pinchEnabled: block.kind != .table && block.kind != .social,
                                         gesture: textPressGesture(for: block),
                                         pinch: textPinchGesture(for: block)
                                     )
                                 )
                                 .modifier(
                                     ViewingMediaTapModifier(
-                                        isEnabled: chrome.isViewing && (block.kind == .media || block.kind == .pursuit),
+                                        isEnabled: chrome.isViewing && (block.kind == .media || isFolder(block.kind) || block.kind == .social),
                                         onTap: { handleViewingTap(on: block) }
                                     )
                                 )
@@ -103,8 +197,12 @@ struct MosaicComposerView: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: canvasHeight)
+                    .frame(
+                        width: viewportWidth > 1 ? viewportWidth : nil,
+                        height: canvasHeight,
+                        alignment: .topLeading
+                    )
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     .background(
                         GeometryReader { proxy in
                             Color.clear
@@ -113,12 +211,13 @@ struct MosaicComposerView: View {
                                     canvasSize = newSize
                                     if placingOption != nil, ghostLocation == .zero {
                                         ghostLocation = clamped(
-                                            point: CGPoint(x: newSize.width * 0.5, y: newSize.height * 0.35)
+                                            point: CGPoint(x: newSize.width * 0.5, y: layoutHeight * 0.35)
                                         )
                                     }
                                 }
                         }
                     )
+                    .background(ComposerCanvasZoomLock())
                     .coordinateSpace(name: "composerCanvas")
                     .modifier(
                         PlacementGestureModifier(
@@ -127,19 +226,29 @@ struct MosaicComposerView: View {
                         )
                     )
                 }
-                .scrollDisabled(textDragVisual.isMoving)
+                .scrollDisabled(textDragVisual.isMoving || socialCornerResizing)
                 .scrollDismissesKeyboard(.interactively)
 
+            if isGrouping {
+                groupingBar
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 20)
+            }
             HStack(alignment: .bottom, spacing: 12) {
                 viewEyeButton
-                if !chrome.isViewing {
+                if !chrome.isViewing, !isGrouping {
                     ComposerFloatingMenu(
                         isExpanded: $menuExpanded,
                         showsTrashDropZone: textDragVisual.isMoving,
                         isTrashHighlighted: textDragVisual.hoveringTrash,
                         includesPursuit: documentID == nil,
                         includesCalendar: documentID != nil,
-                        includesGraph: documentID != nil
+                        includesGraph: documentID != nil,
+                        includesNode: documentID != nil,
+                        includesTabs: !blocks.contains(where: { $0.kind == .tabs }),
+                        includesBanner: !blocks.contains(where: { $0.kind == .banner }),
+                        includesTable: documentID != nil
                     ) { option in
                         beginPlacement(for: option)
                     }
@@ -147,6 +256,16 @@ struct MosaicComposerView: View {
             }
             .padding(.trailing, 20)
             .padding(.bottom, 20)
+            .opacity(isGrouping ? 0 : 1)
+            .allowsHitTesting(!isGrouping)
+        }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if !chrome.isViewing, !isGrouping {
+                undoButton
+                    .padding(.leading, 20)
+                    .padding(.bottom, 20)
+            }
         }
         .coordinateSpace(name: "composerRoot")
         .onGeometryChange(for: CGFloat.self) { proxy in
@@ -164,6 +283,12 @@ struct MosaicComposerView: View {
         .onPreferenceChange(ComposerGraphResizeFrameKey.self) { frames in
             graphResizeFrames = frames
         }
+        .onPreferenceChange(ComposerSocialCornerFrameKey.self) { frames in
+            socialCornerFrames = frames
+        }
+        .onPreferenceChange(ComposerBlockFrameKey.self) { frames in
+            blockFrames = frames
+        }
         .onPreferenceChange(ComposerTrashDropZoneFrameKey.self) { frame in
             let rounded = CGRect(
                 x: frame.origin.x.rounded(),
@@ -174,9 +299,19 @@ struct MosaicComposerView: View {
             guard rounded != trashDropZoneFrame else { return }
             trashDropZoneFrame = rounded
         }
+        .overlay(alignment: .topLeading) {
+            if documentID != nil {
+                backButton
+            }
+        }
         .background(MosaicBrand.inkBlack)
         .onAppear {
             _ = ComposerInstalledFont.familyNames
+            lockLayoutHeightIfNeeded()
+            grownCanvasHeight = max(grownCanvasHeight, neededCanvasHeight)
+        }
+        .onChange(of: neededCanvasHeight) { _, needed in
+            grownCanvasHeight = max(grownCanvasHeight, needed)
         }
         .onChange(of: chrome.isViewing) { _, viewing in
             guard viewing else { return }
@@ -185,10 +320,8 @@ struct MosaicComposerView: View {
             dismissBlockInteraction()
         }
         .toolbar(mosaicTabBarHidden ? .hidden : .visible, for: .tabBar)
-        .navigationTitle(documentID == nil ? "" : pageTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(documentID == nil ? .hidden : .automatic, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 if editingBlockID != nil {
@@ -239,6 +372,9 @@ struct MosaicComposerView: View {
         }
         .sheet(item: $carouselEditRequest) { request in
             ComposerCarouselEditor(documentID: documentID, blockID: request.blockID)
+        }
+        .sheet(item: $socialEditRequest) { request in
+            socialEditor(for: request)
         }
         .onChange(of: pickedMediaItem) { _, item in
             guard let item, let blockID = pendingMediaBlockID else { return }
@@ -335,7 +471,20 @@ struct MosaicComposerView: View {
                 onEditCarousel: {
                     beginCarouselEdit(block.id)
                 },
-                isViewing: chrome.isViewing
+                isViewing: chrome.isViewing,
+                canvasSize: CGSize(width: canvasSize.width, height: layoutHeight),
+                cornerResizing: $socialCornerResizing,
+                onSelectTabs: {
+                    selectedBlockID = block.id
+                    editingBlockID = nil
+                    focusedTextBlockID = nil
+                },
+                onEditSocial: {
+                    beginSocialEdit(block.id)
+                },
+                onUngroup: {
+                    ungroup(block.id)
+                }
             )
         }
     }
@@ -360,7 +509,7 @@ struct MosaicComposerView: View {
             .onEnded { value in
                 guard let placingOption else { return }
                 let point = clamped(point: value.location)
-                if isTextLikeKind(placingOption.blockKind) || placingOption.blockKind == .pursuit {
+                if isTextLikeKind(placingOption.blockKind) || placingOption.blockKind == .pursuit || placingOption.blockKind == .node {
                     placeTextAndBeginEditing(option: placingOption, at: point)
                 } else if placingOption.blockKind == .media {
                     placeMedia(at: point)
@@ -374,13 +523,28 @@ struct MosaicComposerView: View {
     }
 
     private func beginPlacement(for option: BlockMenuOption) {
+        guard option != .group else {
+            menuExpanded = false
+            beginGrouping()
+            return
+        }
         guard documentID == nil || option != .pursuit else { return }
+        guard option != .tabs || !blocks.contains(where: { $0.kind == .tabs }) else { return }
+        if option == .banner {
+            guard !blocks.contains(where: { $0.kind == .banner }) else { return }
+            menuExpanded = false
+            let bannerID = store.addBlock(.banner, to: documentID)
+            selectedBlockID = bannerID
+            pendingMediaBlockID = bannerID
+            showMediaPicker = true
+            return
+        }
         menuExpanded = false
         placingOption = option
         ghostLocation = clamped(
             point: CGPoint(
                 x: canvasSize.width * 0.5,
-                y: canvasSize.height * 0.35
+                y: layoutHeight * 0.35
             )
         )
     }
@@ -404,7 +568,7 @@ struct MosaicComposerView: View {
     private func importMedia(_ item: PhotosPickerItem, into blockID: ComposerBlockID) async {
         if let fileName = await ComposerMediaImport.save(item, to: store) {
             store.setMedia(fileName, for: blockID, in: documentID)
-        } else {
+        } else if store.block(with: blockID, in: documentID)?.kind != .banner {
             store.deleteBlock(blockID, in: documentID)
         }
     }
@@ -448,6 +612,9 @@ struct MosaicComposerView: View {
         let newID = store.addBlock(option.blockKind, at: position, to: documentID)
         if option.blockKind == .link {
             editingBlockID = newID
+        } else if option.blockKind == .social {
+            selectedBlockID = newID
+            socialEditRequest = SocialEditRequest(blockID: newID)
         }
     }
 
@@ -471,7 +638,7 @@ struct MosaicComposerView: View {
         let finishedID = editingBlockID
         editingBlockID = nil
         focusedTextBlockID = nil
-        if let finishedID, blocks.contains(where: { $0.id == finishedID && (isTextLikeKind($0.kind) || $0.kind == .pursuit) }) {
+        if let finishedID, blocks.contains(where: { $0.id == finishedID && (isTextLikeKind($0.kind) || $0.kind == .pursuit || $0.kind == .node) }) {
             selectedBlockID = finishedID
         }
     }
@@ -493,6 +660,10 @@ struct MosaicComposerView: View {
     private func textPressGesture(for block: ComposerBlock) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named("composerRoot"))
             .updating($textDragVisual) { value, visual, _ in
+                if isGrouping {
+                    visual = .inactive
+                    return
+                }
                 let session = textDragSession
                 if session.isPinching {
                     visual = .inactive
@@ -503,7 +674,7 @@ struct MosaicComposerView: View {
                         visual = .inactive
                         return
                     }
-                    if touchHitsGraphResize(block.id, at: value.startLocation) {
+                    if touchHitsGraphResize(block.id, at: value.startLocation) || touchHitsSocialCorner(block.id, at: value.startLocation) {
                         session.graphResizing = true
                         session.blockID = block.id
                         visual = .inactive
@@ -555,7 +726,8 @@ struct MosaicComposerView: View {
                         width: value.translation.width - baseline.width,
                         height: value.translation.height - baseline.height
                     )
-                    next.hoveringTrash = trashDropZoneFrame.insetBy(dx: -28, dy: -28).contains(value.location)
+                    next.hoveringTrash = trashDropZoneFrame.width > 1
+                        && trashDropZoneFrame.insetBy(dx: 12, dy: 12).contains(value.location)
                     session.lastTranslation = next.translation
                     session.hoveringTrash = next.hoveringTrash
                 }
@@ -563,7 +735,15 @@ struct MosaicComposerView: View {
                 visual = next
             }
             .onEnded { value in
-                if touchHitsTextStyleIcon(block.id, at: value.startLocation) || textDragSession.graphResizing || touchHitsGraphResize(block.id, at: value.startLocation) {
+                if isGrouping {
+                    let distance = hypot(value.translation.width, value.translation.height)
+                    if distance < 12 {
+                        toggleGroupSelection(block.id)
+                    }
+                    textDragSession.reset()
+                    return
+                }
+                if touchHitsTextStyleIcon(block.id, at: value.startLocation) || textDragSession.graphResizing || touchHitsGraphResize(block.id, at: value.startLocation) || touchHitsSocialCorner(block.id, at: value.startLocation) {
                     textDragSession.reset()
                     return
                 }
@@ -602,9 +782,9 @@ struct MosaicComposerView: View {
                         )
                         selectedBlockID = block.id
                     }
-                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, tappedPencil {
+                } else if distance < 12, elapsed < 0.32, isFolder(block.kind), editingBlockID != block.id, tappedPencil {
                     beginPursuitEdit(block.id)
-                } else if distance < 12, elapsed < 0.32, block.kind == .pursuit, editingBlockID != block.id, !iconAlreadyHandled {
+                } else if distance < 12, elapsed < 0.32, isFolder(block.kind), editingBlockID != block.id, !iconAlreadyHandled {
                     openPursuit(block)
                 } else if distance < 12, elapsed < 0.32, isTextLikeKind(block.kind), editingBlockID != block.id {
                     beginTextEditing(block.id)
@@ -617,6 +797,19 @@ struct MosaicComposerView: View {
                 } else if distance < 12, elapsed < 0.32, block.kind == .carousel, !iconAlreadyHandled {
                     selectedBlockID = block.id
                     styleMenuBlockID = nil
+                } else if distance < 12, elapsed < 0.32, block.kind == .tabs || block.kind == .table {
+                    selectedBlockID = block.id
+                } else if distance < 12, elapsed < 0.32, block.kind == .social, tappedPencil {
+                    beginSocialEdit(block.id)
+                } else if distance < 12, elapsed < 0.32, block.kind == .social {
+                    if selectedBlockID != block.id {
+                        selectedBlockID = block.id
+                    } else if ComposerSocialPlatform(rawValue: block.socialPlatform)?
+                        .profileURL(from: block.linkURL ?? "") == nil {
+                        beginSocialEdit(block.id)
+                    } else {
+                        openSocialLink(block)
+                    }
                 }
             }
     }
@@ -624,6 +817,7 @@ struct MosaicComposerView: View {
     private func textPinchGesture(for block: ComposerBlock) -> some Gesture {
         MagnificationGesture()
             .updating($textPinchVisual) { value, visual, _ in
+                guard selectedBlockID == block.id else { return }
                 textDragSession.isPinching = true
                 textDragSession.baseline = nil
                 visual = TextPinchVisual(blockID: block.id, scale: value)
@@ -631,14 +825,14 @@ struct MosaicComposerView: View {
             .onEnded { value in
                 textDragSession.isPinching = false
                 textDragSession.baseline = nil
-                guard var current = store.block(with: block.id, in: documentID) else { return }
+                guard selectedBlockID == block.id, var current = store.block(with: block.id, in: documentID) else { return }
                 if current.kind == .graph {
                     let width = current.graphWidthScale * current.style.scale * Double(value)
                     let height = current.graphHeightScale * current.style.scale * Double(value)
                     current.graphWidthScale = ComposerGraphStretch.clamped(width)
                     current.graphHeightScale = ComposerGraphStretch.clamped(height)
                     current.style.scale = 1
-                } else if current.kind == .media || current.kind == .pursuit || current.kind == .carousel || current.kind == .calendar {
+                } else if current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, 0.45), 3.2)
                 } else {
@@ -715,8 +909,9 @@ struct MosaicComposerView: View {
                     initialZoom: block.mediaZoom,
                     initialPanX: block.mediaPanX,
                     initialPanY: block.mediaPanY,
+                    initialFrameAspect: block.mediaFrameAspect,
                     onCancel: { mediaEditRequest = nil },
-                    onDone: { shape, zoom, panX, panY in
+                    onDone: { shape, zoom, panX, panY, frameAspect in
                         guard var current = store.block(with: blockID, in: documentID) else {
                             mediaEditRequest = nil
                             return
@@ -725,9 +920,15 @@ struct MosaicComposerView: View {
                         current.mediaZoom = zoom
                         current.mediaPanX = panX
                         current.mediaPanY = panY
+                        current.mediaFrameAspect = frameAspect
                         current.mediaWarp = nil
                         store.updateBlock(current, in: documentID)
                         mediaEditRequest = nil
+                    },
+                    onReplaceVideo: { editedURL in
+                        guard let fileName = try? store.saveMediaFile(from: editedURL) else { return nil }
+                        store.setMedia(fileName, for: blockID, in: documentID)
+                        return store.mediaURL(for: fileName)
                     }
                 )
             }
@@ -742,12 +943,16 @@ struct MosaicComposerView: View {
     }
 
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
-        if block.kind == .calendar || block.kind == .graph { return false }
+        if block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table { return false }
         return selectedBlockID != block.id
     }
 
     private func touchHitsGraphResize(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
         graphResizeFrames[blockID]?.contains(point) ?? false
+    }
+
+    private func touchHitsSocialCorner(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        socialCornerFrames[blockID]?.contains(point) ?? false
     }
 
     private func touchHitsTextStyleIcon(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
@@ -777,7 +982,7 @@ struct MosaicComposerView: View {
     }
 
     private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
-        isTextLikeKind(kind) || kind == .media || kind == .pursuit || kind == .carousel || kind == .calendar || kind == .graph
+        isTextLikeKind(kind) || kind == .media || isFolder(kind) || kind == .carousel || kind == .calendar || kind == .graph || kind == .tabs || kind == .table || kind == .social || kind == .group
     }
 
     private func beginCarouselEdit(_ blockID: ComposerBlockID) {
@@ -791,9 +996,42 @@ struct MosaicComposerView: View {
     private func handleViewingTap(on block: ComposerBlock) {
         if block.kind == .media {
             toggleMediaPlayback(block.id)
-        } else if block.kind == .pursuit {
+        } else if isFolder(block.kind) {
             openPursuit(block)
+        } else if block.kind == .social {
+            openSocialLink(block)
         }
+    }
+
+    private func beginSocialEdit(_ blockID: ComposerBlockID) {
+        selectedBlockID = blockID
+        socialEditRequest = SocialEditRequest(blockID: blockID)
+    }
+
+    private func openSocialLink(_ block: ComposerBlock) {
+        guard let platform = ComposerSocialPlatform(rawValue: block.socialPlatform),
+              let url = platform.profileURL(from: block.linkURL ?? "") else { return }
+        openURL(url)
+    }
+
+    @ViewBuilder
+    private func socialEditor(for request: SocialEditRequest) -> some View {
+        let block = store.block(with: request.blockID, in: documentID)
+        ComposerSocialEditor(
+            platform: ComposerSocialPlatform(rawValue: block?.socialPlatform ?? "") ?? .instagram,
+            link: block?.linkURL ?? "",
+            onCancel: { socialEditRequest = nil },
+            onSave: { platform, link in
+                guard var current = store.block(with: request.blockID, in: documentID) else {
+                    socialEditRequest = nil
+                    return
+                }
+                current.socialPlatform = platform.rawValue
+                current.linkURL = link
+                store.updateBlock(current, in: documentID)
+                socialEditRequest = nil
+            }
+        )
     }
 
     private func beginPursuitEdit(_ blockID: ComposerBlockID) {
@@ -818,6 +1056,8 @@ struct MosaicComposerView: View {
                 imageZoom: block.pursuitImageZoom,
                 imagePanX: block.pursuitImagePanX,
                 imagePanY: block.pursuitImagePanY,
+                screenTitle: block.kind == .node ? "Edit Node" : "Edit Pursuit",
+                namePlaceholder: block.kind == .node ? "Node" : "Pursuit",
                 onCancel: { pursuitEditRequest = nil },
                 onDone: { edits in
                     applyPursuitEdits(edits, to: request.blockID)
@@ -849,6 +1089,10 @@ struct MosaicComposerView: View {
         store.updateBlock(block, in: documentID)
     }
 
+    private func isFolder(_ kind: BlockKind) -> Bool {
+        kind == .pursuit || kind == .node
+    }
+
     private func openPursuit(_ block: ComposerBlock) {
         guard let pursuitID = block.pursuitID else { return }
         editingBlockID = nil
@@ -858,12 +1102,26 @@ struct MosaicComposerView: View {
     }
 
     private func liveOffset(for block: ComposerBlock) -> CGSize {
-        let base = anchorOffset(for: block.position)
+        var base = anchorOffset(for: block.position)
+        if socialChromeInset(for: block) > 0 {
+            base.width -= SocialLogoChrome.margin
+            base.height -= SocialLogoChrome.margin
+        }
         guard textDragVisual.blockID == block.id, textDragVisual.isMoving else { return base }
         return CGSize(
             width: base.width + textDragVisual.translation.width,
             height: base.height + textDragVisual.translation.height
         )
+    }
+
+    /// Selected logos add touch room around the mark. The offset keeps the mark on its saved spot.
+    private func socialChromeInset(for block: ComposerBlock) -> CGFloat {
+        guard block.kind == .social,
+              selectedBlockID == block.id,
+              !chrome.isViewing,
+              !(textDragVisual.blockID == block.id && (textDragVisual.lifted || textDragVisual.isMoving))
+        else { return 0 }
+        return SocialLogoChrome.margin
     }
 
     private func anchorOffset(for position: BlockPosition) -> CGSize {
@@ -874,24 +1132,142 @@ struct MosaicComposerView: View {
     private func canvasPoint(for position: BlockPosition) -> CGPoint {
         CGPoint(
             x: canvasSize.width * position.x,
-            y: canvasSize.height * position.y
+            y: layoutHeight * position.y
         )
     }
 
     private func normalizedPosition(from point: CGPoint) -> BlockPosition {
         let width = max(canvasSize.width, 1)
-        let height = max(canvasSize.height, 1)
+        let scale = max(layoutHeight, 1)
+        let maxY = max(Double(canvasHeight / scale), 1)
         return BlockPosition(
             x: Double(min(max(point.x / width, 0), 1)),
-            y: Double(min(max(point.y / height, 0), 1))
+            y: Double(min(max(point.y / scale, 0), maxY))
         )
     }
 
     private func clamped(point: CGPoint) -> CGPoint {
         CGPoint(
             x: min(max(point.x, 28), max(canvasSize.width - 28, 28)),
-            y: min(max(point.y, 28), max(canvasSize.height - 28, 28))
+            y: min(max(point.y, 28), max(canvasHeight - 28, 28))
         )
+    }
+
+    private func lockLayoutHeightIfNeeded() {
+        guard store.layoutHeight(for: documentID) == nil else { return }
+        store.lockLayoutHeight(Double(proposedLayoutHeight), for: documentID)
+    }
+
+    private var undoButton: some View {
+        let enabled = store.canUndo(in: documentID)
+        return Button {
+            store.undo(in: documentID)
+            if let selectedBlockID, store.block(with: selectedBlockID, in: documentID) == nil {
+                self.selectedBlockID = nil
+            }
+            editingBlockID = nil
+            focusedTextBlockID = nil
+            styleMenuBlockID = nil
+        } label: {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+                .background(MosaicBrand.inkBlack, in: Circle())
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                .opacity(enabled ? 1 : 0.35)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel("Undo")
+        .accessibilityIdentifier("composer.undo")
+    }
+
+    private var groupingBar: some View {
+        HStack(spacing: 12) {
+            Button("Cancel") {
+                isGrouping = false
+                groupSelection = []
+            }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.white)
+            Spacer()
+            Text("\(groupSelection.count) selected")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white.opacity(0.72))
+            Spacer()
+            Button("Group") {
+                finishGrouping()
+            }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(groupSelection.count >= 2 ? .white : .white.opacity(0.35))
+            .disabled(groupSelection.count < 2)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+        .accessibilityIdentifier("composer.group.bar")
+    }
+
+    private func blockOpacity(for block: ComposerBlock) -> Double {
+        if isGrouping, block.kind != .banner {
+            return groupSelection.contains(block.id) ? 1 : 0.35
+        }
+        if textDragVisual.blockID == block.id, textDragVisual.isMoving {
+            return 0.96
+        }
+        return 1
+    }
+
+    private func beginGrouping() {
+        editingBlockID = nil
+        focusedTextBlockID = nil
+        styleMenuBlockID = nil
+        selectedBlockID = nil
+        groupSelection = []
+        isGrouping = true
+    }
+
+    private func toggleGroupSelection(_ blockID: ComposerBlockID) {
+        guard store.block(with: blockID, in: documentID)?.kind != .banner else { return }
+        if groupSelection.contains(blockID) {
+            groupSelection.remove(blockID)
+        } else {
+            groupSelection.insert(blockID)
+        }
+    }
+
+    private func finishGrouping() {
+        let members = blocks.filter { groupSelection.contains($0.id) && $0.kind != .banner }
+        let tabID = blocks.first(where: { $0.kind == .tabs })?.selectedTabID
+        guard let group = ComposerGroupMath.groupedBlock(
+            members: members,
+            frames: blockFrames,
+            canvasWidth: canvasSize.width,
+            layoutHeight: layoutHeight,
+            tabID: tabID
+        ) else { return }
+        var next = blocks
+        next.removeAll { groupSelection.contains($0.id) }
+        next.append(group)
+        store.replacePage(next, in: documentID)
+        isGrouping = false
+        groupSelection = []
+        selectedBlockID = group.id
+    }
+
+    private func ungroup(_ blockID: ComposerBlockID) {
+        guard let group = store.block(with: blockID, in: documentID), group.kind == .group else { return }
+        let restored = ComposerGroupMath.ungroupedMembers(
+            of: group,
+            canvasWidth: max(canvasSize.width, 1),
+            layoutHeight: layoutHeight
+        )
+        var next = blocks
+        next.removeAll { $0.id == blockID }
+        next.append(contentsOf: restored)
+        store.replacePage(next, in: documentID)
+        selectedBlockID = restored.first?.id
     }
 
     private var viewEyeButton: some View {
@@ -950,6 +1326,11 @@ private struct PursuitEditRequest: Identifiable {
 }
 
 private struct CarouselEditRequest: Identifiable {
+    let blockID: ComposerBlockID
+    var id: String { blockID.rawValue }
+}
+
+private struct SocialEditRequest: Identifiable {
     let blockID: ComposerBlockID
     var id: String { blockID.rawValue }
 }
@@ -1039,12 +1420,19 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
     let isEnabled: Bool
     let claimsTouches: Bool
     var pinchPriority: Bool = false
+    var pinchEnabled: Bool = true
     let gesture: Drag
     let pinch: Pinch
 
     func body(content: Content) -> some View {
         if !isEnabled {
             content
+        } else if !pinchEnabled {
+            if claimsTouches {
+                content.highPriorityGesture(gesture)
+            } else {
+                content.simultaneousGesture(gesture)
+            }
         } else if claimsTouches {
             content
                 .highPriorityGesture(gesture)
@@ -1057,6 +1445,58 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
             content
                 .simultaneousGesture(gesture)
                 .simultaneousGesture(pinch)
+        }
+    }
+}
+
+/// Keeps the composer page at its normal scale. Pinching a block must not zoom the scroll view.
+private struct ComposerCanvasZoomLock: UIViewRepresentable {
+    func makeUIView(context: Context) -> ComposerCanvasZoomLockView {
+        let view = ComposerCanvasZoomLockView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: ComposerCanvasZoomLockView, context: Context) {
+        uiView.lockEnclosingScrollView()
+    }
+}
+
+private final class ComposerCanvasZoomLockView: UIView {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        lockEnclosingScrollView()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        lockEnclosingScrollView()
+    }
+
+    func lockEnclosingScrollView() {
+        var current: UIView? = superview
+        while let view = current {
+            if let scrollView = view as? UIScrollView {
+                scrollView.minimumZoomScale = 1
+                scrollView.maximumZoomScale = 1
+                scrollView.bouncesZoom = false
+                scrollView.alwaysBounceHorizontal = false
+                scrollView.showsHorizontalScrollIndicator = false
+                scrollView.isDirectionalLockEnabled = true
+                if let systemPinch = scrollView.pinchGestureRecognizer,
+                   systemPinch.name != "mosaic.table.pinch" {
+                    systemPinch.isEnabled = false
+                }
+                if scrollView.zoomScale != 1 {
+                    scrollView.setZoomScale(1, animated: false)
+                }
+                if scrollView.contentOffset.x != 0 {
+                    scrollView.contentOffset.x = 0
+                }
+                return
+            }
+            current = view.superview
         }
     }
 }

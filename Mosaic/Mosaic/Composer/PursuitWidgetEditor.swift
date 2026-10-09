@@ -47,6 +47,7 @@ struct PursuitWidgetFace: View {
     var focusID: ComposerBlockID
     var onSubmit: () -> Void = {}
     var onTapBackground: () -> Void = {}
+    var namePlaceholder: String = "Pursuit"
     var nameIsSelected: Bool = false
     var onSelectName: (() -> Void)? = nil
     var activeDrag: PursuitTextDrag = .inactive
@@ -191,7 +192,7 @@ struct PursuitWidgetFace: View {
             TextField(
                 "",
                 text: $text,
-                prompt: Text("Pursuit").foregroundStyle(titleColor.opacity(0.45)),
+                prompt: Text(namePlaceholder).foregroundStyle(titleColor.opacity(0.45)),
                 axis: .vertical
             )
             .textFieldStyle(.plain)
@@ -203,11 +204,12 @@ struct PursuitWidgetFace: View {
             .submitLabel(.done)
             .onSubmit(onSubmit)
         } else {
-            Text(text)
+            let shown = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            Text(shown.isEmpty ? namePlaceholder : text)
                 .font(displayFont)
                 .modifier(PursuitNameWeight(keepsSemibold: !style.isBold && !style.isItalic))
-                .underline(style.isUnderlined, color: titleColor)
-                .foregroundStyle(titleColor)
+                .underline(style.isUnderlined && !shown.isEmpty, color: titleColor)
+                .foregroundStyle(titleColor.opacity(shown.isEmpty ? 0.45 : 1))
                 .multilineTextAlignment(.leading)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -280,6 +282,8 @@ struct PursuitWidgetEditor: View {
     @FocusState private var nameFocus: ComposerBlockID?
 
     private let fill: ComposerRGBColor?
+    private let screenTitle: String
+    private let namePlaceholder: String
     @State private var nameStyle: TextBlockStyle
     private let editorFocusID = ComposerBlockID(rawValue: "pursuit-widget-editor")
 
@@ -295,12 +299,16 @@ struct PursuitWidgetEditor: View {
         imageZoom: Double,
         imagePanX: Double,
         imagePanY: Double,
+        screenTitle: String = "Edit Pursuit",
+        namePlaceholder: String = "Pursuit",
         onCancel: @escaping () -> Void,
         onDone: @escaping (PursuitWidgetEdits) -> Void
     ) {
         self.onCancel = onCancel
         self.onDone = onDone
         self.fill = fill
+        self.screenTitle = screenTitle
+        self.namePlaceholder = namePlaceholder
         _nameStyle = State(initialValue: style)
         _name = State(initialValue: name)
         _layout = State(initialValue: layout)
@@ -334,7 +342,7 @@ struct PursuitWidgetEditor: View {
                 floatingDraggedText
             }
             .background(Color.black)
-            .navigationTitle("Edit Pursuit")
+            .navigationTitle(screenTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.black, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -407,6 +415,7 @@ struct PursuitWidgetEditor: View {
                     if textDragVisual.isMoving { return }
                     panel = .tools
                 },
+                namePlaceholder: namePlaceholder,
                 nameIsSelected: nameIsSelected,
                 onSelectName: {
                     panel = .name

@@ -18,6 +18,7 @@ struct ComposerBlockID: Hashable, Codable, Sendable {
 }
 
 enum BlockKind: String, Codable, CaseIterable, Sendable {
+    case group
     case text
     case heading
     case list
@@ -26,10 +27,16 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
     case calendar
     case graph
     case link
+    case node
+    case tabs
+    case banner
+    case table
+    case social
     case pursuit
 }
 
 enum BlockMenuOption: String, CaseIterable, Identifiable {
+    case group
     case text
     case heading
     case list
@@ -38,12 +45,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case calendar
     case graph
     case link
+    case node
+    case tabs
+    case banner
+    case table
+    case social
     case pursuit
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .group: "Group"
         case .text: "Text"
         case .heading: "Heading"
         case .list: "List"
@@ -52,12 +65,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .calendar: "Calendar"
         case .graph: "Graph"
         case .link: "Link"
+        case .node: "Node"
+        case .tabs: "Tabs"
+        case .banner: "Banner"
+        case .table: "Table"
+        case .social: "Socials"
         case .pursuit: "Pursuit"
         }
     }
 
     var systemImage: String {
         switch self {
+        case .group: "square.on.square"
         case .text: "textformat"
         case .heading: "textformat.size.larger"
         case .list: "list.bullet"
@@ -66,12 +85,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .graph: "chart.xyaxis.line"
         case .link: "link"
+        case .node: "folder"
+        case .tabs: "rectangle.split.3x1"
+        case .banner: "rectangle.topthird.inset.filled"
+        case .table: "tablecells"
+        case .social: "at"
         case .pursuit: "square.grid.2x2"
         }
     }
 
     var placementLabel: String {
         switch self {
+        case .group: "G"
         case .text: "T"
         case .heading: "H"
         case .list: "•"
@@ -80,12 +105,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .calendar: "▦"
         case .graph: "↗"
         case .link: "🔗"
+        case .node: "N"
+        case .tabs: "☰"
+        case .banner: "B"
+        case .table: "⊞"
+        case .social: "@"
         case .pursuit: "P"
         }
     }
 
     var blockKind: BlockKind {
         switch self {
+        case .group: .group
         case .text: .text
         case .heading: .heading
         case .list: .list
@@ -94,6 +125,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .calendar: .calendar
         case .graph: .graph
         case .link: .link
+        case .node: .node
+        case .tabs: .tabs
+        case .banner: .banner
+        case .table: .table
+        case .social: .social
         case .pursuit: .pursuit
         }
     }
@@ -109,6 +145,12 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .calendar: "calendar date day month year schedule"
         case .graph: "graph chart line plot axis"
         case .link: "link url web"
+        case .group: "group selection multi select cluster"
+        case .node: "node folder organize"
+        case .tabs: "tabs tab set"
+        case .banner: "banner header cover"
+        case .table: "table spreadsheet grid columns rows"
+        case .social: "social instagram tiktok twitter youtube twitch"
         case .pursuit: "pursuit project goal"
         }
     }
@@ -117,7 +159,11 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         matching query: String,
         includingPursuit: Bool = true,
         includingCalendar: Bool = true,
-        includingGraph: Bool = true
+        includingGraph: Bool = true,
+        includingNode: Bool = true,
+        includingTabs: Bool = true,
+        includingBanner: Bool = true,
+        includingTable: Bool = true
     ) -> [BlockMenuOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var ordered = Array(allCases.reversed())
@@ -129,6 +175,18 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         }
         if !includingGraph {
             ordered.removeAll { $0 == .graph }
+        }
+        if !includingNode {
+            ordered.removeAll { $0 == .node }
+        }
+        if !includingTabs {
+            ordered.removeAll { $0 == .tabs }
+        }
+        if !includingBanner {
+            ordered.removeAll { $0 == .banner }
+        }
+        if !includingTable {
+            ordered.removeAll { $0 == .table }
         }
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { $0.searchTokens.contains(trimmed) }
@@ -462,6 +520,9 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
     case square
     case rounded
     case roundedRectangle
+    case landscape
+    case wide
+    case banner
     case circle
     case oval
     case capsule
@@ -479,6 +540,9 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .square: "Square"
         case .rounded: "Rounded"
         case .roundedRectangle: "Rounded rectangle"
+        case .landscape: "Landscape"
+        case .wide: "Wide"
+        case .banner: "Banner"
         case .circle: "Circle"
         case .oval: "Oval"
         case .capsule: "Capsule"
@@ -498,6 +562,9 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         case .square: "square"
         case .rounded: "rectangle.roundedtop"
         case .roundedRectangle: "app"
+        case .landscape: "rectangle.ratio.4.to.3"
+        case .wide: "rectangle.ratio.16.to.9"
+        case .banner: "pano"
         case .circle: "circle"
         case .oval: "oval"
         case .capsule: "capsule"
@@ -511,14 +578,24 @@ enum MediaFrameShape: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    var usesSquareFrame: Bool {
+    /// Width divided by height. Nil means the frame follows the photo or video until the owner sets one.
+    var presetAspect: CGFloat? {
         switch self {
         case .square, .circle, .triangle, .diamond, .pentagon, .hexagon, .octagon, .star, .heart:
-            true
+            1
+        case .landscape:
+            4.0 / 3.0
+        case .wide:
+            16.0 / 9.0
+        case .banner:
+            2.35
         case .rectangle, .rounded, .roundedRectangle, .oval, .capsule:
-            false
+            nil
         }
     }
+
+    static let minimumAspect: CGFloat = 0.35
+    static let maximumAspect: CGFloat = 3.2
 }
 
 struct MediaGridPoint: Codable, Equatable, Hashable, Sendable {
@@ -764,6 +841,197 @@ enum ComposerGraphStretch {
     }
 }
 
+struct ComposerTab: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var title: String
+
+    init(id: String = UUID().uuidString, title: String) {
+        self.id = id
+        self.title = title
+    }
+}
+
+/// How many tabs fit on a page. The cap is how many 72-point tabs fit on the longer screen side.
+enum ComposerTabSet {
+    static let minimumCount = 2
+    static let defaultCount = 3
+    static let minimumTabWidth: CGFloat = 72
+    static let absoluteMaximum = 12
+
+    static func maximumCount(longestSide: CGFloat) -> Int {
+        let side = longestSide > 1 ? longestSide : 874
+        let usable = side - 32
+        let fitted = Int((usable / minimumTabWidth).rounded(.down))
+        return min(max(fitted, minimumCount), absoluteMaximum)
+    }
+
+    static func longestScreenSide() -> CGFloat {
+        let bounds = UIScreen.main.bounds
+        return max(bounds.width, bounds.height)
+    }
+
+    static func defaultTabs() -> [ComposerTab] {
+        (1...defaultCount).map { ComposerTab(title: "Tab \($0)") }
+    }
+}
+
+struct ComposerTableColumn: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var header: String
+
+    init(id: String = UUID().uuidString, header: String) {
+        self.id = id
+        self.header = header
+    }
+}
+
+struct ComposerTableRow: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var cells: [String]
+
+    init(id: String = UUID().uuidString, cells: [String]) {
+        self.id = id
+        self.cells = cells
+    }
+}
+
+struct ComposerTableEntry: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var stampedAt: Date
+    var rows: [ComposerTableRow]
+
+    init(id: String = UUID().uuidString, stampedAt: Date = .now, rows: [ComposerTableRow]) {
+        self.id = id
+        self.stampedAt = stampedAt
+        self.rows = rows
+    }
+}
+
+enum ComposerTable {
+    static let minimumColumns = 1
+    static let minimumRows = 1
+    static let maximumColumns = 8
+    static let maximumRows = 24
+    static let maximumEntries = 400
+    static let defaultColumnCount = 3
+    static let defaultRowCount = 3
+
+    static func defaultColumns() -> [ComposerTableColumn] {
+        (1...defaultColumnCount).map { ComposerTableColumn(header: "Column \($0)") }
+    }
+
+    static func defaultRows(columnCount: Int) -> [ComposerTableRow] {
+        let count = max(columnCount, minimumColumns)
+        return (0..<defaultRowCount).map { _ in
+            ComposerTableRow(cells: Array(repeating: "", count: count))
+        }
+    }
+
+    static func addingColumn(
+        to columns: [ComposerTableColumn],
+        rows: [ComposerTableRow]
+    ) -> (columns: [ComposerTableColumn], rows: [ComposerTableRow])? {
+        guard columns.count < maximumColumns else { return nil }
+        var columns = columns
+        var rows = rows
+        columns.append(ComposerTableColumn(header: "Column \(columns.count + 1)"))
+        for index in rows.indices {
+            rows[index].cells.append("")
+        }
+        return (columns, rows)
+    }
+
+    static func removingLastColumn(
+        from columns: [ComposerTableColumn],
+        rows: [ComposerTableRow]
+    ) -> (columns: [ComposerTableColumn], rows: [ComposerTableRow])? {
+        guard columns.count > minimumColumns else { return nil }
+        var columns = columns
+        var rows = rows
+        columns.removeLast()
+        for index in rows.indices where !rows[index].cells.isEmpty {
+            rows[index].cells.removeLast()
+        }
+        return (columns, rows)
+    }
+
+    static func addingRow(
+        to rows: [ComposerTableRow],
+        columnCount: Int
+    ) -> [ComposerTableRow]? {
+        guard rows.count < maximumRows else { return nil }
+        var rows = rows
+        rows.append(ComposerTableRow(cells: Array(repeating: "", count: max(columnCount, minimumColumns))))
+        return rows
+    }
+
+    static func removingLastRow(from rows: [ComposerTableRow]) -> [ComposerTableRow]? {
+        guard rows.count > minimumRows else { return nil }
+        var rows = rows
+        rows.removeLast()
+        return rows
+    }
+
+    static func ordered(_ entries: [ComposerTableEntry]) -> [ComposerTableEntry] {
+        entries.sorted { lhs, rhs in
+            if lhs.stampedAt != rhs.stampedAt { return lhs.stampedAt < rhs.stampedAt }
+            return lhs.id < rhs.id
+        }
+    }
+
+    static func blankRows(rowCount: Int, columnCount: Int) -> [ComposerTableRow] {
+        (0..<max(rowCount, minimumRows)).map { _ in
+            ComposerTableRow(cells: Array(repeating: "", count: max(columnCount, minimumColumns)))
+        }
+    }
+
+    /// A table always has the entry currently on screen. Older tables gain one from their rows.
+    static func ensure(_ block: inout ComposerBlock) {
+        if block.tableEntries.isEmpty {
+            let entry = ComposerTableEntry(rows: block.tableRows)
+            block.tableEntries = [entry]
+            block.selectedTableEntryID = entry.id
+            return
+        }
+        if block.selectedTableEntryID == nil || !block.tableEntries.contains(where: { $0.id == block.selectedTableEntryID }) {
+            block.selectedTableEntryID = ordered(block.tableEntries).last?.id
+        }
+    }
+
+    static func appendingColumnCell(to entries: [ComposerTableEntry]) -> [ComposerTableEntry] {
+        entries.map { entry in
+            var entry = entry
+            for index in entry.rows.indices {
+                entry.rows[index].cells.append("")
+            }
+            return entry
+        }
+    }
+
+    static func removingLastColumnCell(from entries: [ComposerTableEntry]) -> [ComposerTableEntry] {
+        entries.map { entry in
+            var entry = entry
+            for index in entry.rows.indices where !entry.rows[index].cells.isEmpty {
+                entry.rows[index].cells.removeLast()
+            }
+            return entry
+        }
+    }
+
+    static func stampLabel(for date: Date, among entries: [ComposerTableEntry], now: Date = .now, calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        let sharesDay = entries.filter { calendar.isDate($0.stampedAt, inSameDayAs: date) }.count > 1
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        if sharesDay {
+            formatter.setLocalizedDateFormatFromTemplate(sameYear ? "MMM d, h:mm a" : "MMM d yyyy, h:mm a")
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate(sameYear ? "MMM d" : "MMM d yyyy")
+        }
+        return formatter.string(from: date)
+    }
+}
+
 struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     let id: ComposerBlockID
     var kind: BlockKind
@@ -802,9 +1070,27 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var graphPoints: [ComposerGraphPoint]
     var graphWidthScale: Double
     var graphHeightScale: Double
+    var tabs: [ComposerTab]
+    var selectedTabID: String?
+    /// Which tab’s page this block belongs to. The tabs bar itself stays unset so it remains visible.
+    var tabID: String?
+    /// Width divided by height for a cropped photo or video. Zero keeps the older frame until the owner sets one.
+    var mediaFrameAspect: Double
+    /// Full-width header height. The banner does not change width.
+    var bannerHeight: Double
+    var tableColumns: [ComposerTableColumn]
+    var tableRows: [ComposerTableRow]
+    var tableEntries: [ComposerTableEntry]
+    var selectedTableEntryID: String?
+    /// Instagram, TikTok, Twitter, YouTube, or Twitch. Empty on blocks that are not a social.
+    var socialPlatform: String
+    /// Components held inside a group, positioned within the group box.
+    var groupMembers: [ComposerBlock]
+    var groupWidth: Double
+    var groupHeight: Double
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight
     }
 
     init(
@@ -844,7 +1130,20 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         graphYUnitName: String = "Value",
         graphPoints: [ComposerGraphPoint] = [],
         graphWidthScale: Double = 1,
-        graphHeightScale: Double = 1
+        graphHeightScale: Double = 1,
+        tabs: [ComposerTab] = [],
+        selectedTabID: String? = nil,
+        tabID: String? = nil,
+        mediaFrameAspect: Double = 0,
+        bannerHeight: Double = ComposerBannerMetrics.defaultHeight,
+        tableColumns: [ComposerTableColumn] = [],
+        tableRows: [ComposerTableRow] = [],
+        tableEntries: [ComposerTableEntry] = [],
+        selectedTableEntryID: String? = nil,
+        socialPlatform: String = "",
+        groupMembers: [ComposerBlock] = [],
+        groupWidth: Double = 0,
+        groupHeight: Double = 0
     ) {
         self.id = id
         self.kind = kind
@@ -883,6 +1182,19 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.graphPoints = graphPoints
         self.graphWidthScale = graphWidthScale
         self.graphHeightScale = graphHeightScale
+        self.tabs = tabs
+        self.selectedTabID = selectedTabID
+        self.tabID = tabID
+        self.mediaFrameAspect = mediaFrameAspect
+        self.bannerHeight = bannerHeight
+        self.tableColumns = tableColumns
+        self.tableRows = tableRows
+        self.tableEntries = tableEntries
+        self.selectedTableEntryID = selectedTableEntryID
+        self.socialPlatform = socialPlatform
+        self.groupMembers = groupMembers
+        self.groupWidth = groupWidth
+        self.groupHeight = groupHeight
     }
 
     init(from decoder: Decoder) throws {
@@ -925,10 +1237,34 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         graphPoints = try container.decodeIfPresent([ComposerGraphPoint].self, forKey: .graphPoints) ?? []
         graphWidthScale = try container.decodeIfPresent(Double.self, forKey: .graphWidthScale) ?? 1
         graphHeightScale = try container.decodeIfPresent(Double.self, forKey: .graphHeightScale) ?? 1
+        tabs = try container.decodeIfPresent([ComposerTab].self, forKey: .tabs) ?? []
+        selectedTabID = try container.decodeIfPresent(String.self, forKey: .selectedTabID)
+        tabID = try container.decodeIfPresent(String.self, forKey: .tabID)
+        mediaFrameAspect = try container.decodeIfPresent(Double.self, forKey: .mediaFrameAspect) ?? 0
+        bannerHeight = try container.decodeIfPresent(Double.self, forKey: .bannerHeight) ?? ComposerBannerMetrics.defaultHeight
+        tableColumns = try container.decodeIfPresent([ComposerTableColumn].self, forKey: .tableColumns) ?? []
+        tableRows = try container.decodeIfPresent([ComposerTableRow].self, forKey: .tableRows) ?? []
+        tableEntries = try container.decodeIfPresent([ComposerTableEntry].self, forKey: .tableEntries) ?? []
+        selectedTableEntryID = try container.decodeIfPresent(String.self, forKey: .selectedTableEntryID)
+        socialPlatform = try container.decodeIfPresent(String.self, forKey: .socialPlatform) ?? ""
+        groupMembers = try container.decodeIfPresent([ComposerBlock].self, forKey: .groupMembers) ?? []
+        groupWidth = try container.decodeIfPresent(Double.self, forKey: .groupWidth) ?? 0
+        groupHeight = try container.decodeIfPresent(Double.self, forKey: .groupHeight) ?? 0
+        if kind == .table {
+            ComposerTable.ensure(&self)
+        }
     }
 
     static func make(kind: BlockKind, position: BlockPosition) -> ComposerBlock {
         switch kind {
+        case .group:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .group,
+                text: "",
+                style: .bodyDefault,
+                position: position
+            )
         case .text:
             ComposerBlock(
                 id: ComposerBlockID(),
@@ -992,6 +1328,32 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 graphXUnitName: "Date",
                 graphYUnitName: "Value"
             )
+        case .tabs:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .tabs,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                tabs: ComposerTabSet.defaultTabs()
+            )
+        case .banner:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .banner,
+                text: "",
+                style: TextBlockStyle(
+                    size: .title,
+                    color: .canvas,
+                    alignment: .leading,
+                    fontSize: 28,
+                    isBold: true
+                ),
+                position: position,
+                bannerHeight: ComposerBannerMetrics.defaultHeight
+            )
+        case .table:
+            tableBlock(at: position)
         case .link:
             ComposerBlock(
                 id: ComposerBlockID(),
@@ -1001,24 +1363,52 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 position: position,
                 linkURL: ""
             )
+        case .social:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .social,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                linkURL: "",
+                socialPlatform: ComposerSocialPlatform.instagram.rawValue
+            )
+        case .node:
+            newFolderBlock(kind: .node, placeholder: "Node", at: position)
         case .pursuit:
-            newPursuitBlock(at: position)
+            newFolderBlock(kind: .pursuit, placeholder: "Pursuit", at: position)
         }
     }
 
-    /// A new Pursuit widget with the name placeholder centered on the square.
-    private static func newPursuitBlock(at position: BlockPosition) -> ComposerBlock {
+    private static func tableBlock(at position: BlockPosition) -> ComposerBlock {
+        let rows = ComposerTable.defaultRows(columnCount: ComposerTable.defaultColumnCount)
+        let entry = ComposerTableEntry(rows: rows)
+        return ComposerBlock(
+            id: ComposerBlockID(),
+            kind: .table,
+            text: "",
+            style: .bodyDefault,
+            position: position,
+            tableColumns: ComposerTable.defaultColumns(),
+            tableRows: rows,
+            tableEntries: [entry],
+            selectedTableEntryID: entry.id
+        )
+    }
+
+    /// A folder widget, Pursuit or Node, with its name placeholder centered on the square.
+    private static func newFolderBlock(kind: BlockKind, placeholder: String, at position: BlockPosition) -> ComposerBlock {
         let style = TextBlockStyle.headingDefault
         let module = PursuitWidgetShape.square.moduleSize(scale: CGFloat(style.scale))
         let font = UIFont.systemFont(ofSize: style.fontSize * style.scale, weight: .semibold)
-        let textSize = (NSString(string: "Pursuit")).size(withAttributes: [.font: font])
+        let textSize = (NSString(string: placeholder)).size(withAttributes: [.font: font])
         let width = max(module.width, 1)
         let height = max(module.height, 1)
         let textX = min(max(Double((width - textSize.width) / 2 / width), 0), 1)
         let textY = min(max(Double((height - textSize.height) / 2 / height), 0), 1)
         return ComposerBlock(
             id: ComposerBlockID(),
-            kind: .pursuit,
+            kind: kind,
             text: "",
             style: style,
             position: position,
@@ -1029,10 +1419,46 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+enum ComposerDocumentRole: String, Codable, Sendable {
+    case pursuit
+    case node
+}
+
 struct ComposerPursuit: Identifiable, Codable, Equatable, Sendable {
     let id: ComposerDocumentID
     var title: String
     var blocks: [ComposerBlock]
+    var role: ComposerDocumentRole
+
+    /// Vertical scale for block positions on this page. Locked so later edits do not move the others.
+    var layoutHeight: Double?
+
+    init(
+        id: ComposerDocumentID,
+        title: String,
+        blocks: [ComposerBlock],
+        role: ComposerDocumentRole = .pursuit,
+        layoutHeight: Double? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.blocks = blocks
+        self.role = role
+        self.layoutHeight = layoutHeight
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, blocks, role, layoutHeight
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ComposerDocumentID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        blocks = try container.decode([ComposerBlock].self, forKey: .blocks)
+        role = try container.decodeIfPresent(ComposerDocumentRole.self, forKey: .role) ?? .pursuit
+        layoutHeight = try container.decodeIfPresent(Double.self, forKey: .layoutHeight)
+    }
 }
 
 struct ComposerSnapshot: Codable, Equatable, Sendable {
@@ -1043,6 +1469,8 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     var mosaicTitlePlaced: Bool
     /// True after existing Pursuit pages were cleared to an empty composer.
     var pursuitPagesBlanked: Bool
+    /// Vertical scale for block positions on the Mosaic board.
+    var mosaicLayoutHeight: Double?
 
     static let empty = ComposerSnapshot(
         mosaicTitle: "My Mosaic",
@@ -1057,17 +1485,19 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         mosaicBlocks: [ComposerBlock],
         pursuits: [ComposerPursuit],
         mosaicTitlePlaced: Bool = false,
-        pursuitPagesBlanked: Bool = false
+        pursuitPagesBlanked: Bool = false,
+        mosaicLayoutHeight: Double? = nil
     ) {
         self.mosaicTitle = mosaicTitle
         self.mosaicBlocks = mosaicBlocks
         self.pursuits = pursuits
         self.mosaicTitlePlaced = mosaicTitlePlaced
         self.pursuitPagesBlanked = pursuitPagesBlanked
+        self.mosaicLayoutHeight = mosaicLayoutHeight
     }
 
     enum CodingKeys: String, CodingKey {
-        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked
+        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked, mosaicLayoutHeight
     }
 
     init(from decoder: Decoder) throws {
@@ -1077,6 +1507,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         pursuits = try container.decode([ComposerPursuit].self, forKey: .pursuits)
         mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced) ?? false
         pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked) ?? false
+        mosaicLayoutHeight = try container.decodeIfPresent(Double.self, forKey: .mosaicLayoutHeight)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1086,5 +1517,6 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         try container.encode(pursuits, forKey: .pursuits)
         try container.encode(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
         try container.encode(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
+        try container.encodeIfPresent(mosaicLayoutHeight, forKey: .mosaicLayoutHeight)
     }
 }

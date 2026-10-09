@@ -6,6 +6,122 @@ import UIKit
 @MainActor
 struct ComposerStoreTests {
     @Test
+    func bannerStaysPinnedAcrossTabs() {
+        #expect(ComposerBannerMetrics.resized(base: 200, translation: -80) == 120)
+        #expect(ComposerBannerMetrics.resized(base: 200, translation: -400) == ComposerBannerMetrics.minimumHeight)
+        #expect(ComposerBannerMetrics.resized(base: 200, translation: 400) == ComposerBannerMetrics.maximumHeight)
+
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let bannerID = store.addBlock(.banner, to: nil)
+        let again = store.addBlock(.banner, to: nil)
+        #expect(again == bannerID)
+        let banner = store.block(with: bannerID, in: nil)
+        #expect(banner?.kind == .banner)
+        #expect(banner?.bannerHeight == ComposerBannerMetrics.defaultHeight)
+        #expect(banner?.tabID == nil)
+
+        store.addBlock(.tabs, to: nil)
+        #expect(store.block(with: bannerID, in: nil)?.tabID == nil)
+        let noteID = store.addBlock(.text, to: nil)
+        let selected = store.blocks(for: nil).first(where: { $0.kind == .tabs })?.selectedTabID
+        #expect(store.block(with: noteID, in: nil)?.tabID == selected)
+        #expect(store.blocks(for: nil).filter { $0.kind == .banner }.count == 1)
+    }
+
+    @Test
+    func cropEdgesResizeOneSideAndRoundTrip() {
+        let covered = MediaCropMath.window(contentAspect: 1.5, frameAspect: 1, zoom: 1, panX: 0, panY: 0)
+        let framed = MediaCropMath.framing(window: covered, contentAspect: 1.5)
+        #expect(abs(framed.frameAspect - 1) < 0.03)
+        #expect(abs(framed.zoom - 1) < 0.03)
+        #expect(abs(framed.panX) < 0.03)
+        #expect(abs(framed.panY) < 0.03)
+
+        let fromRight = MediaCropMath.resized(
+            start: MediaCropMath.Window(x: 0, y: 0, width: 1, height: 1),
+            edge: .right,
+            translation: CGSize(width: -80, height: 0),
+            imageSize: CGSize(width: 200, height: 200),
+            contentAspect: 1
+        )
+        #expect(fromRight.x == 0)
+        #expect(abs(fromRight.width - 0.6) < 0.03)
+        #expect(abs(fromRight.height - 1) < 0.03)
+
+        let fromTop = MediaCropMath.resized(
+            start: MediaCropMath.Window(x: 0, y: 0, width: 1, height: 1),
+            edge: .top,
+            translation: CGSize(width: 0, height: 50),
+            imageSize: CGSize(width: 200, height: 200),
+            contentAspect: 1
+        )
+        #expect(fromTop.y > 0.2)
+        #expect(abs(fromTop.y + fromTop.height - 1) < 0.03)
+        #expect(abs(fromTop.width - 1) < 0.03)
+    }
+
+    @Test
+    func tableAddsAndRemovesColumnsAndRows() {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuitID = store.addBlock(.pursuit, to: nil)
+        let pursuit = store.block(with: pursuitID, in: nil)?.pursuitID
+        let tableID = store.addBlock(.table, to: pursuit)
+        let created = store.block(with: tableID, in: pursuit)
+        #expect(created?.text.isEmpty == true)
+        #expect(created?.tableColumns.map(\.header) == ["Column 1", "Column 2", "Column 3"])
+        #expect(created?.tableRows.count == 3)
+        #expect(created?.tableRows.allSatisfy { $0.cells.count == 3 } == true)
+        #expect(created?.tableEntries.count == 1)
+        #expect(created?.selectedTableEntryID == created?.tableEntries.first?.id)
+
+        store.addTableColumn(to: tableID, in: pursuit)
+        #expect(store.block(with: tableID, in: pursuit)?.tableColumns.count == 4)
+        #expect(store.block(with: tableID, in: pursuit)?.tableRows.allSatisfy { $0.cells.count == 4 } == true)
+
+        store.removeLastTableColumn(from: tableID, in: pursuit)
+        #expect(store.block(with: tableID, in: pursuit)?.tableColumns.count == 3)
+
+        store.addTableRow(to: tableID, in: pursuit)
+        #expect(store.block(with: tableID, in: pursuit)?.tableRows.count == 4)
+
+        store.removeLastTableRow(from: tableID, in: pursuit)
+        #expect(store.block(with: tableID, in: pursuit)?.tableRows.count == 3)
+
+        for _ in 0..<4 {
+            store.removeLastTableColumn(from: tableID, in: pursuit)
+            store.removeLastTableRow(from: tableID, in: pursuit)
+        }
+        #expect(store.block(with: tableID, in: pursuit)?.tableColumns.count == 1)
+        #expect(store.block(with: tableID, in: pursuit)?.tableRows.count == 1)
+    }
+
+    @Test
+    func tableKeepsEarlierEntriesWhenStartingANewOne() {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuit = store.block(with: store.addBlock(.pursuit, to: nil), in: nil)?.pursuitID
+        let tableID = store.addBlock(.table, to: pursuit)
+        guard var table = store.block(with: tableID, in: pursuit) else {
+            Issue.record("Missing table")
+            return
+        }
+        let firstID = table.selectedTableEntryID
+        table.tableRows[0].cells[0] = "135"
+        table.tableEntries[0].rows = table.tableRows
+        store.updateBlock(table, in: pursuit)
+
+        store.startTableEntry(on: tableID, in: pursuit)
+        let fresh = store.block(with: tableID, in: pursuit)
+        #expect(fresh?.tableEntries.count == 2)
+        #expect(fresh?.selectedTableEntryID != firstID)
+        #expect(fresh?.tableRows[0].cells[0] == "")
+        #expect(fresh?.tableEntries.first(where: { $0.id == firstID })?.rows[0].cells[0] == "135")
+
+        store.showTableEntry(firstID ?? "", on: tableID, in: pursuit)
+        #expect(store.block(with: tableID, in: pursuit)?.tableRows[0].cells[0] == "135")
+        #expect(store.block(with: tableID, in: pursuit)?.selectedTableEntryID == firstID)
+    }
+
+    @Test
     func addAndMoveBlocksOnMosaic() {
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         store.addBlock(.text, to: nil)
@@ -65,13 +181,39 @@ struct ComposerStoreTests {
         #expect(pursuitPage.contains(.carousel))
         #expect(pursuitPage.contains(.calendar))
 
-        let mosaicMenu = BlockMenuOption.menuOptions(matching: "", includingCalendar: false, includingGraph: false)
+        let mosaicMenu = BlockMenuOption.menuOptions(
+            matching: "",
+            includingCalendar: false,
+            includingGraph: false,
+            includingNode: false,
+            includingTable: false
+        )
         #expect(!mosaicMenu.contains(.calendar))
         #expect(!mosaicMenu.contains(.graph))
+        #expect(!mosaicMenu.contains(.node))
+        #expect(!mosaicMenu.contains(.table))
         #expect(mosaicMenu.contains(.pursuit))
         #expect(mosaicMenu.contains(.list))
+        #expect(mosaicMenu.contains(.tabs))
+        #expect(mosaicMenu.contains(.banner))
         #expect(pursuitPage.contains(.list))
+        #expect(pursuitPage.contains(.banner))
         #expect(pursuitPage.contains(.graph))
+        #expect(pursuitPage.contains(.node))
+        #expect(pursuitPage.contains(.tabs))
+        #expect(pursuitPage.contains(.table))
+
+        let folder = BlockMenuOption.menuOptions(matching: "folder")
+        #expect(folder == [.node])
+
+        let tabs = BlockMenuOption.menuOptions(matching: "tab")
+        #expect(tabs == [.table, .tabs])
+
+        let table = BlockMenuOption.menuOptions(matching: "table")
+        #expect(table == [.table])
+
+        let banner = BlockMenuOption.menuOptions(matching: "banner")
+        #expect(banner == [.banner])
 
         let todo = BlockMenuOption.menuOptions(matching: "todo")
         #expect(todo == [.list])
@@ -81,6 +223,44 @@ struct ComposerStoreTests {
 
         let carousel = BlockMenuOption.menuOptions(matching: "carosoul")
         #expect(carousel == [.carousel])
+
+        let grouped = BlockMenuOption.menuOptions(matching: "group")
+        #expect(grouped == [.group])
+        let social = BlockMenuOption.menuOptions(matching: "social")
+        #expect(social == [.social])
+        let instagram = BlockMenuOption.menuOptions(matching: "instagram")
+        #expect(instagram == [.social])
+        #expect(mosaicMenu.contains(.social))
+        #expect(pursuitPage.contains(.social))
+    }
+
+    @Test
+    func socialProfileLinkUsesAUsernameOrAFullURL() {
+        let placed = ComposerBlock.make(kind: .social, position: BlockPosition(x: 0.2, y: 0.2))
+        #expect(placed.socialPlatform == ComposerSocialPlatform.instagram.rawValue)
+        #expect(placed.linkURL == "")
+
+        #expect(ComposerSocialPlatform.instagram.profileURL(from: "ada")?.absoluteString == "https://instagram.com/ada")
+        #expect(ComposerSocialPlatform.tiktok.profileURL(from: "@ada")?.absoluteString == "https://www.tiktok.com/@ada")
+        #expect(ComposerSocialPlatform.twitter.profileURL(from: "ada")?.absoluteString == "https://twitter.com/ada")
+        #expect(ComposerSocialPlatform.youtube.profileURL(from: "ada")?.absoluteString == "https://www.youtube.com/@ada")
+        #expect(ComposerSocialPlatform.twitch.profileURL(from: "ada")?.absoluteString == "https://www.twitch.tv/ada")
+        #expect(ComposerSocialPlatform.instagram.profileURL(from: "https://instagram.com/ada/")?.absoluteString == "https://instagram.com/ada/")
+        #expect(ComposerSocialPlatform.instagram.profileURL(from: "  ") == nil)
+    }
+
+    @Test
+    func socialLogosUseBrandColor() {
+        let instagram = coloredPixelCount(UIImage(named: ComposerSocialPlatform.instagram.assetName) ?? UIImage())
+        let twitter = coloredPixelCount(UIImage(named: ComposerSocialPlatform.twitter.assetName) ?? UIImage())
+        let youtube = coloredPixelCount(UIImage(named: ComposerSocialPlatform.youtube.assetName) ?? UIImage())
+        let twitch = coloredPixelCount(UIImage(named: ComposerSocialPlatform.twitch.assetName) ?? UIImage())
+        let tiktok = coloredPixelCount(UIImage(named: ComposerSocialPlatform.tiktok.assetName) ?? UIImage())
+        #expect(instagram > 20, "instagram \(instagram)")
+        #expect(twitter > 20, "twitter \(twitter)")
+        #expect(youtube > 20, "youtube \(youtube)")
+        #expect(twitch > 20, "twitch \(twitch)")
+        #expect(tiktok > 20, "tiktok \(tiktok)")
     }
 
     @Test
@@ -194,6 +374,97 @@ struct ComposerStoreTests {
         let migrated = try JSONDecoder().decode(CalendarDayEntry.self, from: legacy)
         #expect(migrated.media.map(\.fileName) == ["swing.jpg"])
         #expect(migrated.hasContent)
+    }
+
+    @Test
+    func nodeIsAFolderInsideAPursuit() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.addBlock(.pursuit, to: nil)
+        let pursuitID = store.snapshot.pursuits[0].id
+        let nodeBlockID = store.addBlock(.node, to: pursuitID)
+        let node = try #require(store.block(with: nodeBlockID, in: pursuitID))
+        let documentID = try #require(node.pursuitID)
+        let document = try #require(store.pursuit(for: documentID))
+        #expect(node.kind == .node)
+        #expect(document.role == .node)
+        #expect(document.blocks.isEmpty)
+        #expect(store.title(for: documentID) == "Node")
+
+        var named = node
+        named.text = "Range notes"
+        store.updateBlock(named, in: pursuitID)
+        #expect(store.title(for: documentID) == "Range notes")
+
+        store.deleteBlock(nodeBlockID, in: pursuitID)
+        #expect(store.pursuit(for: documentID) == nil)
+        #expect(store.blocks(for: pursuitID).isEmpty)
+    }
+
+    @Test
+    func tabsSwitchThePageAndKeepEachTabsContent() throws {
+        #expect(ComposerTabSet.maximumCount(longestSide: 402) == 5)
+        #expect(ComposerTabSet.maximumCount(longestSide: 874) == 11)
+        #expect(ComposerTabSet.maximumCount(longestSide: 2000) == ComposerTabSet.absoluteMaximum)
+        #expect(ComposerTabSet.maximumCount(longestSide: 80) == ComposerTabSet.minimumCount)
+
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let noteID = store.addBlock(.text, to: nil)
+        let tabsID = store.addBlock(.tabs, to: nil)
+        let again = store.addBlock(.tabs, to: nil)
+        #expect(again == tabsID)
+        #expect(store.blocks(for: nil).filter { $0.kind == .tabs }.count == 1)
+
+        let tabs = try #require(store.block(with: tabsID, in: nil))
+        #expect(tabs.tabs.count == 3)
+        #expect(tabs.tabs.map(\.title) == ["Tab 1", "Tab 2", "Tab 3"])
+        let first = try #require(tabs.selectedTabID)
+        #expect(store.block(with: noteID, in: nil)?.tabID == first)
+        #expect(tabs.tabID == nil)
+
+        store.addComposerTab(to: tabsID, in: nil, longestSide: 874)
+        let added = try #require(store.block(with: tabsID, in: nil))
+        #expect(added.tabs.count == 4)
+        #expect(added.tabs.last?.title == "Tab 4")
+        let fourth = try #require(added.selectedTabID)
+        let onFourth = store.addBlock(.heading, to: nil)
+        #expect(store.block(with: onFourth, in: nil)?.tabID == fourth)
+
+        let second = added.tabs[1].id
+        var showSecond = added
+        showSecond.selectedTabID = second
+        showSecond.tabs[1].title = "PRs"
+        store.updateBlock(showSecond, in: nil)
+        let onSecond = store.addBlock(.text, to: nil)
+        #expect(store.block(with: onSecond, in: nil)?.tabID == second)
+
+        store.removeComposerTab(second, from: tabsID, in: nil)
+        let afterRemove = try #require(store.block(with: tabsID, in: nil))
+        #expect(afterRemove.tabs.count == 3)
+        #expect(!afterRemove.tabs.contains(where: { $0.id == second }))
+        #expect(store.block(with: onSecond, in: nil)?.tabID != second)
+        #expect(store.block(with: noteID, in: nil)?.tabID == first)
+
+        let kept = store.removeComposerTab(first, from: tabsID, in: nil)
+        _ = kept
+        var shrinking = try #require(store.block(with: tabsID, in: nil))
+        while shrinking.tabs.count > ComposerTabSet.minimumCount {
+            if let id = shrinking.selectedTabID {
+                store.removeComposerTab(id, from: tabsID, in: nil)
+            }
+            shrinking = try #require(store.block(with: tabsID, in: nil))
+        }
+        let floorCount = shrinking.tabs.count
+        if let last = shrinking.tabs.first?.id {
+            store.removeComposerTab(last, from: tabsID, in: nil)
+        }
+        #expect(store.block(with: tabsID, in: nil)?.tabs.count == floorCount)
+
+        store.deleteBlock(tabsID, in: nil)
+        #expect(store.blocks(for: nil).allSatisfy { $0.tabID == nil })
+
+        let data = try JSONEncoder().encode(ComposerBlock.make(kind: .tabs, position: BlockPosition(x: 0.1, y: 0.1)))
+        let decoded = try JSONDecoder().decode(ComposerBlock.self, from: data)
+        #expect(decoded.tabs.map(\.title) == ["Tab 1", "Tab 2", "Tab 3"])
     }
 
     @Test
@@ -342,5 +613,77 @@ struct ComposerStoreTests {
         let data = try JSONEncoder().encode(snapshot)
         let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
         #expect(decoded == snapshot)
+    }
+
+    @Test
+    func undoRestoresThePreviousPage() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let added = store.addBlock(.heading, to: nil)
+        var block = try #require(store.block(with: added, in: nil))
+        block.text = "Hello"
+        store.updateBlock(block, in: nil)
+        #expect(store.canUndo(in: nil))
+        store.undo(in: nil)
+        #expect(store.block(with: added, in: nil)?.text == "")
+        store.undo(in: nil)
+        #expect(store.blocks(for: nil).isEmpty)
+        #expect(!store.canUndo(in: nil))
+    }
+
+    @Test
+    func groupingPacksMembersAndUngroupRestoresThem() throws {
+        var first = ComposerBlock.make(kind: .text, position: BlockPosition(x: 0.1, y: 0.1))
+        first.text = "One"
+        var second = ComposerBlock.make(kind: .heading, position: BlockPosition(x: 0.4, y: 0.2))
+        second.text = "Two"
+        let frames = [
+            first.id: CGRect(x: 40, y: 80, width: 100, height: 40),
+            second.id: CGRect(x: 180, y: 120, width: 80, height: 50)
+        ]
+        let group = try #require(ComposerGroupMath.groupedBlock(
+            members: [first, second],
+            frames: frames,
+            canvasWidth: 400,
+            layoutHeight: 900,
+            tabID: nil
+        ))
+        #expect(group.kind == .group)
+        #expect(group.groupMembers.count == 2)
+        #expect(abs(group.position.x - 0.1) < 0.001)
+        #expect(abs(group.groupWidth - 220) < 0.001)
+        #expect(abs(group.groupHeight - 90) < 0.001)
+        let restored = ComposerGroupMath.ungroupedMembers(of: group, canvasWidth: 400, layoutHeight: 900)
+        #expect(restored.count == 2)
+        #expect(restored.map(\.text).sorted() == ["One", "Two"])
+        #expect(abs(restored[0].position.x - 0.1) < 0.001)
+    }
+
+    private func coloredPixelCount(_ image: UIImage) -> Int {
+        let side: CGFloat = 80
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let drawn = renderer.image { _ in
+            image.withRenderingMode(.alwaysOriginal).draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+        }
+        guard let cg = drawn.cgImage,
+              let data = cg.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return 0 }
+        let bytesPerPixel = max(cg.bitsPerPixel / 8, 1)
+        var colored = 0
+        for y in 0 ..< cg.height {
+            for x in 0 ..< cg.width {
+                let index = y * cg.bytesPerRow + x * bytesPerPixel
+                let first = Int(bytes[index])
+                let second = Int(bytes[index + 1])
+                let third = Int(bytes[index + 2])
+                let alpha = bytesPerPixel > 3 ? Int(bytes[index + 3]) : 255
+                guard alpha > 20 else { continue }
+                let maxChannel = max(first, second, third)
+                let minChannel = min(first, second, third)
+                if maxChannel > 40, maxChannel - minChannel > 28 {
+                    colored += 1
+                }
+            }
+        }
+        return colored
     }
 }
