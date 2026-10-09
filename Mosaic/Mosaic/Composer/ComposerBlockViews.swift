@@ -27,8 +27,23 @@ struct ComposerBlockRow: View {
                     .font(.headline)
             case .link:
                 linkBlock
-            case .pursuit:
+            case .pursuit, .node:
                 pursuitBlock
+            case .tabs:
+                Label("Tabs", systemImage: "rectangle.split.3x1")
+                    .font(.headline)
+            case .banner:
+                Label("Banner", systemImage: "rectangle.topthird.inset.filled")
+                    .font(.headline)
+            case .table:
+                Label("Table", systemImage: "tablecells")
+                    .font(.headline)
+            case .social:
+                Label("Socials", systemImage: "at")
+                    .font(.headline)
+            case .group:
+                Label("Group", systemImage: "square.on.square")
+                    .font(.headline)
             }
         }
         .padding(14)

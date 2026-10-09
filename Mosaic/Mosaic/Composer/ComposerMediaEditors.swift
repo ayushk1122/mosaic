@@ -189,6 +189,7 @@ enum ComposerVideoCompatibility {
 
 struct ComposerVideoTrimEditor: UIViewControllerRepresentable {
     let url: URL
+    var maximumDuration: TimeInterval = 600
     var onCancel: () -> Void
     var onSave: (URL) -> Void
 
@@ -199,7 +200,7 @@ struct ComposerVideoTrimEditor: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIVideoEditorController {
         let editor = UIVideoEditorController()
         editor.videoPath = url.path
-        editor.videoMaximumDuration = 600
+        editor.videoMaximumDuration = max(maximumDuration, 1)
         editor.delegate = context.coordinator
         return editor
     }
