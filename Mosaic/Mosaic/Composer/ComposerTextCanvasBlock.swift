@@ -13,20 +13,26 @@ struct ComposerTextCanvasBlock: View {
     let onStyleChange: () -> Void
     var showsFormatButton: Bool = true
     var onStyleMenuChange: (Bool) -> Void = { _ in }
+    var onClaimFormatTap: () -> Void = {}
 
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
     @State private var styleIconFrame: CGRect = .zero
-    @State private var contentWidth: CGFloat = 0
+    @State private var measured = CGSize(width: 28, height: 28)
+    @State private var claimedFormatTap = false
 
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerPaperPage) private var onPaper
+
+    private var readingColor: Color {
+        block.style.readingColor(onPaper: onPaper)
+    }
 
     private var iconPlacement: ComposerChromePlacement {
-        let visible = contentWidth > 1 ? contentWidth : nil
-        return ComposerChromePlacement.resolve(
+        ComposerChromePlacement.resolve(
             itemFrame: itemFrame,
             viewportWidth: viewportWidth,
-            contentWidth: visible
+            contentWidth: measured.width
         )
     }
 
@@ -42,17 +48,18 @@ struct ComposerTextCanvasBlock: View {
     var body: some View {
         textContent
             .background(alignment: .topLeading) {
-                Text(measuredLine)
+                Text(sizingText)
                     .font(activeFont)
-                    .lineLimit(1)
-                    .fixedSize()
+                    .multilineTextAlignment(block.style.alignment.alignment)
+                    .fixedSize(horizontal: true, vertical: true)
                     .hidden()
                     .allowsHitTesting(false)
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.size.width
-                    } action: { width in
-                        guard abs(width - contentWidth) > 0.5 else { return }
-                        contentWidth = width
+                    .onGeometryChange(for: CGSize.self) { proxy in
+                        proxy.size
+                    } action: { size in
+                        let next = CGSize(width: max(size.width, 8), height: max(size.height, 8))
+                        guard abs(next.width - measured.width) > 0.5 || abs(next.height - measured.height) > 0.5 else { return }
+                        measured = next
                     }
             }
             .overlay(alignment: .topLeading) {
@@ -101,12 +108,8 @@ struct ComposerTextCanvasBlock: View {
         }
     }
 
-    private var measuredLine: String {
-        let raw = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if raw.isEmpty {
-            return isHeading ? "Heading" : "Text"
-        }
-        return raw
+    private var sizingText: String {
+        block.text.isEmpty ? (isHeading ? "Heading" : "Text") : block.text
     }
 
     private var stylePanel: some View {
@@ -131,9 +134,19 @@ struct ComposerTextCanvasBlock: View {
                 key: ComposerTextStyleIconFrameKey.self,
                 value: [block.id: styleIconFrame]
             )
-            .highPriorityGesture(TapGesture().onEnded {
-                showsStyleDialog.toggle()
-            })
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !claimedFormatTap else { return }
+                        claimedFormatTap = true
+                        onClaimFormatTap()
+                    }
+                    .onEnded { value in
+                        claimedFormatTap = false
+                        guard hypot(value.translation.width, value.translation.height) < 12 else { return }
+                        showsStyleDialog.toggle()
+                    }
+            )
             .accessibilityLabel("Text style")
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("composer.text.style.\(block.id.rawValue)")
@@ -151,13 +164,12 @@ struct ComposerTextCanvasBlock: View {
     private var displayedText: some View {
         Text(block.text.isEmpty ? (isHeading ? "Heading" : "Text") : block.text)
             .font(activeFont)
-            .underline(block.style.isUnderlined, color: block.style.displayColor)
-            .foregroundStyle(block.style.displayColor.opacity(block.text.isEmpty ? 0.28 : 1))
+            .underline(block.style.isUnderlined, color: readingColor)
+            .foregroundStyle(readingColor.opacity(block.text.isEmpty ? 0.28 : 1))
             .multilineTextAlignment(block.style.alignment.alignment)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.95 : 0), radius: showsMoveAffordance ? 2 : 0)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.55 : 0), radius: showsMoveAffordance ? 10 : 0)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(minWidth: 28, maxWidth: 260, minHeight: 28, alignment: .topLeading)
+            .frame(width: measured.width, height: measured.height, alignment: .topLeading)
             .contentShape(Rectangle())
     }
 
@@ -166,20 +178,19 @@ struct ComposerTextCanvasBlock: View {
             "",
             text: $block.text,
             prompt: Text(isHeading ? "Heading" : "Text")
-                .foregroundStyle(block.style.displayColor.opacity(0.28)),
+                .foregroundStyle(readingColor.opacity(0.28)),
             axis: .vertical
         )
         .textFieldStyle(.plain)
         .font(activeFont)
-        .foregroundStyle(block.style.displayColor)
-        .tint(block.style.displayColor)
+        .foregroundStyle(readingColor)
+        .tint(readingColor)
         .multilineTextAlignment(block.style.alignment.alignment)
         .focused(focusBlockID, equals: block.id)
         .submitLabel(.done)
         .onSubmit(onCommit)
         .disabled(isRelocating)
-        .frame(minWidth: 28, maxWidth: 260, minHeight: 28, alignment: .topLeading)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: measured.width, height: measured.height, alignment: .topLeading)
     }
 
 }

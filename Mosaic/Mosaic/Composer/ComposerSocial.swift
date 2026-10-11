@@ -90,6 +90,7 @@ struct ComposerSocialCanvasBlock: View {
     var isViewing: Bool
     var cornerResizing: Binding<Bool>
     var onEdit: () -> Void
+    var onOpen: (() -> Void)? = nil
 
     @State private var cornerDrag: SocialCornerDrag?
     @State private var cornerFrames = ComposerSocialCornerFrames()
@@ -145,6 +146,7 @@ struct ComposerSocialCanvasBlock: View {
         return ZStack(alignment: .topLeading) {
             ComposerSocialMark(platform: platform, side: baseSide)
                 .frame(width: baseSide, height: baseSide)
+                .modifier(SocialOpenModifier(isEnabled: onOpen != nil, action: { onOpen?() }))
                 .overlay {
                     if isSelected, !isLifted, !isRelocating {
                         Rectangle()
@@ -174,7 +176,7 @@ struct ComposerSocialCanvasBlock: View {
     }
 
     private func cornerCatcher(_ corner: SocialLogoCorner) -> some View {
-        SocialCornerCatcher(
+        ComposerCornerCatcher(
             onChanged: { translation in
                 let growth = corner.growth(for: translation)
                 let next = min(max(baseSide + growth, Self.minSide), Self.maxSide)
@@ -274,6 +276,19 @@ struct ComposerSocialCanvasBlock: View {
             .highPriorityGesture(TapGesture().onEnded { onEdit() })
             .accessibilityLabel("Edit Social")
             .accessibilityAddTraits(.isButton)
+    }
+}
+
+private struct SocialOpenModifier: ViewModifier {
+    var isEnabled: Bool
+    var action: () -> Void
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.highPriorityGesture(TapGesture().onEnded { action() })
+        } else {
+            content
+        }
     }
 }
 
@@ -408,7 +423,7 @@ private enum SocialLogoCorner: Equatable, Hashable, CaseIterable, Identifiable {
 }
 
 /// A corner touch target. Its pan wins over the page scroll view.
-private struct SocialCornerCatcher: UIViewRepresentable {
+struct ComposerCornerCatcher: UIViewRepresentable {
     var onChanged: (CGSize) -> Void
     var onEnded: (CGSize) -> Void
 
@@ -416,19 +431,19 @@ private struct SocialCornerCatcher: UIViewRepresentable {
         Coordinator()
     }
 
-    func makeUIView(context: Context) -> SocialCornerCatcherView {
-        let view = SocialCornerCatcherView()
+    func makeUIView(context: Context) -> ComposerCornerCatcherView {
+        let view = ComposerCornerCatcherView()
         view.coordinator = context.coordinator
         return view
     }
 
-    func updateUIView(_ uiView: SocialCornerCatcherView, context: Context) {
+    func updateUIView(_ uiView: ComposerCornerCatcherView, context: Context) {
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
         uiView.coordinator = context.coordinator
     }
 
-    static func dismantleUIView(_ uiView: SocialCornerCatcherView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: ComposerCornerCatcherView, coordinator: Coordinator) {
         uiView.releaseScroll()
         coordinator.onEnded = { _ in }
         coordinator.onChanged = { _ in }
@@ -440,8 +455,8 @@ private struct SocialCornerCatcher: UIViewRepresentable {
     }
 }
 
-private final class SocialCornerCatcherView: UIView, UIGestureRecognizerDelegate {
-    weak var coordinator: SocialCornerCatcher.Coordinator?
+final class ComposerCornerCatcherView: UIView, UIGestureRecognizerDelegate {
+    weak var coordinator: ComposerCornerCatcher.Coordinator?
     private var lockedScroll: UIScrollView?
 
     override init(frame: CGRect) {

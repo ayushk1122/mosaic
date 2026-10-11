@@ -9,11 +9,13 @@ struct ComposerTabsCanvasBlock: View {
     var isRelocating: Bool
     var isViewing: Bool
     var onActivate: () -> Void
+    var pinsToPageEdges: Bool = true
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
     @FocusState private var titleFocus: String?
     @State private var renamingID: String?
+    @State private var chipsFrame: CGRect = .zero
 
     private var showsEdits: Bool {
         isSelected && !isViewing
@@ -27,18 +29,36 @@ struct ComposerTabsCanvasBlock: View {
         CGFloat(min(max(block.style.scale, 0.45), 3.2)) * livePinchScale
     }
 
-    private var rowLimit: CGFloat {
-        viewportWidth > 1 ? viewportWidth - 32 : 320
+    private var placeControlsAbove: Bool {
+        guard showsEdits else { return false }
+        return ComposerTabEdge.controlsBelongAbove(
+            chipsMaxX: chipsFrame.maxX,
+            buttonWidth: 28 * metric,
+            gap: 8 * metric,
+            viewportWidth: viewportWidth
+        )
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            tabRow
-            ScrollView(.horizontal, showsIndicators: false) {
-                tabRow
+        HStack(alignment: .center, spacing: 8 * metric) {
+            chips
+            if showsColumn, !placeControlsAbove {
+                VStack(spacing: 6 * metric) {
+                    if canAdd { addButton }
+                    if canRemove { removeButton }
+                }
             }
-            .frame(width: rowLimit, alignment: .leading)
         }
+        .overlay(alignment: .topTrailing) {
+            if placeControlsAbove {
+                HStack(spacing: 6 * metric) {
+                    if canAdd { addButton }
+                    if canRemove { removeButton }
+                }
+                .offset(y: -(34 * metric))
+            }
+        }
+        .fixedSize(horizontal: true, vertical: true)
         .shadow(color: .white.opacity(isLifted || isRelocating ? 0.28 : 0), radius: isLifted || isRelocating ? 8 : 0)
         .animation(.snappy(duration: 0.22), value: block.selectedTabID)
         .animation(.snappy(duration: 0.22), value: showsEdits)
@@ -52,27 +72,33 @@ struct ComposerTabsCanvasBlock: View {
         .accessibilityIdentifier("composer.tabs.\(block.id.rawValue)")
     }
 
-    private var tabRow: some View {
-        let showsColumn = canAdd || canRemove
-        return HStack(alignment: .center, spacing: 8 * metric) {
-            HStack(spacing: 2 * metric) {
-                ForEach(block.tabs) { tab in
-                    tabChip(tab)
-                }
-            }
-            if showsColumn {
-                VStack(spacing: 6 * metric) {
-                    if canAdd {
-                        addButton
-                    }
-                    if canRemove {
-                        removeButton
-                    }
-                }
+    private var showsColumn: Bool { canAdd || canRemove }
+
+    private var chips: some View {
+        HStack(spacing: 2 * metric) {
+            ForEach(block.tabs) { tab in
+                tabChip(tab)
             }
         }
         .padding(.vertical, 2 * metric)
-        .fixedSize(horizontal: true, vertical: true)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named("composerRoot"))
+        } action: { frame in
+            chipsFrame = frame
+            pullInsideBorders(frame)
+        }
+    }
+
+    private func pullInsideBorders(_ frame: CGRect) {
+        guard pinsToPageEdges, !isLifted, !isRelocating else { return }
+        let target = ComposerTabEdge.leadingEdge(
+            currentMinX: frame.minX,
+            width: frame.width,
+            viewportWidth: viewportWidth
+        )
+        let delta = target - frame.minX
+        guard abs(delta) > 1, viewportWidth > 1 else { return }
+        block.position.x += Double(delta / viewportWidth)
     }
 
     private func tabChip(_ tab: ComposerTab) -> some View {
@@ -167,5 +193,55 @@ struct ComposerTabsCanvasBlock: View {
                 block.tabs[index].title = newValue
             }
         )
+    }
+}
+
+enum ComposerTabEdge {
+    static let margin: CGFloat = 12
+    /// How close a held component may sit to the side of the board.
+    static let dragMargin: CGFloat = 4
+
+    static func controlsBelongAbove(
+        chipsMaxX: CGFloat,
+        buttonWidth: CGFloat,
+        gap: CGFloat,
+        viewportWidth: CGFloat
+    ) -> Bool {
+        guard viewportWidth > 1, chipsMaxX > 1 else { return false }
+        return chipsMaxX + gap + buttonWidth > viewportWidth - margin
+    }
+
+    static func leadingEdge(currentMinX: CGFloat, width: CGFloat, viewportWidth: CGFloat) -> CGFloat {
+        guard viewportWidth > 1, width > 1 else { return currentMinX }
+        var minX = currentMinX
+        let maxX = currentMinX + width
+        let right = viewportWidth - margin
+        if maxX > right {
+            minX -= maxX - right
+        }
+        if minX < margin {
+            minX = margin
+        }
+        return minX
+    }
+
+    /// Horizontal movement that keeps a held block inside the side edges. Vertical movement is unchanged.
+    static func clampedDrag(
+        translation: CGSize,
+        frameMinX: CGFloat,
+        frameWidth: CGFloat,
+        viewportWidth: CGFloat
+    ) -> CGSize {
+        guard viewportWidth > 1, frameWidth > 1 else { return translation }
+        let available = viewportWidth - dragMargin * 2
+        let dx: CGFloat
+        if frameWidth >= available {
+            dx = dragMargin - frameMinX
+        } else {
+            let minDx = dragMargin - frameMinX
+            let maxDx = viewportWidth - dragMargin - (frameMinX + frameWidth)
+            dx = min(max(translation.width, minDx), maxDx)
+        }
+        return CGSize(width: dx, height: translation.height)
     }
 }

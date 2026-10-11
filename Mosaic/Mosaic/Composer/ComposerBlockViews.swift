@@ -29,6 +29,9 @@ struct ComposerBlockRow: View {
                 linkBlock
             case .pursuit, .node:
                 pursuitBlock
+            case .scrapbook:
+                Label("Scrapbook", systemImage: "book.closed")
+                    .font(.headline)
             case .tabs:
                 Label("Tabs", systemImage: "rectangle.split.3x1")
                     .font(.headline)

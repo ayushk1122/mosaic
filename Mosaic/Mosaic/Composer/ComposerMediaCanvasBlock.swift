@@ -16,6 +16,7 @@ struct ComposerMediaCanvasBlock: View {
     var showsMenu: Bool
     var onOpenMenu: () -> Void
     var onCrop: () -> Void
+    var onBodyTap: (() -> Void)? = nil
 
     @State private var preview: UIImage?
     @State private var videoAspect: CGFloat = 16.0 / 9.0
@@ -75,6 +76,8 @@ struct ComposerMediaCanvasBlock: View {
                         .allowsHitTesting(false)
                 }
             }
+            .contentShape(Rectangle())
+            .modifier(MediaBodyTapModifier(isEnabled: onBodyTap != nil, action: { onBodyTap?() }))
     }
 
     @ViewBuilder
@@ -435,5 +438,62 @@ struct ComposerMovieFile: Transferable {
             try FileManager.default.copyItem(at: received.file, to: copy)
             return Self(url: copy)
         }
+    }
+}
+
+private struct MediaBodyTapModifier: ViewModifier {
+    var isEnabled: Bool
+    var action: () -> Void
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.highPriorityGesture(TapGesture().onEnded { action() })
+        } else {
+            content
+        }
+    }
+}
+
+struct ComposerMediaLightbox: View {
+    let url: URL
+    var onClose: () -> Void
+
+    @State private var image: UIImage?
+
+    private var isVideo: Bool { ComposerMediaStill.isVideo(url) }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.94)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onClose)
+            if isVideo {
+                ComposerInlineVideo(url: url, isPaused: false, fillsFrame: false)
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 72)
+                    .scaleEffect(0.86)
+                    .allowsHitTesting(false)
+            } else if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 72)
+                    .scaleEffect(0.86)
+                    .allowsHitTesting(false)
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
+        }
+        .task {
+            guard !isVideo else { return }
+            image = await ComposerMediaStill.image(at: url)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityLabel(isVideo ? "Video" : "Photo")
+        .accessibilityAction(.escape, onClose)
     }
 }

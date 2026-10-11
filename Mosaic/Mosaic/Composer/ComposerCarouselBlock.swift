@@ -23,7 +23,7 @@ struct CarouselLayout {
 }
 
 enum ComposerMediaStill {
-    static func isVideo(_ url: URL) -> Bool {
+    nonisolated static func isVideo(_ url: URL) -> Bool {
         ["mov", "mp4", "m4v", "avi"].contains(url.pathExtension.lowercased())
     }
 
@@ -56,6 +56,7 @@ struct ComposerCarouselCanvasBlock: View {
     let isRelocating: Bool
     let allowsDirectControl: Bool
     var onEdit: () -> Void
+    var onPresentMedia: ((URL) -> Void)? = nil
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
@@ -233,7 +234,12 @@ struct ComposerCarouselCanvasBlock: View {
         .zIndex(2 - Double(min(abs(delta), 2)))
         .allowsHitTesting(isCenter && allowsDirectControl && !isLifted)
         .onTapGesture {
-            guard isCenter, isVideo else { return }
+            guard isCenter, hasFile, let url else { return }
+            if let onPresentMedia {
+                onPresentMedia(url)
+                return
+            }
+            guard isVideo else { return }
             playing.toggle()
         }
     }

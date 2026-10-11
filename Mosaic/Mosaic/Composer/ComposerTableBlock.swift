@@ -74,7 +74,7 @@ struct ComposerTableCanvasBlock: View {
                 }
             }
             if canAddRow || canRemoveRow {
-                VStack(spacing: 6 * metric) {
+                HStack(spacing: 6 * metric) {
                     if canAddRow {
                         control("plus", label: "Add row") {
                             store.addTableRow(to: block.id, in: documentID)
@@ -294,8 +294,9 @@ struct ComposerTableCanvasBlock: View {
         let entries = orderedEntries
         let index = entries.firstIndex(where: { $0.id == block.selectedTableEntryID }) ?? max(entries.count - 1, 0)
         let current = entries.indices.contains(index) ? entries[index] : nil
+        let canBrowse = showsEdits || isViewing
         return HStack(spacing: 8 * metric) {
-            if showsEdits {
+            if canBrowse {
                 entryControl("chevron.left", label: "Previous entry", enabled: index > 0) {
                     guard index > 0 else { return }
                     store.showTableEntry(entries[index - 1].id, on: block.id, in: documentID)
@@ -305,11 +306,13 @@ struct ComposerTableCanvasBlock: View {
                 .font(.system(size: 12 * metric, weight: .medium))
                 .foregroundStyle(.white.opacity(0.72))
                 .lineLimit(1)
-            if showsEdits {
+            if canBrowse {
                 entryControl("chevron.right", label: "Next entry", enabled: index + 1 < entries.count) {
                     guard index + 1 < entries.count else { return }
                     store.showTableEntry(entries[index + 1].id, on: block.id, in: documentID)
                 }
+            }
+            if showsEdits {
                 Text("New entry")
                     .font(.system(size: 12 * metric, weight: .semibold))
                     .foregroundStyle(.white.opacity(entries.count >= ComposerTable.maximumEntries ? 0.28 : 0.92))

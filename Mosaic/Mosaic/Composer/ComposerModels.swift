@@ -28,6 +28,7 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
     case graph
     case link
     case node
+    case scrapbook
     case tabs
     case banner
     case table
@@ -46,11 +47,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case graph
     case link
     case node
+    case scrapbook
     case tabs
     case banner
     case table
     case social
     case pursuit
+    case background
 
     var id: String { rawValue }
 
@@ -66,11 +69,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .graph: "Graph"
         case .link: "Link"
         case .node: "Node"
+        case .scrapbook: "Scrapbook"
         case .tabs: "Tabs"
         case .banner: "Banner"
         case .table: "Table"
         case .social: "Socials"
         case .pursuit: "Pursuit"
+        case .background: "Background"
         }
     }
 
@@ -86,11 +91,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .graph: "chart.xyaxis.line"
         case .link: "link"
         case .node: "folder"
+        case .scrapbook: "book.closed"
         case .tabs: "rectangle.split.3x1"
         case .banner: "rectangle.topthird.inset.filled"
         case .table: "tablecells"
         case .social: "at"
         case .pursuit: "square.grid.2x2"
+        case .background: "paintpalette"
         }
     }
 
@@ -106,11 +113,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .graph: "↗"
         case .link: "🔗"
         case .node: "N"
+        case .scrapbook: "Bk"
         case .tabs: "☰"
         case .banner: "B"
         case .table: "⊞"
         case .social: "@"
         case .pursuit: "P"
+        case .background: "Bg"
         }
     }
 
@@ -126,11 +135,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .graph: .graph
         case .link: .link
         case .node: .node
+        case .scrapbook: .scrapbook
         case .tabs: .tabs
         case .banner: .banner
         case .table: .table
         case .social: .social
         case .pursuit: .pursuit
+        case .background: .text
         }
     }
 
@@ -147,11 +158,13 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .link: "link url web"
         case .group: "group selection multi select cluster"
         case .node: "node folder organize"
+        case .scrapbook: "scrapbook journal book pages"
         case .tabs: "tabs tab set"
         case .banner: "banner header cover"
         case .table: "table spreadsheet grid columns rows"
         case .social: "social instagram tiktok twitter youtube twitch"
         case .pursuit: "pursuit project goal"
+        case .background: "background color gradient photo image"
         }
     }
 
@@ -161,6 +174,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         includingCalendar: Bool = true,
         includingGraph: Bool = true,
         includingNode: Bool = true,
+        includingScrapbook: Bool = true,
         includingTabs: Bool = true,
         includingBanner: Bool = true,
         includingTable: Bool = true
@@ -178,6 +192,9 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         }
         if !includingNode {
             ordered.removeAll { $0 == .node }
+        }
+        if !includingScrapbook {
+            ordered.removeAll { $0 == .scrapbook }
         }
         if !includingTabs {
             ordered.removeAll { $0 == .tabs }
@@ -340,6 +357,24 @@ struct ComposerRGBColor: Codable, Equatable, Sendable {
     var green: Double
     var blue: Double
     var opacity: Double = 1
+}
+
+/// Fixed backdrop for a Mosaic board or a Pursuit page. It is not a placed component.
+struct ComposerBoardBackground: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case solid
+        case gradient
+        case media
+    }
+
+    var kind: Kind
+    var color: ComposerRGBColor
+    var secondaryColor: ComposerRGBColor
+    var mediaFileName: String?
+
+    static func solid(_ color: ComposerRGBColor) -> ComposerBoardBackground {
+        ComposerBoardBackground(kind: .solid, color: color, secondaryColor: color, mediaFileName: nil)
+    }
 }
 
 struct TextBlockStyle: Codable, Equatable, Sendable {
@@ -866,7 +901,10 @@ enum ComposerTabSet {
     }
 
     static func longestScreenSide() -> CGFloat {
-        let bounds = UIScreen.main.bounds
+        let screen = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen
+        let bounds = screen?.bounds ?? CGRect(x: 0, y: 0, width: 390, height: 844)
         return max(bounds.width, bounds.height)
     }
 
@@ -1088,9 +1126,13 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var groupMembers: [ComposerBlock]
     var groupWidth: Double
     var groupHeight: Double
+    /// Boards bound into this scrapbook, in page order.
+    var scrapbookPageIDs: [ComposerDocumentID]
+    /// Page shown the last time the book was open.
+    var scrapbookIndex: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex
     }
 
     init(
@@ -1143,7 +1185,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         socialPlatform: String = "",
         groupMembers: [ComposerBlock] = [],
         groupWidth: Double = 0,
-        groupHeight: Double = 0
+        groupHeight: Double = 0,
+        scrapbookPageIDs: [ComposerDocumentID] = [],
+        scrapbookIndex: Int = 0
     ) {
         self.id = id
         self.kind = kind
@@ -1195,6 +1239,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.groupMembers = groupMembers
         self.groupWidth = groupWidth
         self.groupHeight = groupHeight
+        self.scrapbookPageIDs = scrapbookPageIDs
+        self.scrapbookIndex = scrapbookIndex
     }
 
     init(from decoder: Decoder) throws {
@@ -1250,6 +1296,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         groupMembers = try container.decodeIfPresent([ComposerBlock].self, forKey: .groupMembers) ?? []
         groupWidth = try container.decodeIfPresent(Double.self, forKey: .groupWidth) ?? 0
         groupHeight = try container.decodeIfPresent(Double.self, forKey: .groupHeight) ?? 0
+        scrapbookPageIDs = try container.decodeIfPresent([ComposerDocumentID].self, forKey: .scrapbookPageIDs) ?? []
+        scrapbookIndex = try container.decodeIfPresent(Int.self, forKey: .scrapbookIndex) ?? 0
         if kind == .table {
             ComposerTable.ensure(&self)
         }
@@ -1375,6 +1423,14 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
             )
         case .node:
             newFolderBlock(kind: .node, placeholder: "Node", at: position)
+        case .scrapbook:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .scrapbook,
+                text: "Scrapbook",
+                style: .headingDefault,
+                position: position
+            )
         case .pursuit:
             newFolderBlock(kind: .pursuit, placeholder: "Pursuit", at: position)
         }
@@ -1422,6 +1478,7 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
 enum ComposerDocumentRole: String, Codable, Sendable {
     case pursuit
     case node
+    case page
 }
 
 struct ComposerPursuit: Identifiable, Codable, Equatable, Sendable {
@@ -1432,23 +1489,26 @@ struct ComposerPursuit: Identifiable, Codable, Equatable, Sendable {
 
     /// Vertical scale for block positions on this page. Locked so later edits do not move the others.
     var layoutHeight: Double?
+    var background: ComposerBoardBackground?
 
     init(
         id: ComposerDocumentID,
         title: String,
         blocks: [ComposerBlock],
         role: ComposerDocumentRole = .pursuit,
-        layoutHeight: Double? = nil
+        layoutHeight: Double? = nil,
+        background: ComposerBoardBackground? = nil
     ) {
         self.id = id
         self.title = title
         self.blocks = blocks
         self.role = role
         self.layoutHeight = layoutHeight
+        self.background = background
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, blocks, role, layoutHeight
+        case id, title, blocks, role, layoutHeight, background
     }
 
     init(from decoder: Decoder) throws {
@@ -1458,6 +1518,7 @@ struct ComposerPursuit: Identifiable, Codable, Equatable, Sendable {
         blocks = try container.decode([ComposerBlock].self, forKey: .blocks)
         role = try container.decodeIfPresent(ComposerDocumentRole.self, forKey: .role) ?? .pursuit
         layoutHeight = try container.decodeIfPresent(Double.self, forKey: .layoutHeight)
+        background = try container.decodeIfPresent(ComposerBoardBackground.self, forKey: .background)
     }
 }
 
@@ -1471,6 +1532,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     var pursuitPagesBlanked: Bool
     /// Vertical scale for block positions on the Mosaic board.
     var mosaicLayoutHeight: Double?
+    var mosaicBackground: ComposerBoardBackground?
 
     static let empty = ComposerSnapshot(
         mosaicTitle: "My Mosaic",
@@ -1486,7 +1548,8 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         pursuits: [ComposerPursuit],
         mosaicTitlePlaced: Bool = false,
         pursuitPagesBlanked: Bool = false,
-        mosaicLayoutHeight: Double? = nil
+        mosaicLayoutHeight: Double? = nil,
+        mosaicBackground: ComposerBoardBackground? = nil
     ) {
         self.mosaicTitle = mosaicTitle
         self.mosaicBlocks = mosaicBlocks
@@ -1494,10 +1557,11 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         self.mosaicTitlePlaced = mosaicTitlePlaced
         self.pursuitPagesBlanked = pursuitPagesBlanked
         self.mosaicLayoutHeight = mosaicLayoutHeight
+        self.mosaicBackground = mosaicBackground
     }
 
     enum CodingKeys: String, CodingKey {
-        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked, mosaicLayoutHeight
+        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked, mosaicLayoutHeight, mosaicBackground
     }
 
     init(from decoder: Decoder) throws {
@@ -1508,6 +1572,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced) ?? false
         pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked) ?? false
         mosaicLayoutHeight = try container.decodeIfPresent(Double.self, forKey: .mosaicLayoutHeight)
+        mosaicBackground = try container.decodeIfPresent(ComposerBoardBackground.self, forKey: .mosaicBackground)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1518,5 +1583,6 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         try container.encode(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
         try container.encode(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
         try container.encodeIfPresent(mosaicLayoutHeight, forKey: .mosaicLayoutHeight)
+        try container.encodeIfPresent(mosaicBackground, forKey: .mosaicBackground)
     }
 }
