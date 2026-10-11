@@ -49,6 +49,34 @@ extension EnvironmentValues {
     }
 }
 
+struct ComposerBlockActions {
+    var onCommit: () -> Void
+    var onBeginEditing: () -> Void
+    var onDelete: () -> Void
+    var onMediaData: (Data) -> Void
+    var onStyleChange: () -> Void
+    var onStyleMenuChange: (Bool) -> Void
+    var onClaimFormatTap: () -> Void
+    var onOpenMediaMenu: () -> Void
+    var onCropMedia: () -> Void
+    var onEditPursuit: () -> Void
+    var onEditCarousel: () -> Void
+    var onSelectTabs: () -> Void
+    var onEditSocial: () -> Void
+    var onUngroup: () -> Void
+    var onPresentMedia: ((URL) -> Void)?
+    var onBodyTap: (() -> Void)?
+    var onOpenSocial: (() -> Void)?
+    var onOpenFolder: (ComposerBlock) -> Void
+    var onOpenScrapbook: (ComposerBlock) -> Void
+    var onOpenMemberMediaMenu: (ComposerBlockID) -> Void
+    var onCropMemberMedia: (ComposerBlockID) -> Void
+    var onEditMemberPursuit: (ComposerBlockID) -> Void
+    var onEditMemberCarousel: (ComposerBlockID) -> Void
+    var onEditMemberSocial: (ComposerBlockID) -> Void
+    var onOpenMemberSocial: (ComposerBlock) -> Void
+}
+
 struct ComposerCanvasBlockView: View {
     let documentID: ComposerDocumentID?
     @Binding var block: ComposerBlock
@@ -61,32 +89,37 @@ struct ComposerCanvasBlockView: View {
     let mediaURL: URL?
     let pursuitImageURL: URL?
     var isMediaPaused: Bool
-    var onCommit: () -> Void
-    var onBeginEditing: () -> Void
-    var onDelete: () -> Void
-    var onMediaData: (Data) -> Void
-    var onStyleChange: () -> Void
-    var onStyleMenuChange: (Bool) -> Void = { _ in }
+    var actions: ComposerBlockActions
     var showsMediaMenu: Bool
-    var onOpenMediaMenu: () -> Void
-    var onCropMedia: () -> Void
     var showsPursuitPencil: Bool
-    var onEditPursuit: () -> Void
     var allowsCarouselControl: Bool
-    var onEditCarousel: () -> Void
     var isViewing: Bool
     var canvasSize: CGSize
     var cornerResizing: Binding<Bool> = .constant(false)
-    var onSelectTabs: () -> Void = {}
-    var onEditSocial: () -> Void = {}
-    var onUngroup: () -> Void = {}
+    var mediaMenuBlockID: ComposerBlockID? = nil
+    var pinsTabsToPageEdges: Bool = true
 
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
     var body: some View {
-        Group {
-            switch block.kind {
+        canvasContent
+        .frame(
+            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook ? nil : 280,
+            alignment: .topLeading
+        )
+        .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
+        .modifier(NonTextInteractionModifier(
+            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
+            editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
+            onTap: actions.onBeginEditing,
+            onDelete: actions.onDelete
+        ))
+    }
+
+    @ViewBuilder
+    private var canvasContent: some View {
+        switch block.kind {
             case .text, .heading:
                 ComposerTextCanvasBlock(
                     block: $block,
@@ -96,9 +129,10 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     livePinchScale: livePinchScale,
                     focusBlockID: focusBlockID,
-                    onCommit: onCommit,
-                    onStyleChange: onStyleChange,
-                    onStyleMenuChange: onStyleMenuChange
+                    onCommit: actions.onCommit,
+                    onStyleChange: actions.onStyleChange,
+                    onStyleMenuChange: actions.onStyleMenuChange,
+                    onClaimFormatTap: actions.onClaimFormatTap
                 )
             case .list:
                 ComposerListCanvasBlock(
@@ -109,9 +143,10 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     livePinchScale: livePinchScale,
                     isViewing: isViewing,
-                    onCommit: onCommit,
-                    onStyleChange: onStyleChange,
-                    onStyleMenuChange: onStyleMenuChange
+                    onCommit: actions.onCommit,
+                    onStyleChange: actions.onStyleChange,
+                    onStyleMenuChange: actions.onStyleMenuChange,
+                    onClaimFormatTap: actions.onClaimFormatTap
                 )
             case .carousel:
                 ComposerCarouselCanvasBlock(
@@ -122,7 +157,8 @@ struct ComposerCanvasBlockView: View {
                     isLifted: isLifted,
                     isRelocating: isRelocating,
                     allowsDirectControl: allowsCarouselControl,
-                    onEdit: onEditCarousel
+                    onEdit: actions.onEditCarousel,
+                    onPresentMedia: actions.onPresentMedia
                 )
             case .calendar:
                 ComposerCalendarCanvasBlock(
@@ -151,7 +187,8 @@ struct ComposerCanvasBlockView: View {
                     isLifted: isLifted,
                     isRelocating: isRelocating,
                     isViewing: isViewing,
-                    onActivate: onSelectTabs
+                    onActivate: actions.onSelectTabs,
+                    pinsToPageEdges: pinsTabsToPageEdges
                 )
             case .banner:
                 EmptyView()
@@ -164,7 +201,7 @@ struct ComposerCanvasBlockView: View {
                     isLifted: isLifted,
                     isRelocating: isRelocating,
                     isViewing: isViewing,
-                    onActivate: onSelectTabs
+                    onActivate: actions.onSelectTabs
                 )
             case .group:
                 ComposerGroupCanvasBlock(
@@ -174,7 +211,21 @@ struct ComposerCanvasBlockView: View {
                     isSelected: isSelected,
                     isLifted: isLifted,
                     isViewing: isViewing,
-                    onUngroup: onUngroup
+                    canvasSize: canvasSize,
+                    mediaMenuBlockID: mediaMenuBlockID,
+                    onPresentMedia: actions.onPresentMedia,
+                    onOpenFolder: actions.onOpenFolder,
+                    onOpenMediaMenu: actions.onOpenMemberMediaMenu,
+                    onCropMedia: actions.onCropMemberMedia,
+                    onEditPursuit: actions.onEditMemberPursuit,
+                    onEditCarousel: actions.onEditMemberCarousel,
+                    onEditSocial: actions.onEditMemberSocial,
+                    onOpenSocial: actions.onOpenMemberSocial,
+                    onOpenScrapbook: actions.onOpenScrapbook,
+                    onStyleMenuChange: actions.onStyleMenuChange,
+                    onClaimFormatTap: actions.onClaimFormatTap,
+                    onActivate: actions.onSelectTabs,
+                    onUngroup: actions.onUngroup
                 )
             case .social:
                 ComposerSocialCanvasBlock(
@@ -186,7 +237,8 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     isViewing: isViewing,
                     cornerResizing: cornerResizing,
-                    onEdit: onEditSocial
+                    onEdit: actions.onEditSocial,
+                    onOpen: actions.onOpenSocial
                 )
             case .media:
                 ComposerMediaCanvasBlock(
@@ -199,26 +251,21 @@ struct ComposerCanvasBlockView: View {
                     isRelocating: isRelocating,
                     isPaused: isMediaPaused,
                     showsMenu: showsMediaMenu,
-                    onOpenMenu: onOpenMediaMenu,
-                    onCrop: onCropMedia
+                    onOpenMenu: actions.onOpenMediaMenu,
+                    onCrop: actions.onCropMedia,
+                    onBodyTap: actions.onBodyTap
+                )
+            case .scrapbook:
+                ComposerScrapbookCover(
+                    title: block.text,
+                    scale: CGFloat(max(block.style.scale, 0.45)) * livePinchScale,
+                    isSelected: isSelected && !isViewing
                 )
             case .link:
                 linkEditor
             case .node, .pursuit:
                 pursuitView
-            }
         }
-        .frame(
-            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group ? nil : 280,
-            alignment: .topLeading
-        )
-        .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
-        .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group,
-            editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group,
-            onTap: onBeginEditing,
-            onDelete: onDelete
-        ))
     }
 
     private var linkEditor: some View {
@@ -293,7 +340,7 @@ struct ComposerCanvasBlockView: View {
             showsField: isEditing,
             focusBlockID: focusBlockID,
             focusID: block.id,
-            onSubmit: onCommit,
+            onSubmit: actions.onCommit,
             namePlaceholder: block.kind == .node ? "Node" : "Pursuit"
         )
         .frame(width: size.width, height: size.height)
@@ -318,7 +365,7 @@ struct ComposerCanvasBlockView: View {
                 pursuitPencilFrame = frame
             }
             .preference(key: ComposerPencilFrameKey.self, value: [block.id: pursuitPencilFrame])
-            .highPriorityGesture(TapGesture().onEnded { onEditPursuit() })
+            .highPriorityGesture(TapGesture().onEnded { actions.onEditPursuit() })
             .accessibilityLabel(block.kind == .node ? "Edit Node" : "Edit Pursuit")
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("composer.pursuit.edit.\(block.id.rawValue)")

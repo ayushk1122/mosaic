@@ -1,5 +1,12 @@
 import SwiftUI
 
+enum ComposerAddMenuMetrics {
+    static let button: CGFloat = 48
+    static let rowWidth: CGFloat = 156
+    static let rowHeight: CGFloat = 36
+    static let visibleRows = 4
+}
+
 private enum ComposerAddMenuColors {
     /// Menu rows and chrome — gunmetal for dark-mode alignment.
     static let bubble = Color(red: 0.20, green: 0.21, blue: 0.23)
@@ -46,6 +53,7 @@ struct ComposerFloatingMenu: View {
     var includesCalendar: Bool = true
     var includesGraph: Bool = true
     var includesNode: Bool = true
+    var includesScrapbook: Bool = true
     var includesTabs: Bool = true
     var includesBanner: Bool = true
     var includesTable: Bool = true
@@ -53,9 +61,13 @@ struct ComposerFloatingMenu: View {
 
     @State private var searchText = ""
 
-    private let plusSize: CGFloat = 56
-    private let rowWidth: CGFloat = 184
-    private let listMaxHeight: CGFloat = 360
+    private let plusSize = ComposerAddMenuMetrics.button
+    private let rowWidth = ComposerAddMenuMetrics.rowWidth
+    private var listMaxHeight: CGFloat {
+        let rows = CGFloat(ComposerAddMenuMetrics.visibleRows)
+        let gaps = CGFloat(ComposerAddMenuMetrics.visibleRows - 1)
+        return rows * ComposerAddMenuMetrics.rowHeight + gaps * 6
+    }
 
     private var filteredOptions: [BlockMenuOption] {
         BlockMenuOption.menuOptions(
@@ -64,6 +76,7 @@ struct ComposerFloatingMenu: View {
             includingCalendar: includesCalendar,
             includingGraph: includesGraph,
             includingNode: includesNode,
+            includingScrapbook: includesScrapbook,
             includingTabs: includesTabs,
             includingBanner: includesBanner,
             includingTable: includesTable
@@ -71,13 +84,13 @@ struct ComposerFloatingMenu: View {
     }
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 8) {
+        VStack(alignment: .trailing, spacing: 6) {
             if isExpanded, !showsTrashDropZone {
                 integratedSearchField
                     .transition(.move(edge: .bottom).combined(with: .opacity))
 
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .trailing, spacing: 8) {
+                    LazyVStack(alignment: .trailing, spacing: 6) {
                         if filteredOptions.isEmpty {
                             Text("No results")
                                 .font(.caption)
@@ -98,7 +111,8 @@ struct ComposerFloatingMenu: View {
                         }
                     }
                 }
-                .frame(maxHeight: listMaxHeight, alignment: .bottomTrailing)
+                .frame(width: rowWidth, alignment: .trailing)
+                .frame(maxHeight: listMaxHeight, alignment: .bottom)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -119,19 +133,18 @@ struct ComposerFloatingMenu: View {
             "",
             text: $searchText,
             prompt: Text("Type to search")
-                .font(.subheadline)
+                .font(.footnote)
                 .foregroundStyle(ComposerAddMenuColors.secondaryIcon)
         )
-        .font(.subheadline)
+        .font(.footnote)
         .foregroundStyle(ComposerAddMenuColors.primaryText)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(width: rowWidth, alignment: .leading)
-        .background(ComposerAddMenuColors.searchField, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 12)
+        .frame(width: rowWidth, height: ComposerAddMenuMetrics.rowHeight, alignment: .leading)
+        .background(ComposerAddMenuColors.searchField, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(ComposerAddMenuColors.searchStroke, lineWidth: 1)
         }
         .accessibilityIdentifier("composer.add.search")
@@ -153,7 +166,7 @@ struct ComposerFloatingMenu: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.title2.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
                 .rotationEffect(.degrees(isExpanded ? 45 : 0))
                 .frame(width: plusSize, height: plusSize)
@@ -191,23 +204,22 @@ private struct ComposerMenuOptionRow: View {
     var width: CGFloat
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: option.systemImage)
-                .font(.body.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(ComposerAddMenuColors.secondaryIcon)
-                .frame(width: 22, alignment: .center)
+                .frame(width: 18, alignment: .center)
 
             Text(option.title)
-                .font(.body.weight(.medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(ComposerAddMenuColors.primaryText)
                 .lineLimit(1)
 
             Spacer(minLength: 0)
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 16)
-        .padding(.vertical, 11)
-        .frame(width: width, alignment: .leading)
+        .padding(.leading, 12)
+        .padding(.trailing, 12)
+        .frame(width: width, height: ComposerAddMenuMetrics.rowHeight, alignment: .leading)
         .background(ComposerAddMenuColors.bubble, in: Capsule())
         .overlay(Capsule().stroke(ComposerAddMenuColors.bubbleStroke, lineWidth: 1))
     }

@@ -176,11 +176,12 @@ enum ComposerVideoCompatibility {
         }
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).mp4")
-        export.outputURL = output
-        export.outputFileType = .mp4
-        await export.export()
-        guard export.status == .completed,
-              UIVideoEditorController.canEditVideo(atPath: output.path) else {
+        do {
+            try await export.export(to: output, as: .mp4)
+        } catch {
+            return nil
+        }
+        guard UIVideoEditorController.canEditVideo(atPath: output.path) else {
             return nil
         }
         return output

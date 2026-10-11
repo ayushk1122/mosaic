@@ -10,23 +10,19 @@ struct ComposerGraphCanvasBlock: View {
 
     @State private var selectedPointID: String?
     @State private var showsEditor = false
-    @GestureState private var widthDrag: CGFloat = 1
-    @GestureState private var heightDrag: CGFloat = 1
-    @State private var resizeFrames = ComposerGraphResizeFrames()
 
     private var widthScale: CGFloat {
-        CGFloat(block.graphWidthScale) * scale * widthDrag * livePinchScale
+        CGFloat(block.graphWidthScale) * scale * livePinchScale
     }
 
     private var heightScale: CGFloat {
-        CGFloat(block.graphHeightScale) * scale * heightDrag * livePinchScale
+        CGFloat(block.graphHeightScale) * scale * livePinchScale
     }
 
     private var width: CGFloat { ComposerGraphStretch.baseWidth * widthScale }
     private var height: CGFloat { ComposerGraphStretch.baseHeight * heightScale }
     private var metric: CGFloat { min(max(min(widthScale, heightScale), 0.75), 1.45) }
     private var canTap: Bool { !isLifted && !isRelocating }
-    private var showsHandles: Bool { !isViewing && !isLifted && !isRelocating }
 
     private var placed: [ComposerLineGraph.Placed] {
         ComposerLineGraph.placed(block.graphPoints)
@@ -62,8 +58,6 @@ struct ComposerGraphCanvasBlock: View {
         .shadow(color: .white.opacity(isLifted ? 0.85 : 0), radius: isLifted ? 3 : 0)
         .shadow(color: .white.opacity(isLifted ? 0.4 : 0), radius: isLifted ? 14 : 0)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { if showsHandles { resizeHandles } }
-        .preference(key: ComposerGraphResizeFrameKey.self, value: showsHandles ? [block.id: resizeFrames] : [:])
         .sheet(isPresented: $showsEditor) {
             GraphPointEditor(block: $block)
         }
@@ -75,84 +69,6 @@ struct ComposerGraphCanvasBlock: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Graph")
         .accessibilityIdentifier("composer.graph")
-    }
-
-    private var resizeHandles: some View {
-        ZStack {
-            edgeHandle(horizontal: true, leadingOrTop: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            edgeHandle(horizontal: true, leadingOrTop: false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            edgeHandle(horizontal: false, leadingOrTop: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            edgeHandle(horizontal: false, leadingOrTop: false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        }
-    }
-
-    private func edgeHandle(horizontal: Bool, leadingOrTop: Bool) -> some View {
-        Capsule()
-            .fill(Color.white.opacity(0.92))
-            .frame(width: horizontal ? 6 : 34, height: horizontal ? 34 : 6)
-            .padding(horizontal ? .horizontal : .vertical, 4)
-            .contentShape(Rectangle())
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
-            } action: { frame in
-                switch (horizontal, leadingOrTop) {
-                case (true, true): resizeFrames.leading = frame
-                case (true, false): resizeFrames.trailing = frame
-                case (false, true): resizeFrames.top = frame
-                case (false, false): resizeFrames.bottom = frame
-                }
-            }
-            .highPriorityGesture(resizeGesture(horizontal: horizontal, leadingOrTop: leadingOrTop))
-            .accessibilityLabel(horizontal
-                ? (leadingOrTop ? "Stretch width from the left" : "Stretch width from the right")
-                : (leadingOrTop ? "Stretch height from the top" : "Stretch height from the bottom"))
-            .accessibilityAddTraits(.isButton)
-    }
-
-    private func resizeGesture(horizontal: Bool, leadingOrTop: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named("composerRoot"))
-            .updating(horizontal ? $widthDrag : $heightDrag) { value, state, _ in
-                let base = horizontal
-                    ? block.graphWidthScale * Double(scale)
-                    : block.graphHeightScale * Double(scale)
-                let translation = horizontal ? value.translation.width : value.translation.height
-                let span = horizontal ? ComposerGraphStretch.baseWidth : ComposerGraphStretch.baseHeight
-                let next = ComposerGraphStretch.resized(
-                    base: base,
-                    translation: translation,
-                    span: span,
-                    leadingOrTop: leadingOrTop
-                )
-                state = CGFloat(next / max(base, 0.01))
-            }
-            .onEnded { value in
-                let translation = horizontal ? value.translation.width : value.translation.height
-                let span = horizontal ? ComposerGraphStretch.baseWidth : ComposerGraphStretch.baseHeight
-                let widthBase = block.graphWidthScale * Double(scale)
-                let heightBase = block.graphHeightScale * Double(scale)
-                if horizontal {
-                    block.graphWidthScale = ComposerGraphStretch.resized(
-                        base: widthBase,
-                        translation: translation,
-                        span: span,
-                        leadingOrTop: leadingOrTop
-                    )
-                    block.graphHeightScale = ComposerGraphStretch.clamped(heightBase)
-                } else {
-                    block.graphHeightScale = ComposerGraphStretch.resized(
-                        base: heightBase,
-                        translation: translation,
-                        span: span,
-                        leadingOrTop: leadingOrTop
-                    )
-                    block.graphWidthScale = ComposerGraphStretch.clamped(widthBase)
-                }
-                block.style.scale = 1
-            }
     }
 
     private var plot: some View {
@@ -382,26 +298,3 @@ private struct GraphPointEditor: View {
     }
 }
 
-struct ComposerGraphResizeFrames: Equatable {
-    var leading = CGRect.zero
-    var trailing = CGRect.zero
-    var top = CGRect.zero
-    var bottom = CGRect.zero
-
-    func contains(_ point: CGPoint) -> Bool {
-        [leading, trailing, top, bottom].contains { frame in
-            frame.width > 1 && frame.insetBy(dx: -10, dy: -10).contains(point)
-        }
-    }
-}
-
-struct ComposerGraphResizeFrameKey: PreferenceKey {
-    static var defaultValue: [ComposerBlockID: ComposerGraphResizeFrames] = [:]
-
-    static func reduce(
-        value: inout [ComposerBlockID: ComposerGraphResizeFrames],
-        nextValue: () -> [ComposerBlockID: ComposerGraphResizeFrames]
-    ) {
-        value.merge(nextValue(), uniquingKeysWith: { $1 })
-    }
-}

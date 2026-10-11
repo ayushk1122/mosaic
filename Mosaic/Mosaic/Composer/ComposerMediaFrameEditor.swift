@@ -278,7 +278,7 @@ enum MediaCropMath {
     }
 
     private static func clampZoom(_ window: Window, contentAspect: CGFloat, edge: MediaCropEdge) -> Window {
-        var window = parked(window)
+        let window = parked(window)
         let zoom = framing(window: window, contentAspect: contentAspect).zoom
         guard zoom > 3.99 else { return window }
         let factor = zoom / 4

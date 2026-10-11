@@ -66,6 +66,23 @@ final class ComposerStore {
         persist()
     }
 
+    func boardBackground(for documentID: ComposerDocumentID?) -> ComposerBoardBackground? {
+        if let documentID {
+            return snapshot.pursuits.first(where: { $0.id == documentID })?.background
+        }
+        return snapshot.mosaicBackground
+    }
+
+    func setBoardBackground(_ background: ComposerBoardBackground?, for documentID: ComposerDocumentID?) {
+        if let documentID {
+            guard let index = snapshot.pursuits.firstIndex(where: { $0.id == documentID }) else { return }
+            snapshot.pursuits[index].background = background
+        } else {
+            snapshot.mosaicBackground = background
+        }
+        persist()
+    }
+
     func layoutHeight(for documentID: ComposerDocumentID?) -> Double? {
         if let documentID {
             return snapshot.pursuits.first(where: { $0.id == documentID })?.layoutHeight
@@ -95,7 +112,16 @@ final class ComposerStore {
     }
 
     func block(with id: ComposerBlockID, in documentID: ComposerDocumentID?) -> ComposerBlock? {
-        blocks(for: documentID).first(where: { $0.id == id })
+        let page = blocks(for: documentID)
+        if let block = page.first(where: { $0.id == id }) {
+            return block
+        }
+        for block in page where block.kind == .group {
+            if let member = block.groupMembers.first(where: { $0.id == id }) {
+                return member
+            }
+        }
+        return nil
     }
 
     /// Turns the fixed Mosaic title into a heading on the board, once.
@@ -124,7 +150,8 @@ final class ComposerStore {
         if let documentID {
             let title = snapshot.pursuits.first(where: { $0.id == documentID })?.title ?? ""
             let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fallback = snapshot.pursuits.first(where: { $0.id == documentID })?.role == .node ? "Node" : "Pursuit"
+            let role = snapshot.pursuits.first(where: { $0.id == documentID })?.role
+            let fallback = role == .node ? "Node" : (role == .page ? "Page" : "Pursuit")
             return trimmed.isEmpty ? fallback : trimmed
         }
         return snapshot.mosaicTitle
@@ -148,8 +175,17 @@ final class ComposerStore {
         if kind == .banner, let existing = blocks(for: documentID).first(where: { $0.kind == .banner }) {
             return existing.id
         }
-        captureUndo(in: documentID, includePursuits: kind == .pursuit || kind == .node)
+        captureUndo(in: documentID, includePursuits: kind == .pursuit || kind == .node || kind == .scrapbook)
         var block = ComposerBlock.make(kind: kind, position: position)
+        if kind == .scrapbook {
+            let pages = (1...2).map { _ in ComposerDocumentID() }
+            block.scrapbookPageIDs = pages
+            for (offset, pageID) in pages.enumerated() {
+                snapshot.pursuits.append(
+                    ComposerPursuit(id: pageID, title: "Page \(offset + 1)", blocks: [], role: .page)
+                )
+            }
+        }
         if kind == .pursuit || kind == .node, let pursuitID = block.pursuitID {
             let document = ComposerPursuit(
                 id: pursuitID,
@@ -183,8 +219,9 @@ final class ComposerStore {
     func updateBlock(_ block: ComposerBlock, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: block.id)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == block.id }) else { return }
-            blocks[index] = block
+            updateOwnedBlock(block.id, in: &blocks) { current in
+                current = block
+            }
         }
         // Title lives on the pursuit document, outside the block array this method just borrowed.
         if (block.kind == .pursuit || block.kind == .node), let pursuitID = block.pursuitID,
@@ -195,10 +232,10 @@ final class ComposerStore {
     }
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        let removed = block(with: blockID, in: documentID)
+        let removed = blocks(for: documentID).first(where: { $0.id == blockID })
         captureUndo(
             in: documentID,
-            includePursuits: removed?.kind == .pursuit || removed?.kind == .node
+            includePursuits: removed?.kind == .pursuit || removed?.kind == .node || removed?.kind == .scrapbook
         )
         mutateBlocks(for: documentID) { blocks in
             blocks.removeAll { $0.id == blockID }
@@ -210,6 +247,69 @@ final class ComposerStore {
         }
         if (removed?.kind == .pursuit || removed?.kind == .node), let pursuitID = removed?.pursuitID {
             snapshot.pursuits.removeAll { $0.id == pursuitID }
+        }
+        if removed?.kind == .scrapbook {
+            let pageIDs = Set(removed?.scrapbookPageIDs ?? [])
+            snapshot.pursuits.removeAll { pageIDs.contains($0.id) }
+        }
+        persist()
+    }
+
+    /// Inserts an empty board after the current scrapbook page. Returns the new page index.
+    @discardableResult
+    func insertScrapbookPage(after index: Int, on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) -> Int? {
+        guard var block = block(with: blockID, in: documentID),
+              block.kind == .scrapbook,
+              block.scrapbookPageIDs.count < 30 else { return nil }
+        captureUndo(in: documentID, includePursuits: true)
+        let pageID = ComposerDocumentID()
+        let insertAt = min(max(index, -1) + 1, block.scrapbookPageIDs.count)
+        block.scrapbookPageIDs.insert(pageID, at: insertAt)
+        block.scrapbookIndex = insertAt
+        snapshot.pursuits.append(
+            ComposerPursuit(id: pageID, title: "Page \(insertAt + 1)", blocks: [], role: .page)
+        )
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { current in
+                current.scrapbookPageIDs = block.scrapbookPageIDs
+                current.scrapbookIndex = insertAt
+            }
+        }
+        persist()
+        return insertAt
+    }
+
+    /// Removes one scrapbook page when another remains. Returns the page now showing.
+    @discardableResult
+    func removeScrapbookPage(at index: Int, on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) -> Int? {
+        guard var block = block(with: blockID, in: documentID),
+              block.kind == .scrapbook,
+              block.scrapbookPageIDs.count > 1,
+              block.scrapbookPageIDs.indices.contains(index) else { return nil }
+        captureUndo(in: documentID, includePursuits: true)
+        let removed = block.scrapbookPageIDs.remove(at: index)
+        let nextIndex = min(index, block.scrapbookPageIDs.count - 1)
+        block.scrapbookIndex = nextIndex
+        snapshot.pursuits.removeAll { $0.id == removed }
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { current in
+                current.scrapbookPageIDs = block.scrapbookPageIDs
+                current.scrapbookIndex = nextIndex
+            }
+        }
+        persist()
+        return nextIndex
+    }
+
+    func rememberScrapbookPage(_ index: Int, on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        guard let block = block(with: blockID, in: documentID),
+              block.kind == .scrapbook,
+              block.scrapbookPageIDs.indices.contains(index),
+              block.scrapbookIndex != index else { return }
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { current in
+                current.scrapbookIndex = index
+            }
         }
         persist()
     }
@@ -249,14 +349,15 @@ final class ComposerStore {
     func addTableColumn(to blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table else { return }
-            ComposerTable.ensure(&blocks[index])
-            guard let next = ComposerTable.addingColumn(to: blocks[index].tableColumns, rows: blocks[index].tableRows) else { return }
-            blocks[index].tableColumns = next.columns
-            blocks[index].tableRows = next.rows
-            blocks[index].tableEntries = ComposerTable.appendingColumnCell(to: blocks[index].tableEntries)
-            rememberVisibleTableRows(&blocks[index])
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table else { return }
+                ComposerTable.ensure(&block)
+                guard let next = ComposerTable.addingColumn(to: block.tableColumns, rows: block.tableRows) else { return }
+                block.tableColumns = next.columns
+                block.tableRows = next.rows
+                block.tableEntries = ComposerTable.appendingColumnCell(to: block.tableEntries)
+                rememberVisibleTableRows(&block)
+            }
         }
         persist()
     }
@@ -264,14 +365,15 @@ final class ComposerStore {
     func removeLastTableColumn(from blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table else { return }
-            ComposerTable.ensure(&blocks[index])
-            guard let next = ComposerTable.removingLastColumn(from: blocks[index].tableColumns, rows: blocks[index].tableRows) else { return }
-            blocks[index].tableColumns = next.columns
-            blocks[index].tableRows = next.rows
-            blocks[index].tableEntries = ComposerTable.removingLastColumnCell(from: blocks[index].tableEntries)
-            rememberVisibleTableRows(&blocks[index])
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table else { return }
+                ComposerTable.ensure(&block)
+                guard let next = ComposerTable.removingLastColumn(from: block.tableColumns, rows: block.tableRows) else { return }
+                block.tableColumns = next.columns
+                block.tableRows = next.rows
+                block.tableEntries = ComposerTable.removingLastColumnCell(from: block.tableEntries)
+                rememberVisibleTableRows(&block)
+            }
         }
         persist()
     }
@@ -279,12 +381,13 @@ final class ComposerStore {
     func addTableRow(to blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table else { return }
-            ComposerTable.ensure(&blocks[index])
-            guard let next = ComposerTable.addingRow(to: blocks[index].tableRows, columnCount: blocks[index].tableColumns.count) else { return }
-            blocks[index].tableRows = next
-            rememberVisibleTableRows(&blocks[index])
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table else { return }
+                ComposerTable.ensure(&block)
+                guard let next = ComposerTable.addingRow(to: block.tableRows, columnCount: block.tableColumns.count) else { return }
+                block.tableRows = next
+                rememberVisibleTableRows(&block)
+            }
         }
         persist()
     }
@@ -292,12 +395,13 @@ final class ComposerStore {
     func removeLastTableRow(from blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table else { return }
-            ComposerTable.ensure(&blocks[index])
-            guard let next = ComposerTable.removingLastRow(from: blocks[index].tableRows) else { return }
-            blocks[index].tableRows = next
-            rememberVisibleTableRows(&blocks[index])
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table else { return }
+                ComposerTable.ensure(&block)
+                guard let next = ComposerTable.removingLastRow(from: block.tableRows) else { return }
+                block.tableRows = next
+                rememberVisibleTableRows(&block)
+            }
         }
         persist()
     }
@@ -305,19 +409,20 @@ final class ComposerStore {
     func startTableEntry(on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table else { return }
-            ComposerTable.ensure(&blocks[index])
-            rememberVisibleTableRows(&blocks[index])
-            guard blocks[index].tableEntries.count < ComposerTable.maximumEntries else { return }
-            let blank = ComposerTable.blankRows(
-                rowCount: blocks[index].tableRows.count,
-                columnCount: blocks[index].tableColumns.count
-            )
-            let entry = ComposerTableEntry(rows: blank)
-            blocks[index].tableEntries.append(entry)
-            blocks[index].selectedTableEntryID = entry.id
-            blocks[index].tableRows = blank
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table else { return }
+                ComposerTable.ensure(&block)
+                rememberVisibleTableRows(&block)
+                guard block.tableEntries.count < ComposerTable.maximumEntries else { return }
+                let blank = ComposerTable.blankRows(
+                    rowCount: block.tableRows.count,
+                    columnCount: block.tableColumns.count
+                )
+                let entry = ComposerTableEntry(rows: blank)
+                block.tableEntries.append(entry)
+                block.selectedTableEntryID = entry.id
+                block.tableRows = blank
+            }
         }
         persist()
     }
@@ -325,13 +430,14 @@ final class ComposerStore {
     func showTableEntry(_ entryID: String, on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }),
-                  blocks[index].kind == .table,
-                  let entry = blocks[index].tableEntries.first(where: { $0.id == entryID }) else { return }
-            ComposerTable.ensure(&blocks[index])
-            rememberVisibleTableRows(&blocks[index])
-            blocks[index].selectedTableEntryID = entryID
-            blocks[index].tableRows = entry.rows
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.kind == .table,
+                      let entry = block.tableEntries.first(where: { $0.id == entryID }) else { return }
+                ComposerTable.ensure(&block)
+                rememberVisibleTableRows(&block)
+                block.selectedTableEntryID = entryID
+                block.tableRows = entry.rows
+            }
         }
         persist()
     }
@@ -361,8 +467,9 @@ final class ComposerStore {
     func setMedia(_ fileName: String, for blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
-            guard let index = blocks.firstIndex(where: { $0.id == blockID }) else { return }
-            blocks[index].mediaFileName = fileName
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                block.mediaFileName = fileName
+            }
         }
         persist()
     }
@@ -458,6 +565,23 @@ final class ComposerStore {
 
     private static func undoKey(_ documentID: ComposerDocumentID?) -> String {
         documentID?.rawValue ?? "mosaic"
+    }
+
+    private func updateOwnedBlock(
+        _ blockID: ComposerBlockID,
+        in blocks: inout [ComposerBlock],
+        _ body: (inout ComposerBlock) -> Void
+    ) {
+        if let index = blocks.firstIndex(where: { $0.id == blockID }) {
+            body(&blocks[index])
+            return
+        }
+        for index in blocks.indices where blocks[index].kind == .group {
+            if let member = blocks[index].groupMembers.firstIndex(where: { $0.id == blockID }) {
+                body(&blocks[index].groupMembers[member])
+                return
+            }
+        }
     }
 
     private func mutateBlocks(for documentID: ComposerDocumentID?, _ update: (inout [ComposerBlock]) -> Void) {

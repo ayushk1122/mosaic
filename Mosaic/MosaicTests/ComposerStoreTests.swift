@@ -202,6 +202,8 @@ struct ComposerStoreTests {
         #expect(pursuitPage.contains(.node))
         #expect(pursuitPage.contains(.tabs))
         #expect(pursuitPage.contains(.table))
+        #expect(mosaicMenu.contains(.background))
+        #expect(pursuitPage.contains(.background))
 
         let folder = BlockMenuOption.menuOptions(matching: "folder")
         #expect(folder == [.node])
@@ -604,6 +606,24 @@ struct ComposerStoreTests {
     }
 
     @Test
+    func boardBackgroundStaysBehindThePageAndRoundTrips() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let widget = store.addBlock(.pursuit, to: nil)
+        let pursuitID = try #require(store.block(with: widget, in: nil)?.pursuitID)
+        let color = ComposerBoardBackground.solid(ComposerRGBColor(red: 0.2, green: 0.3, blue: 0.4))
+        store.setBoardBackground(color, for: nil)
+        store.setBoardBackground(color, for: pursuitID)
+        #expect(store.boardBackground(for: nil) == color)
+        #expect(store.boardBackground(for: pursuitID) == color)
+        let data = try JSONEncoder().encode(store.snapshot)
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
+        #expect(decoded.mosaicBackground == color)
+        #expect(decoded.pursuits.first?.background == color)
+        store.setBoardBackground(nil, for: nil)
+        #expect(store.boardBackground(for: nil) == nil)
+    }
+
+    @Test
     func snapshotEncodesAndDecodes() throws {
         let snapshot = ComposerSnapshot(
             mosaicTitle: "My Mosaic",
@@ -656,6 +676,114 @@ struct ComposerStoreTests {
         #expect(restored.count == 2)
         #expect(restored.map(\.text).sorted() == ["One", "Two"])
         #expect(abs(restored[0].position.x - 0.1) < 0.001)
+    }
+
+    @Test
+    func groupedMemberEditsStayInsideTheGroup() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let origin = BlockPosition(x: 0.2, y: 0.2)
+        var table = ComposerBlock.make(kind: .table, position: origin)
+        let startingColumns = table.tableColumns.count
+        var note = ComposerBlock.make(kind: .text, position: origin)
+        note.text = "Note"
+        var group = ComposerBlock.make(kind: .group, position: origin)
+        group.groupMembers = [table, note]
+        group.groupWidth = 240
+        group.groupHeight = 180
+        store.replacePage([group], in: nil)
+
+        store.addTableColumn(to: table.id, in: nil)
+        let savedTable = try #require(store.block(with: table.id, in: nil))
+        #expect(savedTable.tableColumns.count == startingColumns + 1)
+        #expect(store.blocks(for: nil).count == 1)
+        #expect(store.blocks(for: nil)[0].kind == .group)
+
+        note.text = "Updated"
+        store.updateBlock(note, in: nil)
+        #expect(store.block(with: note.id, in: nil)?.text == "Updated")
+        #expect(store.block(with: group.id, in: nil)?.groupMembers.contains(where: { $0.id == note.id && $0.text == "Updated" }) == true)
+    }
+
+    @Test
+    func tabRowStaysInsideTheSideBorders() {
+        #expect(ComposerTabEdge.controlsBelongAbove(chipsMaxX: 360, buttonWidth: 28, gap: 8, viewportWidth: 390))
+        #expect(!ComposerTabEdge.controlsBelongAbove(chipsMaxX: 200, buttonWidth: 28, gap: 8, viewportWidth: 390))
+        let shifted = ComposerTabEdge.leadingEdge(currentMinX: 300, width: 160, viewportWidth: 390)
+        #expect(abs(shifted - 218) < 0.001)
+        let pinned = ComposerTabEdge.leadingEdge(currentMinX: -20, width: 80, viewportWidth: 390)
+        #expect(abs(pinned - 12) < 0.001)
+    }
+
+    @Test
+    func dragStopsAtTheSideBorders() {
+        let towardLeft = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: -200, height: 40),
+            frameMinX: 100,
+            frameWidth: 80,
+            viewportWidth: 390
+        )
+        #expect(abs(towardLeft.width - (-96)) < 0.001)
+        #expect(abs(towardLeft.height - 40) < 0.001)
+
+        let towardRight = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: 300, height: -12),
+            frameMinX: 100,
+            frameWidth: 80,
+            viewportWidth: 390
+        )
+        #expect(abs(towardRight.width - 206) < 0.001)
+        #expect(abs(towardRight.height - (-12)) < 0.001)
+
+        let inside = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: 20, height: 8),
+            frameMinX: 100,
+            frameWidth: 80,
+            viewportWidth: 390
+        )
+        #expect(abs(inside.width - 20) < 0.001)
+
+        let widerThanBoard = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: 40, height: 10),
+            frameMinX: 40,
+            frameWidth: 400,
+            viewportWidth: 390
+        )
+        #expect(abs(widerThanBoard.width - (-36)) < 0.001)
+    }
+
+    @Test
+    func scrapbookKeepsABoardOnEachPage() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.addBlock(.pursuit, to: nil)
+        let pursuitID = store.snapshot.pursuits[0].id
+        let scrapbookID = store.addBlock(.scrapbook, to: pursuitID)
+        let scrapbook = try #require(store.block(with: scrapbookID, in: pursuitID))
+        #expect(scrapbook.kind == .scrapbook)
+        #expect(scrapbook.text == "Scrapbook")
+        #expect(scrapbook.scrapbookPageIDs.count == 2)
+        let first = scrapbook.scrapbookPageIDs[0]
+        let second = scrapbook.scrapbookPageIDs[1]
+        #expect(store.pursuit(for: first)?.role == .page)
+        #expect(store.blocks(for: first).isEmpty)
+
+        _ = store.addBlock(.text, to: first)
+        #expect(store.blocks(for: first).count == 1)
+        #expect(store.blocks(for: second).isEmpty)
+
+        let inserted = try #require(store.insertScrapbookPage(after: 0, on: scrapbookID, in: pursuitID))
+        #expect(inserted == 1)
+        #expect(store.block(with: scrapbookID, in: pursuitID)?.scrapbookPageIDs.count == 3)
+
+        let data = try JSONEncoder().encode(store.snapshot)
+        let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: data)
+        let saved = try #require(decoded.pursuits.first(where: { $0.id == pursuitID })?.blocks.first(where: { $0.id == scrapbookID }))
+        #expect(saved.scrapbookPageIDs.count == 3)
+        #expect(decoded.pursuits.contains(where: { $0.id == first && $0.blocks.contains(where: { $0.kind == .text }) }))
+
+        store.deleteBlock(scrapbookID, in: pursuitID)
+        #expect(store.pursuit(for: first) == nil)
+        #expect(store.pursuit(for: second) == nil)
+        #expect(store.blocks(for: pursuitID).isEmpty)
     }
 
     private func coloredPixelCount(_ image: UIImage) -> Int {

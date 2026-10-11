@@ -11,20 +11,25 @@ struct ComposerListCanvasBlock: View {
     let onCommit: () -> Void
     let onStyleChange: () -> Void
     var onStyleMenuChange: (Bool) -> Void = { _ in }
+    var onClaimFormatTap: () -> Void = {}
 
     @FocusState private var focusedItemID: String?
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
     @State private var styleIconFrame: CGRect = .zero
+    @State private var unwrapped = CGSize(width: 96, height: 28)
+    @State private var wrapped = CGSize(width: 96, height: 28)
+    @State private var claimedFormatTap = false
 
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerPaperPage) private var onPaper
+
+    private var readingColor: Color {
+        block.style.readingColor(onPaper: onPaper)
+    }
 
     private var pointSize: CGFloat {
         CGFloat(block.style.fontSize * block.style.scale * Double(livePinchScale))
-    }
-
-    private var listWidth: CGFloat {
-        min(520, max(168, pointSize * 12))
     }
 
     private var activeFont: Font {
@@ -35,8 +40,22 @@ struct ComposerListCanvasBlock: View {
         ComposerChromePlacement.resolve(
             itemFrame: itemFrame,
             viewportWidth: viewportWidth,
-            contentWidth: listWidth
+            contentWidth: fitted.width
         )
+    }
+
+    /// Longest line stays tight. A line wider than the page wraps inside the same bullet.
+    private var rowMaxWidth: CGFloat {
+        let room = viewportWidth - itemFrame.minX - 28
+        if viewportWidth > 1, room > 96 { return room }
+        return 280
+    }
+
+    private var fitted: CGSize {
+        if unwrapped.width <= rowMaxWidth + 0.5 {
+            return CGSize(width: max(unwrapped.width, 48), height: max(unwrapped.height, 20))
+        }
+        return CGSize(width: rowMaxWidth, height: max(wrapped.height, 20))
     }
 
     private var showsMoveAffordance: Bool { isLifted || isRelocating }
@@ -44,7 +63,34 @@ struct ComposerListCanvasBlock: View {
 
     var body: some View {
         rows
-            .frame(width: listWidth, alignment: .leading)
+            .background {
+                ZStack(alignment: .topLeading) {
+                    measuredRows(wrapping: false)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .hidden()
+                        .allowsHitTesting(false)
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            let next = CGSize(width: max(size.width, 48), height: max(size.height, 20))
+                            guard abs(next.width - unwrapped.width) > 0.5 || abs(next.height - unwrapped.height) > 0.5 else { return }
+                            unwrapped = next
+                        }
+                    measuredRows(wrapping: true)
+                        .frame(width: rowMaxWidth, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .allowsHitTesting(false)
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            let next = CGSize(width: max(size.width, 48), height: max(size.height, 20))
+                            guard abs(next.width - wrapped.width) > 0.5 || abs(next.height - wrapped.height) > 0.5 else { return }
+                            wrapped = next
+                        }
+                }
+            }
+            .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isViewing, !isRelocating, !isLifted {
                     formatIconStack
@@ -71,7 +117,7 @@ struct ComposerListCanvasBlock: View {
                         block.listItems = [ComposerListItem()]
                     }
                     showsStyleDialog = false
-                    focusedItemID = block.listItems.first?.id
+                    focus(block.listItems.first?.id)
                 } else {
                     let kept = block.listItems.filter {
                         !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -80,9 +126,28 @@ struct ComposerListCanvasBlock: View {
                     focusedItemID = nil
                 }
             }
+            .onAppear {
+                guard isEditing, !isViewing else { return }
+                focus(focusedItemID ?? block.listItems.first?.id)
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("List")
             .accessibilityIdentifier("composer.list.\(block.id.rawValue)")
+    }
+
+    private func measuredRows(wrapping: Bool) -> some View {
+        VStack(alignment: .leading, spacing: max(4, pointSize * 0.28)) {
+            ForEach(displayedItems) { item in
+                let isEmpty = item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    marker(for: item)
+                    Text(isEmpty ? "List" : item.text)
+                        .font(activeFont)
+                        .fixedSize(horizontal: !wrapping, vertical: true)
+                        .frame(maxWidth: wrapping ? .infinity : nil, alignment: .leading)
+                }
+            }
+        }
     }
 
     private var rows: some View {
@@ -108,22 +173,26 @@ struct ComposerListCanvasBlock: View {
                 TextField(
                     "",
                     text: $block.listItems[index].text,
-                    prompt: Text("List").foregroundStyle(block.style.displayColor.opacity(0.28))
+                    prompt: Text("List").foregroundStyle(readingColor.opacity(0.28)),
+                    axis: .vertical
                 )
                 .textFieldStyle(.plain)
                 .font(activeFont)
-                .foregroundStyle(block.style.displayColor.opacity(checked ? 0.55 : 1))
-                .tint(block.style.displayColor)
+                .foregroundStyle(readingColor.opacity(checked ? 0.55 : 1))
+                .tint(readingColor)
                 .focused($focusedItemID, equals: item.id)
-                .submitLabel(.next)
-                .onSubmit { advance(from: item.id) }
+                .lineLimit(1...40)
+                .onChange(of: block.listItems[index].text) { _, _ in
+                    continueRow(item.id)
+                }
                 .disabled(isRelocating)
             } else {
                 Text(isEmpty ? "List" : item.text)
                     .font(activeFont)
-                    .underline(block.style.isUnderlined, color: block.style.displayColor)
-                    .strikethrough(checked, color: block.style.displayColor.opacity(0.7))
-                    .foregroundStyle(block.style.displayColor.opacity(isEmpty ? 0.28 : (checked ? 0.55 : 1)))
+                    .underline(block.style.isUnderlined, color: readingColor)
+                    .strikethrough(checked, color: readingColor.opacity(0.7))
+                    .foregroundStyle(readingColor.opacity(isEmpty ? 0.28 : (checked ? 0.55 : 1)))
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -135,7 +204,7 @@ struct ComposerListCanvasBlock: View {
             let symbol = item.isChecked ? "checkmark.square.fill" : "square"
             Image(systemName: symbol)
                 .font(.system(size: max(15, pointSize * 0.9), weight: .regular))
-                .foregroundStyle(block.style.displayColor.opacity(item.isChecked ? 1 : 0.85))
+                .foregroundStyle(readingColor.opacity(item.isChecked ? 1 : 0.85))
                 .frame(width: max(22, pointSize), alignment: .center)
                 .contentShape(Rectangle())
                 .highPriorityGesture(TapGesture().onEnded {
@@ -147,7 +216,7 @@ struct ComposerListCanvasBlock: View {
         } else if let index = block.listItems.firstIndex(where: { $0.id == item.id }) {
             Text(block.listMarker.marker(at: index))
                 .font(activeFont)
-                .foregroundStyle(block.style.displayColor.opacity(0.85))
+                .foregroundStyle(readingColor.opacity(0.85))
                 .frame(minWidth: max(16, pointSize), alignment: .trailing)
         }
     }
@@ -180,9 +249,19 @@ struct ComposerListCanvasBlock: View {
                 styleIconFrame = frame
             }
             .preference(key: ComposerTextStyleIconFrameKey.self, value: [block.id: styleIconFrame])
-            .highPriorityGesture(TapGesture().onEnded {
-                showsStyleDialog.toggle()
-            })
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !claimedFormatTap else { return }
+                        claimedFormatTap = true
+                        onClaimFormatTap()
+                    }
+                    .onEnded { value in
+                        claimedFormatTap = false
+                        guard hypot(value.translation.width, value.translation.height) < 12 else { return }
+                        showsStyleDialog.toggle()
+                    }
+            )
             .accessibilityLabel("List style")
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("composer.list.style.\(block.id.rawValue)")
@@ -193,21 +272,36 @@ struct ComposerListCanvasBlock: View {
         block.listItems[index].isChecked.toggle()
     }
 
-    private func advance(from id: String) {
+    /// A return stays on this bullet. A return on the blank line that follows starts the next bullet.
+    private func continueRow(_ id: String) {
         guard let index = block.listItems.firstIndex(where: { $0.id == id }) else { return }
-        let text = block.listItems[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty {
+        let text = block.listItems[index].text
+        guard text.hasSuffix("\n") else { return }
+        let withoutLast = String(text.dropLast())
+        let startsNext = withoutLast.isEmpty || withoutLast.hasSuffix("\n")
+        guard startsNext else { return }
+        let kept = withoutLast.hasSuffix("\n") ? String(withoutLast.dropLast()) : withoutLast
+        if kept.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if block.listItems.count > 1 {
                 block.listItems.remove(at: index)
                 let focusIndex = index > 0 ? index - 1 : 0
-                focusedItemID = block.listItems[focusIndex].id
+                focus(block.listItems[focusIndex].id)
             } else {
+                block.listItems[index].text = ""
                 onCommit()
             }
             return
         }
+        block.listItems[index].text = kept
         let next = ComposerListItem()
         block.listItems.insert(next, at: index + 1)
-        focusedItemID = next.id
+        focus(next.id)
+    }
+
+    private func focus(_ id: String?) {
+        guard let id else { return }
+        Task { @MainActor in
+            focusedItemID = id
+        }
     }
 }

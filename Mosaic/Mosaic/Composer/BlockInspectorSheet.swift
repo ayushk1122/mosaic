@@ -76,6 +76,11 @@ struct BlockInspectorSheet: View {
                         Text("The selected components move and resize together. Ungroup puts them back on the page.")
                             .foregroundStyle(.secondary)
                     }
+                case .scrapbook:
+                    Section("Scrapbook") {
+                        Text("A closed book on the page. Open it to turn through pages, and add notes or media on each page.")
+                            .foregroundStyle(.secondary)
+                    }
                 case .carousel:
                     Section("Carousel") {
                         Text("Add, replace, or remove items from the carousel on the page.")

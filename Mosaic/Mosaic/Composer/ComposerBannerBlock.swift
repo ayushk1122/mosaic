@@ -30,6 +30,11 @@ struct ComposerBannerBlock: View {
     var onDelete: () -> Void
 
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerPaperPage) private var onPaper
+
+    private var readingColor: Color {
+        block.style.readingColor(onPaper: onPaper)
+    }
     @State private var image: UIImage?
     @State private var panOrigin: CGSize?
     @State private var heightOrigin: CGFloat?
@@ -123,7 +128,7 @@ struct ComposerBannerBlock: View {
             if isEditing, !isViewing {
                 TextField("Add text", text: $block.text, axis: .vertical)
                     .font(block.style.displayFont())
-                    .foregroundStyle(block.style.displayColor)
+                    .foregroundStyle(readingColor)
                     .lineLimit(1...3)
                     .focused(focusBlockID, equals: block.id)
                     .submitLabel(.done)
@@ -131,7 +136,7 @@ struct ComposerBannerBlock: View {
             } else if !trimmed.isEmpty {
                 Text(trimmed)
                     .font(block.style.displayFont())
-                    .foregroundStyle(block.style.displayColor)
+                    .foregroundStyle(readingColor)
                     .lineLimit(3)
                     .onTapGesture {
                         guard !isViewing else { return }
@@ -140,7 +145,7 @@ struct ComposerBannerBlock: View {
             } else if showsChrome {
                 Text("Add text")
                     .font(block.style.displayFont())
-                    .foregroundStyle(block.style.displayColor.opacity(0.55))
+                    .foregroundStyle(readingColor.opacity(0.55))
                     .onTapGesture(perform: onBeginEditing)
             }
         }

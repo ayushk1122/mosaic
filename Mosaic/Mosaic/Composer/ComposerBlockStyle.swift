@@ -13,7 +13,26 @@ extension TextBlockColor {
     }
 }
 
+private struct ComposerPaperPageKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var composerPaperPage: Bool {
+        get { self[ComposerPaperPageKey.self] }
+        set { self[ComposerPaperPageKey.self] = newValue }
+    }
+}
+
 extension TextBlockStyle {
+    /// Default white type is for the dark board. On a scrapbook page it reads as ink.
+    func readingColor(onPaper: Bool) -> Color {
+        if onPaper, customColor == nil, color == .canvas {
+            return ScrapbookColors.ink
+        }
+        return displayColor
+    }
+
     var displayColor: Color {
         if let customColor {
             return Color(
