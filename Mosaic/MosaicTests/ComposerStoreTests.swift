@@ -598,6 +598,29 @@ struct ComposerStoreTests {
     }
 
     @Test
+    func blankingPursuitPagesLeavesJournalPagesAlone() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let scrapbookID = store.addBlock(.scrapbook, to: nil)
+        let pageID = try #require(store.block(with: scrapbookID, in: nil)?.scrapbookPageIDs.first)
+        let note = store.addBlock(.text, to: pageID)
+        store.blankPursuitPagesIfNeeded()
+        #expect(store.blocks(for: pageID).contains(where: { $0.id == note }))
+    }
+
+    @Test
+    func boardUndoKeepsJournalPiecesAddedAfterTheSnapshot() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let scrapbookID = store.addBlock(.scrapbook, to: nil)
+        let pageID = try #require(store.block(with: scrapbookID, in: nil)?.scrapbookPageIDs.first)
+        _ = store.addBlock(.text, to: pageID)
+        _ = store.addBlock(.pursuit, to: nil)
+        let later = store.addBlock(.heading, to: pageID)
+        store.undo(in: nil)
+        #expect(store.blocks(for: pageID).contains(where: { $0.id == later }))
+        #expect(store.blocks(for: nil).contains(where: { $0.id == scrapbookID }))
+    }
+
+    @Test
     func olderSnapshotWithoutTitleFlagStillDecodes() throws {
         let json = #"{"mosaicTitle":"My Mosaic","mosaicBlocks":[],"pursuits":[]}"#
         let decoded = try JSONDecoder().decode(ComposerSnapshot.self, from: Data(json.utf8))
@@ -780,7 +803,18 @@ struct ComposerStoreTests {
         #expect(saved.scrapbookPageIDs.count == 3)
         #expect(decoded.pursuits.contains(where: { $0.id == first && $0.blocks.contains(where: { $0.kind == .text }) }))
 
+        store.copyBlock(scrapbookID, in: pursuitID)
         store.deleteBlock(scrapbookID, in: pursuitID)
+        let pasted = try #require(store.pasteClipboard(at: BlockPosition(x: 0.2, y: 0.3), in: pursuitID))
+        let copy = try #require(store.block(with: pasted, in: pursuitID))
+        #expect(pasted != scrapbookID)
+        #expect(copy.scrapbookPageIDs.count == 3)
+        #expect(Set(copy.scrapbookPageIDs).isDisjoint(with: [first, second]))
+        #expect(copy.scrapbookPageIDs.contains { store.blocks(for: $0).contains(where: { $0.kind == .text }) })
+        #expect(store.pursuit(for: copy.scrapbookPageIDs[0])?.role == .page)
+        #expect(store.clipboard == nil)
+
+        store.deleteBlock(pasted, in: pursuitID)
         #expect(store.pursuit(for: first) == nil)
         #expect(store.pursuit(for: second) == nil)
         #expect(store.blocks(for: pursuitID).isEmpty)

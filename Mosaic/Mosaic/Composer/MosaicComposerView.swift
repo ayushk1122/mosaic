@@ -25,8 +25,10 @@ struct MosaicComposerView: View {
     @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
     @State private var showMediaPicker = false
-    @State private var pickedMediaItem: PhotosPickerItem?
+    @State private var pickedMediaItems: [PhotosPickerItem] = []
+    @State private var mediaPickLimit = 1
     @State private var pendingMediaBlockID: ComposerBlockID?
+    @State private var pendingMediaOrigin: CGPoint?
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
     @State private var focusedMedia: FocusedComposerMedia?
     @State private var mediaEditRequest: MediaEditRequest?
@@ -37,6 +39,7 @@ struct MosaicComposerView: View {
     @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
     @State private var textStyleIconFrames: [ComposerBlockID: CGRect] = [:]
     @State private var resizeCornerFrames: [ComposerBlockID: ComposerResizeCornerFrames] = [:]
+    @State private var mediaChromeFrames: [ComposerBlockID: ComposerMediaChromeFrames] = [:]
     @State private var resizePreview: ComposerResizePreview?
     @State private var socialCornerFrames: [ComposerBlockID: ComposerSocialCornerFrames] = [:]
     @State private var socialCornerResizing = false
@@ -50,6 +53,13 @@ struct MosaicComposerView: View {
     @State private var carouselEditRequest: CarouselEditRequest?
     @State private var socialEditRequest: SocialEditRequest?
     @State private var showsBackgroundEditor = false
+    @State private var dragScrollRelay = ComposerDragScrollRelay()
+    @State private var dragScrollBoost: CGFloat = 0
+    @State private var composerSpace = UUID().uuidString
+    @State private var canvasScrollPosition = ScrollPosition()
+    @State private var clipboardMenuBlockID: ComposerBlockID?
+    @State private var pasteAnchor: CGPoint?
+    @State private var clipboardPressTask: Task<Void, Never>?
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -100,8 +110,7 @@ struct MosaicComposerView: View {
             onCommit: commitTextEditing,
             onReplaceMedia: {
                 selectedBlockID = block.id
-                pendingMediaBlockID = block.id
-                showMediaPicker = true
+                presentMediaLibrary(for: block.id, origin: nil, limit: 1)
             },
             onDelete: {
                 store.deleteBlock(block.id, in: documentID)
@@ -114,6 +123,17 @@ struct MosaicComposerView: View {
                 }
             }
         )
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                presentClipboardMenu(for: block.id)
+            }
+        )
+        .overlay(alignment: .top) {
+            if clipboardMenuBlockID == block.id {
+                clipboardActionMenu(for: block.id)
+                    .padding(.top, 12)
+            }
+        }
     }
 
     /// Page height the saved positions were laid out against. It does not change when one block moves.
@@ -165,7 +185,8 @@ struct MosaicComposerView: View {
 
     private var measuredComposer: some View {
         composerBody
-            .coordinateSpace(name: "composerRoot")
+            .coordinateSpace(name: composerSpace)
+            .environment(\.composerCoordinateSpace, composerSpace)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.width
             } action: { width in
@@ -175,6 +196,7 @@ struct MosaicComposerView: View {
             .onPreferenceChange(ComposerPencilFrameKey.self) { pencilFrames = $0 }
             .onPreferenceChange(ComposerTextStyleIconFrameKey.self) { textStyleIconFrames = $0 }
             .onPreferenceChange(ComposerResizeCornerFrameKey.self) { resizeCornerFrames = $0 }
+            .onPreferenceChange(ComposerMediaChromeFrameKey.self) { mediaChromeFrames = $0 }
             .onPreferenceChange(ComposerSocialCornerFrameKey.self) { socialCornerFrames = $0 }
             .onPreferenceChange(ComposerBlockFrameKey.self) { frames in
                 let next = frames.mapValues { $0.integral }
@@ -230,7 +252,8 @@ struct MosaicComposerView: View {
         coveredBoard
             .photosPicker(
                 isPresented: $showMediaPicker,
-                selection: $pickedMediaItem,
+                selection: $pickedMediaItems,
+                maxSelectionCount: mediaPickLimit,
                 matching: .any(of: [.images, .videos])
             )
             .photosPicker(
@@ -264,12 +287,15 @@ struct MosaicComposerView: View {
             .sheet(item: $socialEditRequest) { request in
                 socialEditor(for: request)
             }
-            .onChange(of: pickedMediaItem) { _, item in
-                guard let item, let blockID = pendingMediaBlockID else { return }
+            .onChange(of: pickedMediaItems) { _, items in
+                guard !items.isEmpty, let blockID = pendingMediaBlockID else { return }
+                let chosen = items
+                let origin = pendingMediaOrigin
                 pendingMediaBlockID = nil
+                pendingMediaOrigin = nil
+                pickedMediaItems = []
                 Task {
-                    await importMedia(item, into: blockID)
-                    pickedMediaItem = nil
+                    await importPlacedMedia(chosen, firstBlockID: blockID, origin: origin)
                 }
             }
             .fullScreenCover(item: $mediaEditRequest) { request in
@@ -296,7 +322,7 @@ struct MosaicComposerView: View {
                 let blockID = pendingMediaBlockID
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(250))
-                    guard let blockID, pendingMediaBlockID == blockID, pickedMediaItem == nil else { return }
+                    guard let blockID, pendingMediaBlockID == blockID, pickedMediaItems.isEmpty else { return }
                     pendingMediaBlockID = nil
                     if store.block(with: blockID, in: documentID)?.mediaFileName == nil {
                         store.deleteBlock(blockID, in: documentID)
@@ -350,6 +376,12 @@ struct MosaicComposerView: View {
             }
             ZStack(alignment: .bottomTrailing) {
                 canvasScroll
+                ComposerDragScrollDriver(relay: dragScrollRelay, boost: $dragScrollBoost, onOffset: { y in
+                    canvasScrollPosition.scrollTo(y: y)
+                }) {
+                    grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
+                }
+                .allowsHitTesting(false)
                 if isGrouping {
                     groupingBar
                         .frame(maxWidth: .infinity)
@@ -359,13 +391,52 @@ struct MosaicComposerView: View {
                 if !chrome.isViewing, !isGrouping {
                     addMenu
                 }
+                if showsSelectionTrash {
+                    selectionTrashButton
+                        .padding(.trailing, 20 + ComposerAddMenuMetrics.button + 12)
+                        .padding(.bottom, 20)
+                }
                 if !isBookPage, !isGrouping {
                     viewEyeButton
-                        .padding(.trailing, chrome.isViewing ? 20 : 20 + ComposerAddMenuMetrics.button + 12)
+                        .padding(.trailing, eyeTrailingPadding)
                         .padding(.bottom, 20)
                 }
             }
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(composerSpace))
+            } action: { frame in
+                dragScrollRelay.viewportMinY = frame.minY
+                dragScrollRelay.viewportHeight = frame.height
+            }
         }
+    }
+
+    private var showsSelectionTrash: Bool {
+        selectedBlockID != nil && !textDragVisual.isMoving && !chrome.isViewing && !isGrouping
+    }
+
+    private var eyeTrailingPadding: CGFloat {
+        let plusGap = ComposerAddMenuMetrics.button + 12
+        let trashGap = showsSelectionTrash ? plusGap : 0
+        return chrome.isViewing ? 20 : 20 + plusGap + trashGap
+    }
+
+    private var selectionTrashButton: some View {
+        Button {
+            guard let selectedBlockID else { return }
+            deleteBlock(selectedBlockID)
+        } label: {
+            Image(systemName: "trash.fill")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+                .background(Color(red: 0.36, green: 0.18, blue: 0.18), in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete")
+        .accessibilityIdentifier("composer.selectionTrash")
     }
 
     private var addMenu: some View {
@@ -411,8 +482,8 @@ struct MosaicComposerView: View {
                             }
                     }
                 )
-                .background(ComposerCanvasZoomLock())
-                .coordinateSpace(name: "composerCanvas")
+                .background(ComposerCanvasZoomLock(onOffset: { canvasScrollPosition.scrollTo(y: $0) }))
+                .coordinateSpace(name: composerSpace + ".canvas")
                 .modifier(
                     PlacementGestureModifier(
                         isActive: placingOption != nil,
@@ -421,26 +492,21 @@ struct MosaicComposerView: View {
                 )
         }
         .scrollDisabled(textDragVisual.isMoving || socialCornerResizing)
+        .scrollIndicators(.hidden, axes: .vertical)
         .scrollDismissesKeyboard(.interactively)
+        .scrollPosition($canvasScrollPosition)
     }
 
     private var canvasPage: some View {
         ZStack(alignment: .topLeading) {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    guard placingOption == nil else { return }
-                    if menuExpanded {
-                        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                            menuExpanded = false
+                .gesture(
+                    SpatialTapGesture(coordinateSpace: .named(composerSpace + ".canvas"))
+                        .onEnded { value in
+                            handleEmptyCanvasTap(at: value.location)
                         }
-                    }
-                    if editingBlockID != nil {
-                        commitTextEditing()
-                    } else {
-                        dismissBlockInteraction()
-                    }
-                }
+                )
 
             if blocks.isEmpty, placingOption == nil, documentID == nil {
                 emptyState
@@ -457,63 +523,79 @@ struct MosaicComposerView: View {
                     .offset(x: ghostLocation.x - 22, y: ghostLocation.y - 22)
                     .allowsHitTesting(false)
             }
+
+            if let pasteAnchor, store.clipboard != nil, !chrome.isViewing {
+                clipboardPasteButton
+                    .fixedSize()
+                    .offset(x: max(pasteAnchor.x - 8, 8), y: max(pasteAnchor.y - 52, 8))
+                    .zIndex(4)
+            }
         }
     }
 
     @ViewBuilder
     private func placedBlock(_ block: ComposerBlock) -> some View {
         let preview = resizePreview?.blockID == block.id ? resizePreview : nil
-        blockView(for: block)
-            .id(block.id)
-            .scaleEffect(
-                x: preview?.scaleX ?? 1,
-                y: preview?.scaleY ?? 1,
-                anchor: preview?.corner.anchor ?? .topLeading
-            )
-            .zIndex(styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: ComposerBlockFrameKey.self,
-                        value: [block.id: proxy.frame(in: .named("composerCanvas")).integral]
-                    )
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if showsResizeChrome(for: block), let frame = blockFrames[block.id], frame.width > 1, frame.height > 1 {
-                    ComposerResizeChrome(
-                        blockID: block.id,
-                        layout: frame.size,
-                        scaleX: preview?.scaleX ?? 1,
-                        scaleY: preview?.scaleY ?? 1,
-                        anchor: preview?.corner.anchor ?? .topLeading,
-                        onChanged: { corner, translation in
-                            updateResizePreview(for: block, corner: corner, translation: translation)
-                        },
-                        onEnded: { _, _ in
-                            commitResizePreview()
-                        }
-                    )
-                }
-            }
-            .offset(liveOffset(for: block))
-            .opacity(blockOpacity(for: block))
-            .modifier(
-                RelocateGestureModifier(
-                    isEnabled: !chrome.isViewing && supportsCanvasGestures(block.kind) && placingOption == nil && styleMenuBlockID == nil,
-                    claimsTouches: !isGrouping && claimsCanvasTouches(for: block),
-                    pinchPriority: block.kind == .calendar || block.kind == .graph || block.kind == .tabs,
-                    pinchEnabled: block.kind != .table && block.kind != .social,
-                    gesture: textPressGesture(for: block),
-                    pinch: textPinchGesture(for: block)
+        ZStack(alignment: .topLeading) {
+            blockView(for: block)
+                .id(block.id)
+                .scaleEffect(
+                    x: preview?.scaleX ?? 1,
+                    y: preview?.scaleY ?? 1,
+                    anchor: preview?.corner.anchor ?? .topLeading
                 )
-            )
-            .modifier(
-                ViewingMediaTapModifier(
-                    isEnabled: chrome.isViewing && (block.kind == .media || isFolder(block.kind) || block.kind == .social || block.kind == .scrapbook),
-                    onTap: { handleViewingTap(on: block) }
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ComposerBlockFrameKey.self,
+                            value: [block.id: proxy.frame(in: .named(composerSpace + ".canvas")).integral]
+                        )
+                    }
+                }
+                .modifier(
+                    RelocateGestureModifier(
+                        isEnabled: relocateEnabled(for: block),
+                        claimsTouches: !isGrouping && claimsCanvasTouches(for: block),
+                        pinchPriority: block.kind == .calendar || block.kind == .graph || block.kind == .tabs,
+                        pinchEnabled: block.kind != .table && block.kind != .social,
+                        gesture: textPressGesture(for: block),
+                        pinch: textPinchGesture(for: block)
+                    )
                 )
-            )
+                .modifier(
+                    ViewingMediaTapModifier(
+                        isEnabled: chrome.isViewing && (block.kind == .media || isFolder(block.kind) || block.kind == .social || block.kind == .scrapbook),
+                        onTap: { handleViewingTap(on: block) }
+                    )
+                )
+            if showsResizeChrome(for: block), let frame = blockFrames[block.id], frame.width > 1, frame.height > 1 {
+                ComposerResizeChrome(
+                    blockID: block.id,
+                    layout: frame.size,
+                    scaleX: preview?.scaleX ?? 1,
+                    scaleY: preview?.scaleY ?? 1,
+                    anchor: preview?.corner.anchor ?? .topLeading,
+                    onChanged: { corner, translation in
+                        updateResizePreview(for: block, corner: corner, translation: translation)
+                    },
+                    onEnded: { _, _ in
+                        commitResizePreview()
+                    }
+                )
+            }
+            if clipboardMenuBlockID == block.id {
+                clipboardActionMenu(for: block.id)
+                    .fixedSize()
+                    .offset(y: -46)
+            }
+        }
+        .modifier(SelectedCornerPencil(
+            isShown: showsResizeChrome(for: block) && isFolder(block.kind) && !chrome.isViewing,
+            pencil: pursuitBoardPencil(block)
+        ))
+        .zIndex(clipboardMenuBlockID == block.id || styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
+        .offset(liveOffset(for: block))
+        .opacity(blockOpacity(for: block))
     }
 
     @ViewBuilder
@@ -534,6 +616,7 @@ struct MosaicComposerView: View {
                 actions: blockActions(for: block),
                 showsMediaMenu: styleMenuBlockID == block.id,
                 showsPursuitPencil: !chrome.isViewing,
+                pencilCoveredByChrome: showsResizeChrome(for: block),
                 allowsCarouselControl: chrome.isViewing || selectedBlockID == block.id,
                 isViewing: chrome.isViewing,
                 canvasSize: CGSize(width: canvasSize.width, height: layoutHeight),
@@ -676,8 +759,7 @@ struct MosaicComposerView: View {
             menuExpanded = false
             let bannerID = store.addBlock(.banner, to: documentID)
             selectedBlockID = bannerID
-            pendingMediaBlockID = bannerID
-            showMediaPicker = true
+            presentMediaLibrary(for: bannerID, origin: nil, limit: 1)
             return
         }
         menuExpanded = false
@@ -694,8 +776,29 @@ struct MosaicComposerView: View {
         guard canvasSize.width > 0, canvasSize.height > 0 else { return }
         let position = normalizedPosition(from: point)
         let newID = store.addBlock(.media, at: position, to: documentID)
-        pendingMediaBlockID = newID
+        presentMediaLibrary(for: newID, origin: point, limit: 24)
+    }
+
+    private func presentMediaLibrary(for blockID: ComposerBlockID, origin: CGPoint?, limit: Int) {
+        pendingMediaBlockID = blockID
+        pendingMediaOrigin = origin
+        mediaPickLimit = limit
+        pickedMediaItems = []
         showMediaPicker = true
+    }
+
+    /// Spreads a batch of photos and videos so each one is its own piece, starting at the drop.
+    private func mediaClusterPoint(index: Int, origin: CGPoint) -> CGPoint {
+        let stepX: CGFloat = 220
+        let stepY: CGFloat = 250
+        let room = max(canvasSize.width - origin.x, stepX)
+        let columns = max(Int(room / stepX), 1)
+        let column = index % columns
+        let row = index / columns
+        return clamped(point: CGPoint(
+            x: origin.x + CGFloat(column) * stepX,
+            y: origin.y + CGFloat(row) * stepY
+        ))
     }
 
     private func placeCarousel(at point: CGPoint) {
@@ -711,6 +814,20 @@ struct MosaicComposerView: View {
             store.setMedia(fileName, for: blockID, in: documentID)
         } else if store.block(with: blockID, in: documentID)?.kind != .banner {
             store.deleteBlock(blockID, in: documentID)
+        }
+    }
+
+    private func importPlacedMedia(_ items: [PhotosPickerItem], firstBlockID: ComposerBlockID, origin: CGPoint?) async {
+        guard let first = items.first else { return }
+        await importMedia(first, into: firstBlockID)
+        if store.block(with: firstBlockID, in: documentID) != nil {
+            selectedBlockID = firstBlockID
+        }
+        guard let origin else { return }
+        for (offset, item) in items.dropFirst().enumerated() {
+            let point = mediaClusterPoint(index: offset + 1, origin: origin)
+            let id = store.addBlock(.media, at: normalizedPosition(from: point), to: documentID)
+            await importMedia(item, into: id)
         }
     }
 
@@ -789,19 +906,127 @@ struct MosaicComposerView: View {
         selectedBlockID = nil
         focusedTextBlockID = nil
         styleMenuBlockID = nil
+        clipboardMenuBlockID = nil
+        pasteAnchor = nil
         textDragSession.reset()
     }
 
+    private func handleEmptyCanvasTap(at point: CGPoint) {
+        guard placingOption == nil else { return }
+        if menuExpanded {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                menuExpanded = false
+            }
+        }
+        if editingBlockID != nil {
+            commitTextEditing()
+        } else {
+            dismissBlockInteraction()
+        }
+        guard store.clipboard != nil, !chrome.isViewing, !isGrouping else { return }
+        if let pasteAnchor, hypot(point.x - pasteAnchor.x, point.y - pasteAnchor.y) < 72 {
+            performPaste(at: pasteAnchor)
+            return
+        }
+        pasteAnchor = point
+    }
+
+    private func performPaste(at point: CGPoint) {
+        if let pasted = store.pasteClipboard(at: normalizedPosition(from: point), in: documentID) {
+            selectedBlockID = pasted
+        }
+        pasteAnchor = nil
+    }
+
+    private func armClipboardPress(for blockID: ComposerBlockID) {
+        guard !chrome.isViewing, !isGrouping, textDragSession.pressID == nil else { return }
+        let generation = UUID()
+        textDragSession.pressID = generation
+        clipboardPressTask?.cancel()
+        clipboardPressTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(480))
+            guard !Task.isCancelled, textDragSession.pressID == generation else { return }
+            guard textDragSession.blockID == blockID, textDragSession.baseline == nil else { return }
+            presentClipboardMenu(for: blockID)
+        }
+    }
+
+    private func cancelClipboardPress() {
+        clipboardPressTask?.cancel()
+        clipboardPressTask = nil
+        textDragSession.pressID = nil
+    }
+
+    private func presentClipboardMenu(for blockID: ComposerBlockID) {
+        guard !chrome.isViewing, !isGrouping else { return }
+        clipboardMenuBlockID = blockID
+        pasteAnchor = nil
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
+    private func clipboardActionMenu(for blockID: ComposerBlockID) -> some View {
+        HStack(spacing: 0) {
+            clipboardMenuButton("Copy") {
+                store.copyBlock(blockID, in: documentID)
+                clipboardMenuBlockID = nil
+            }
+            clipboardMenuButton("Cut") {
+                store.copyBlock(blockID, in: documentID)
+                deleteBlock(blockID)
+                clipboardMenuBlockID = nil
+            }
+        }
+        .fixedSize()
+        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func clipboardMenuButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var clipboardPasteButton: some View {
+        clipboardMenuButton("Paste") {
+            guard let pasteAnchor else { return }
+            performPaste(at: pasteAnchor)
+        }
+        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .padding(18)
+        .contentShape(Rectangle())
+    }
+
     private func handleMediaIconTap(_ blockID: ComposerBlockID) {
+        guard textDragSession.claimMediaChromeTap(blockID, action: "menu") else { return }
         textDragSession.didHandleMediaIconTap = true
         selectPageBlock(blockID)
         styleMenuBlockID = styleMenuBlockID == blockID ? nil : blockID
     }
 
     private func textPressGesture(for block: ComposerBlock) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named("composerRoot"))
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(composerSpace))
             .updating($textDragVisual) { value, visual, _ in
                 updateTextDrag(for: block, value: value, visual: &visual)
+            }
+            .onChanged { value in
+                let distance = hypot(value.translation.width, value.translation.height)
+                if distance > 10 || textDragSession.resizeCorner != nil || textDragSession.graphResizing {
+                    cancelClipboardPress()
+                    if clipboardMenuBlockID == block.id {
+                        clipboardMenuBlockID = nil
+                    }
+                } else {
+                    armClipboardPress(for: block.id)
+                }
+                guard let corner = textDragSession.resizeCorner else { return }
+                updateResizePreview(for: block, corner: corner, translation: value.translation)
             }
             .onEnded { value in
                 finishTextDrag(for: block, value: value)
@@ -809,11 +1034,16 @@ struct MosaicComposerView: View {
     }
 
     private func updateTextDrag(for block: ComposerBlock, value: DragGesture.Value, visual: inout TextDragVisual) {
+        dragScrollRelay.active = false
         if isGrouping {
             visual = .inactive
             return
         }
         let session = textDragSession
+        if session.graphResizing, let corner = session.resizeCorner {
+            visual = .inactive
+            return
+        }
         if session.isPinching || session.graphResizing || socialCornerResizing {
             visual = .inactive
             return
@@ -822,8 +1052,30 @@ struct MosaicComposerView: View {
             visual = .inactive
             return
         }
+        if touchHitsMediaCrop(block.id, at: value.startLocation) || touchHitsMediaMenu(block.id, at: value.startLocation) {
+            session.didHandleMediaIconTap = true
+            session.blockID = block.id
+            visual = .inactive
+            return
+        }
+        if session.baseline == nil, session.resizeCorner == nil,
+           let corner = resizeCornerFrames[block.id]?.corner(at: value.startLocation),
+           claimsCanvasTouches(for: block) {
+            session.graphResizing = true
+            session.resizeCorner = corner
+            session.blockID = block.id
+            visual = .inactive
+            return
+        }
         if session.blockID != block.id {
-            if touchHitsResizeCorner(block.id, at: value.startLocation) || touchHitsSocialCorner(block.id, at: value.startLocation) {
+            if let corner = resizeCornerFrames[block.id]?.corner(at: value.startLocation) {
+                session.graphResizing = true
+                session.resizeCorner = claimsCanvasTouches(for: block) ? corner : nil
+                session.blockID = block.id
+                visual = .inactive
+                return
+            }
+            if touchHitsSocialCorner(block.id, at: value.startLocation) {
                 session.graphResizing = true
                 session.blockID = block.id
                 visual = .inactive
@@ -889,6 +1141,19 @@ struct MosaicComposerView: View {
                 && trashDropZoneFrame.insetBy(dx: 12, dy: 12).contains(value.location)
             session.lastTranslation = next.translation
             session.hoveringTrash = next.hoveringTrash
+            dragScrollRelay.active = true
+            dragScrollRelay.fingerY = value.location.y - dragScrollRelay.viewportMinY
+            if let frame = blockFrames[block.id], frame.height > 1 {
+                let previous = dragScrollRelay.tracksItem ? dragScrollRelay.itemMinY - frame.minY : next.translation.height
+                dragScrollRelay.dragDeltaY = next.translation.height - previous
+                dragScrollRelay.itemMinY = frame.minY + next.translation.height
+                dragScrollRelay.itemMaxY = frame.maxY + next.translation.height
+                dragScrollRelay.tracksItem = true
+            } else {
+                dragScrollRelay.dragDeltaY = 0
+                dragScrollRelay.tracksItem = false
+            }
+            dragScrollRelay.dragDeltaTime = Date()
         }
 
         visual = next
@@ -901,27 +1166,53 @@ struct MosaicComposerView: View {
                 toggleGroupSelection(block.id)
             }
             textDragSession.reset()
+            stopDragFollow()
+            return
+        }
+        let tapDistance = hypot(value.translation.width, value.translation.height)
+        if tapDistance < 14, touchHitsMediaCrop(block.id, at: value.startLocation) {
+            openMediaFrameEditor(block.id)
+            textDragSession.reset()
+            stopDragFollow()
+            return
+        }
+        if tapDistance < 14, touchHitsMediaMenu(block.id, at: value.startLocation) {
+            handleMediaIconTap(block.id)
+            textDragSession.reset()
+            stopDragFollow()
+            return
+        }
+        if textDragSession.resizeCorner != nil {
+            commitResizePreview()
+            textDragSession.reset()
+            stopDragFollow()
             return
         }
         if textDragSession.didHandleStyleTap || touchHitsTextStyleIcon(block.id, at: value.startLocation) || textDragSession.graphResizing || touchHitsResizeCorner(block.id, at: value.startLocation) || touchHitsSocialCorner(block.id, at: value.startLocation) {
             textDragSession.reset()
+            stopDragFollow()
             return
         }
         if textDragSession.carouselPan {
             textDragSession.reset()
+            stopDragFollow()
             selectedBlockID = block.id
             return
         }
         let elapsed = Date().timeIntervalSince(textDragSession.started)
         let distance = hypot(value.translation.width, value.translation.height)
         let didMove = textDragSession.baseline != nil && !textDragSession.isPinching
-        let translation = textDragSession.lastTranslation
+        let translation = CGSize(
+            width: textDragSession.lastTranslation.width,
+            height: textDragSession.lastTranslation.height + stopDragFollow()
+        )
         let shouldDelete = textDragSession.hoveringTrash
         let iconAlreadyHandled = textDragSession.didHandleMediaIconTap
         let tappedPencil = pencilFrames[block.id].map { frame in
             frame.width > 1 && frame.insetBy(dx: -12, dy: -12).contains(value.location)
         } ?? false
         textDragSession.lastEnded = Date()
+        cancelClipboardPress()
         textDragSession.reset()
         handleTextTap(
             on: block,
@@ -1029,6 +1320,12 @@ struct MosaicComposerView: View {
         if selectedBlockID == blockID {
             selectedBlockID = nil
         }
+        if styleMenuBlockID == blockID {
+            styleMenuBlockID = nil
+        }
+        if clipboardMenuBlockID == blockID {
+            clipboardMenuBlockID = nil
+        }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
@@ -1113,15 +1410,33 @@ struct MosaicComposerView: View {
     }
 
     private func openMediaFrameEditor(_ blockID: ComposerBlockID) {
+        guard textDragSession.claimMediaChromeTap(blockID, action: "crop") else { return }
         playingMediaIDs.remove(blockID)
         styleMenuBlockID = nil
         selectPageBlock(blockID)
         mediaEditRequest = .shape(blockID)
     }
 
+    private func relocateEnabled(for block: ComposerBlock) -> Bool {
+        guard !chrome.isViewing, supportsCanvasGestures(block.kind), placingOption == nil else { return false }
+        if styleMenuBlockID == nil { return true }
+        return block.kind == .media && styleMenuBlockID == block.id
+    }
+
     private func claimsCanvasTouches(for block: ComposerBlock) -> Bool {
         if block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .group { return false }
+        if block.kind == .media { return true }
         return selectedBlockID != block.id
+    }
+
+    @discardableResult
+    private func stopDragFollow() -> CGFloat {
+        let boost = dragScrollBoost
+        dragScrollBoost = 0
+        dragScrollRelay.boost = 0
+        dragScrollRelay.active = false
+        dragScrollRelay.tracksItem = false
+        return boost
     }
 
     private func touchHitsResizeCorner(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
@@ -1244,6 +1559,14 @@ struct MosaicComposerView: View {
         return frame.insetBy(dx: -12, dy: -12).contains(point)
     }
 
+    private func touchHitsMediaMenu(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        mediaChromeFrames[blockID]?.hitsMenu(point) ?? false
+    }
+
+    private func touchHitsMediaCrop(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        mediaChromeFrames[blockID]?.hitsCrop(point) ?? false
+    }
+
     private func beginVideoTrim(_ blockID: ComposerBlockID) {
         guard let fileName = store.block(with: blockID, in: documentID)?.mediaFileName else { return }
         let sourceURL = store.mediaURL(for: fileName)
@@ -1343,6 +1666,22 @@ struct MosaicComposerView: View {
         )
     }
 
+    private func pursuitBoardPencil(_ block: ComposerBlock) -> some View {
+        Button {
+            beginPursuitEdit(block.id)
+        } label: {
+            Image(systemName: "pencil")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(width: 26, height: 26)
+                .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .accessibilityLabel(block.kind == .node ? "Edit Node" : "Edit Pursuit")
+    }
+
     private func beginPursuitEdit(_ blockID: ComposerBlockID) {
         styleMenuBlockID = nil
         editingBlockID = nil
@@ -1356,6 +1695,7 @@ struct MosaicComposerView: View {
             PursuitWidgetEditor(
                 name: block.text,
                 layout: block.pursuitLayout,
+                frameAspect: block.pursuitFrameAspect,
                 textX: block.pursuitTextX,
                 textY: block.pursuitTextY,
                 texts: block.pursuitTexts,
@@ -1385,6 +1725,7 @@ struct MosaicComposerView: View {
         block.pursuitTextX = edits.textX
         block.pursuitTextY = edits.textY
         block.pursuitLayout = edits.layout
+        block.pursuitFrameAspect = edits.frameAspect
         block.pursuitTexts = edits.texts
         block.pursuitImageZoom = edits.imageZoom
         block.pursuitImagePanX = edits.imagePanX
@@ -1419,7 +1760,7 @@ struct MosaicComposerView: View {
         guard textDragVisual.blockID == block.id, textDragVisual.isMoving else { return base }
         return CGSize(
             width: base.width + textDragVisual.translation.width,
-            height: base.height + textDragVisual.translation.height
+            height: base.height + textDragVisual.translation.height + dragScrollBoost
         )
     }
 
@@ -1689,8 +2030,24 @@ private final class TextDragSession {
     var didHandleStyleTap = false
     var carouselPan = false
     var graphResizing = false
+    var resizeCorner: ComposerResizeCorner?
     var dragFrame: CGRect?
     var lastEnded = Date.distantPast
+    var pressID: UUID?
+    private var lastMediaChromeKey = ""
+    private var lastMediaChromeTap = Date.distantPast
+
+    /// Collapses a menu tap that both the button and the photo drag report.
+    func claimMediaChromeTap(_ blockID: ComposerBlockID, action: String) -> Bool {
+        let now = Date()
+        let key = "\(blockID.rawValue).\(action)"
+        if lastMediaChromeKey == key, now.timeIntervalSince(lastMediaChromeTap) < 0.3 {
+            return false
+        }
+        lastMediaChromeKey = key
+        lastMediaChromeTap = now
+        return true
+    }
 
     func reset() {
         blockID = nil
@@ -1705,7 +2062,9 @@ private final class TextDragSession {
         didHandleStyleTap = false
         carouselPan = false
         graphResizing = false
+        resizeCorner = nil
         dragFrame = nil
+        pressID = nil
     }
 }
 
@@ -1734,6 +2093,21 @@ private struct ViewingMediaTapModifier: ViewModifier {
     }
 }
 
+private struct SelectedCornerPencil<Pencil: View>: ViewModifier {
+    var isShown: Bool
+    var pencil: Pencil
+
+    func body(content: Content) -> some View {
+        if isShown {
+            content.overlay(alignment: .bottomTrailing) {
+                pencil.padding(8)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModifier {
     let isEnabled: Bool
     let claimsTouches: Bool
@@ -1753,6 +2127,8 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
 
 /// Keeps the composer page at its normal scale. Pinching a block must not zoom the scroll view.
 private struct ComposerCanvasZoomLock: UIViewRepresentable {
+    var onOffset: (CGFloat) -> Void
+
     func makeUIView(context: Context) -> ComposerCanvasZoomLockView {
         let view = ComposerCanvasZoomLockView()
         view.isUserInteractionEnabled = false
@@ -1761,11 +2137,14 @@ private struct ComposerCanvasZoomLock: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ComposerCanvasZoomLockView, context: Context) {
+        uiView.onOffset = onOffset
         uiView.lockEnclosingScrollView()
     }
 }
 
 private final class ComposerCanvasZoomLockView: UIView {
+    var onOffset: (CGFloat) -> Void = { _ in }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         lockEnclosingScrollView()
@@ -1780,11 +2159,14 @@ private final class ComposerCanvasZoomLockView: UIView {
         var current: UIView? = superview
         while let view = current {
             if let scrollView = view as? UIScrollView {
+                scrollView.accessibilityIdentifier = ComposerCanvasScrollMark.id
+                ComposerCanvasScrollMark.installSync(on: scrollView, onOffset)
                 scrollView.minimumZoomScale = 1
                 scrollView.maximumZoomScale = 1
                 scrollView.bouncesZoom = false
                 scrollView.alwaysBounceHorizontal = false
                 scrollView.showsHorizontalScrollIndicator = false
+                scrollView.showsVerticalScrollIndicator = false
                 scrollView.isDirectionalLockEnabled = true
                 if let systemPinch = scrollView.pinchGestureRecognizer,
                    systemPinch.name != "mosaic.table.pinch" {

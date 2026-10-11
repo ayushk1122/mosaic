@@ -8,6 +8,7 @@ struct PursuitWidgetEdits {
     var textX: Double
     var textY: Double
     var layout: PursuitWidgetShape
+    var frameAspect: Double
     var texts: [PursuitTextItem]
     var imageZoom: Double
     var imagePanX: Double
@@ -49,9 +50,13 @@ struct PursuitWidgetFace: View {
     var onTapBackground: () -> Void = {}
     var namePlaceholder: String = "Pursuit"
     var nameIsSelected: Bool = false
+    var nameIsTyping: Bool = false
+    var editingTextID: String? = nil
     var onSelectName: (() -> Void)? = nil
     var activeDrag: PursuitTextDrag = .inactive
     var textDrag: ((String, CGSize, Double, Double) -> AnyGesture<DragGesture.Value>)? = nil
+    /// The editor places its own drag targets outside the scaled preview.
+    var routesTextDragOutside = false
 
     @FocusState private var textFocus: ComposerBlockID?
 
@@ -67,8 +72,8 @@ struct PursuitWidgetFace: View {
                     nameContent(travel: frameSize)
                         .offset(x: textX * frameSize.width, y: textY * frameSize.height)
                         .opacity(nameIsLifted ? 0 : 1)
-                        .onChange(of: nameIsSelected) { _, selected in
-                            guard selected else { return }
+                        .onChange(of: nameIsTyping) { _, typing in
+                            guard typing else { return }
                             focusBlockID.wrappedValue = focusID
                         }
                 }
@@ -95,7 +100,7 @@ struct PursuitWidgetFace: View {
                 get: { item.wrappedValue.canvasBlock() },
                 set: { item.wrappedValue.adopt($0) }
             ),
-            isEditing: selected,
+            isEditing: editingTextID == id,
             isSelected: selected,
             isLifted: false,
             isRelocating: false,
@@ -108,15 +113,16 @@ struct PursuitWidgetFace: View {
         .offset(x: item.wrappedValue.x * travel.width, y: item.wrappedValue.y * travel.height)
         .opacity(lifted ? 0 : 1)
 
-        if let textDrag, onSelectText != nil {
+        if let textDrag, onSelectText != nil, !routesTextDragOutside {
             text
                 .contentShape(Rectangle())
                 .modifier(PursuitTextDragModifier(
-                    claimsTouches: !selected,
+                    claimsTouches: editingTextID != id,
                     gesture: textDrag(id, travel, item.wrappedValue.x, item.wrappedValue.y)
                 ))
         } else {
             text
+                .allowsHitTesting(!routesTextDragOutside || editingTextID == id)
         }
     }
 
@@ -168,7 +174,7 @@ struct PursuitWidgetFace: View {
         if onSelectName != nil {
             let nameText = ComposerTextCanvasBlock(
                 block: nameBlock,
-                isEditing: nameIsSelected,
+                isEditing: nameIsTyping,
                 isSelected: nameIsSelected,
                 isLifted: false,
                 isRelocating: false,
@@ -178,15 +184,16 @@ struct PursuitWidgetFace: View {
                 onStyleChange: {},
                 showsFormatButton: false
             )
-            if let textDrag {
+            if let textDrag, !routesTextDragOutside {
                 nameText
                     .contentShape(Rectangle())
                     .modifier(PursuitTextDragModifier(
-                        claimsTouches: !nameIsSelected,
+                        claimsTouches: !nameIsTyping,
                         gesture: textDrag(PursuitTextDrag.nameID, travel, textX, textY)
                     ))
             } else {
                 nameText
+                    .allowsHitTesting(!routesTextDragOutside || nameIsTyping)
             }
         } else if showsField {
             TextField(
@@ -262,6 +269,8 @@ struct PursuitWidgetEditor: View {
 
     @State private var name: String
     @State private var layout: PursuitWidgetShape
+    @State private var frameAspect: CGFloat
+    @State private var cropOriginSize: CGSize?
     @State private var textX: Double
     @State private var textY: Double
     @State private var texts: [PursuitTextItem]
@@ -279,6 +288,8 @@ struct PursuitWidgetEditor: View {
     @State private var pickedImage: PhotosPickerItem?
     @State private var dragOrigin: (x: Double, y: Double)?
     @State private var pinchOrigin: Double = 1
+    @State private var nameTyping = false
+    @State private var typingTextID: String?
     @FocusState private var nameFocus: ComposerBlockID?
 
     private let fill: ComposerRGBColor?
@@ -290,6 +301,7 @@ struct PursuitWidgetEditor: View {
     init(
         name: String,
         layout: PursuitWidgetShape,
+        frameAspect: Double,
         textX: Double,
         textY: Double,
         texts: [PursuitTextItem],
@@ -312,6 +324,7 @@ struct PursuitWidgetEditor: View {
         _nameStyle = State(initialValue: style)
         _name = State(initialValue: name)
         _layout = State(initialValue: layout)
+        _frameAspect = State(initialValue: Self.startingAspect(stored: frameAspect, layout: layout))
         _textX = State(initialValue: textX)
         _textY = State(initialValue: textY)
         _texts = State(initialValue: texts)
@@ -376,7 +389,7 @@ struct PursuitWidgetEditor: View {
     }
 
     private var moduleSize: CGSize {
-        layout.moduleSize(scale: CGFloat(nameStyle.scale))
+        layout.moduleSize(scale: CGFloat(nameStyle.scale), aspect: frameAspect)
     }
 
     /// Same zoom the pursuit face uses, so a dragged label stays the size the owner is looking at.
@@ -391,43 +404,7 @@ struct PursuitWidgetEditor: View {
             let module = moduleSize
             let fitted = previewFrame(in: proxy.size)
             let displayScale = module.width > 0 ? fitted.width / module.width : 1
-            PursuitWidgetFace(
-                text: $name,
-                textX: textX,
-                textY: textY,
-                style: nameStyle,
-                liveScale: 1,
-                fill: fill,
-                image: image,
-                imageZoom: imageZoom,
-                imagePanX: imagePanX,
-                imagePanY: imagePanY,
-                textItems: $texts,
-                selectedTextID: selectedTextID,
-                onSelectText: { id in
-                    panel = .text(id)
-                },
-                showsField: false,
-                focusBlockID: $nameFocus,
-                focusID: editorFocusID,
-                onTapBackground: {
-                    if case .media = panel { return }
-                    if textDragVisual.isMoving { return }
-                    panel = .tools
-                },
-                namePlaceholder: namePlaceholder,
-                nameIsSelected: nameIsSelected,
-                onSelectName: {
-                    panel = .name
-                },
-                activeDrag: textDragVisual,
-                textDrag: { id, travel, originX, originY in
-                    self.itemDrag(id: id, travel: travel, originX: originX, originY: originY)
-                }
-            )
-            .frame(width: module.width, height: module.height)
-            .scaleEffect(displayScale)
-            .frame(width: fitted.width, height: fitted.height)
+            stageFace(module: module, fitted: fitted, displayScale: displayScale)
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(
@@ -440,6 +417,130 @@ struct PursuitWidgetEditor: View {
             .gesture(mediaDrag(in: module, displayScale: displayScale), including: canFrameMedia ? .all : .none)
             .simultaneousGesture(mediaPinch(in: module), including: canFrameMedia ? .all : .none)
         }
+    }
+
+    private func stageFace(module: CGSize, fitted: CGSize, displayScale: CGFloat) -> some View {
+        let face = PursuitWidgetFace(
+            text: $name,
+            textX: textX,
+            textY: textY,
+            style: nameStyle,
+            liveScale: 1,
+            fill: fill,
+            image: image,
+            imageZoom: imageZoom,
+            imagePanX: imagePanX,
+            imagePanY: imagePanY,
+            textItems: $texts,
+            selectedTextID: selectedTextID,
+            onSelectText: { id in
+                panel = .text(id)
+            },
+            showsField: false,
+            focusBlockID: $nameFocus,
+            focusID: editorFocusID,
+            onTapBackground: {
+                if case .media = panel { return }
+                if textDragVisual.isMoving { return }
+                nameTyping = false
+                typingTextID = nil
+                panel = .tools
+            },
+            namePlaceholder: namePlaceholder,
+            nameIsSelected: nameIsSelected,
+            nameIsTyping: nameTyping,
+            editingTextID: typingTextID,
+            onSelectName: {
+                panel = .name
+            },
+            activeDrag: textDragVisual,
+            textDrag: { id, travel, originX, originY in
+                self.itemDrag(id: id, travel: travel, originX: originX, originY: originY)
+            },
+            routesTextDragOutside: true
+        )
+        .frame(width: module.width, height: module.height)
+        .scaleEffect(displayScale)
+        .frame(width: fitted.width, height: fitted.height)
+
+        return Group {
+            if showsFrameCrop {
+                face
+                    .overlay(alignment: .topLeading) { textDragTargets(fitted: fitted, displayScale: displayScale) }
+                    .overlay(alignment: .top) { frameEdge(.top, start: fitted) }
+                    .overlay(alignment: .bottom) { frameEdge(.bottom, start: fitted) }
+                    .overlay(alignment: .leading) { frameEdge(.left, start: fitted) }
+                    .overlay(alignment: .trailing) { frameEdge(.right, start: fitted) }
+                    .overlay(alignment: .topLeading) { frameCorner(.topLeft, start: fitted) }
+                    .overlay(alignment: .topTrailing) { frameCorner(.topRight, start: fitted) }
+                    .overlay(alignment: .bottomLeading) { frameCorner(.bottomLeft, start: fitted) }
+                    .overlay(alignment: .bottomTrailing) { frameCorner(.bottomRight, start: fitted) }
+            } else {
+                face
+                    .overlay(alignment: .topLeading) { textDragTargets(fitted: fitted, displayScale: displayScale) }
+            }
+        }
+    }
+
+    private func textDragTargets(fitted: CGSize, displayScale: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .frame(width: fitted.width, height: fitted.height)
+                .allowsHitTesting(false)
+            textDragTarget(
+                id: PursuitTextDrag.nameID,
+                source: ComposerBlock(
+                    id: editorFocusID,
+                    kind: .text,
+                    text: name,
+                    style: nameStyle,
+                    position: BlockPosition(x: textX, y: textY)
+                ),
+                x: textX,
+                y: textY,
+                fitted: fitted,
+                displayScale: displayScale
+            )
+            ForEach(texts) { item in
+                textDragTarget(
+                    id: item.id,
+                    source: item.canvasBlock(),
+                    x: item.x,
+                    y: item.y,
+                    fitted: fitted,
+                    displayScale: displayScale
+                )
+            }
+        }
+    }
+
+    private func textDragTarget(
+        id: String,
+        source: ComposerBlock,
+        x: Double,
+        y: Double,
+        fitted: CGSize,
+        displayScale: CGFloat
+    ) -> some View {
+        ComposerTextCanvasBlock(
+            block: Binding(get: { source }, set: { _ in }),
+            isEditing: false,
+            isSelected: false,
+            isLifted: false,
+            isRelocating: false,
+            livePinchScale: displayScale,
+            focusBlockID: $nameFocus,
+            onCommit: {},
+            onStyleChange: {},
+            showsFormatButton: false
+        )
+        .fixedSize()
+        .opacity(0.02)
+        .contentShape(Rectangle())
+        .highPriorityGesture(itemDrag(id: id, travel: fitted, originX: x, originY: y))
+        .alignmentGuide(.leading) { _ in -CGFloat(x) * fitted.width }
+        .alignmentGuide(.top) { _ in -CGFloat(y) * fitted.height }
+        .accessibilityLabel(id == PursuitTextDrag.nameID ? "Move name" : "Move text")
     }
 
     private var nameIsSelected: Bool {
@@ -524,22 +625,41 @@ struct PursuitWidgetEditor: View {
     }
 
     private var shapeTools: some View {
-        HStack(spacing: 4) {
-            backButton
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(PursuitWidgetShape.allCases, id: \.self) { option in
-                        Button {
-                            layout = option
-                        } label: {
-                            PursuitShapeGlyph(layout: option, isSelected: layout == option)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 4) {
+                backButton
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(PursuitWidgetShape.allCases, id: \.self) { option in
+                            Button {
+                                layout = option
+                                frameAspect = option.aspect
+                            } label: {
+                                PursuitShapeGlyph(layout: option, isSelected: abs(frameAspect - option.aspect) < 0.045)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(option.label)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(option.label)
                     }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
             }
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.portrait")
+                    .foregroundStyle(Color.white.opacity(0.7))
+                Slider(value: $frameAspect, in: MediaFrameShape.minimumAspect...MediaFrameShape.maximumAspect)
+                    .tint(MosaicBrand.cream)
+                Image(systemName: "rectangle")
+                    .foregroundStyle(Color.white.opacity(0.7))
+            }
+            .padding(.trailing, 16)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Shape aspect")
+            Text("Drag an edge or corner to crop the shape")
+                .font(.caption)
+                .foregroundStyle(Color.white.opacity(0.45))
+                .frame(maxWidth: .infinity)
         }
     }
 
@@ -618,6 +738,8 @@ struct PursuitWidgetEditor: View {
         let y = min(0.42 + Double(texts.count) * 0.14, 0.78)
         let item = PursuitTextItem(text: "text", x: 0.08, y: y)
         texts.append(item)
+        nameTyping = false
+        typingTextID = item.id
         panel = .text(item.id)
     }
 
@@ -710,16 +832,103 @@ struct PursuitWidgetEditor: View {
                         }
                     }
                 } else if distance < 12, elapsed < 0.32 {
-                    panel = id == PursuitTextDrag.nameID ? .name : .text(id)
+                    if id == PursuitTextDrag.nameID {
+                        if nameIsSelected, !nameTyping {
+                            nameTyping = true
+                        } else {
+                            nameTyping = false
+                            panel = .name
+                        }
+                    } else if case .text(let current) = panel, current == id, typingTextID != id {
+                        typingTextID = id
+                    } else {
+                        typingTextID = nil
+                        panel = .text(id)
+                    }
                 }
             }
         )
     }
 
+    private var showsFrameCrop: Bool {
+        if case .shape = panel, !textDragVisual.isMoving { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private func frameEdge(_ edge: MediaCropEdge, start: CGSize) -> some View {
+        if showsFrameCrop {
+            let horizontal = edge == .top || edge == .bottom
+            Capsule()
+                .fill(Color.white)
+                .frame(width: horizontal ? 28 : 5, height: horizontal ? 5 : 28)
+                .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .highPriorityGesture(frameCropGesture(edge, start: start))
+                .accessibilityLabel(frameEdgeLabel(edge))
+        }
+    }
+
+    @ViewBuilder
+    private func frameCorner(_ edge: MediaCropEdge, start: CGSize) -> some View {
+        if showsFrameCrop {
+            PursuitFrameCornerMark(edge: edge)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .highPriorityGesture(frameCropGesture(edge, start: start))
+                .accessibilityLabel(frameEdgeLabel(edge))
+        }
+    }
+
+    private func frameCropGesture(_ edge: MediaCropEdge, start: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("pursuitEditor"))
+            .onChanged { value in
+                if cropOriginSize == nil {
+                    cropOriginSize = start
+                }
+                frameAspect = resizedAspect(edge: edge, translation: value.translation, start: cropOriginSize ?? start)
+            }
+            .onEnded { _ in
+                cropOriginSize = nil
+            }
+    }
+
+    private func resizedAspect(edge: MediaCropEdge, translation: CGSize, start: CGSize) -> CGFloat {
+        var width = start.width
+        var height = start.height
+        if edge.movesLeft { width -= translation.width * 2 }
+        if edge.movesRight { width += translation.width * 2 }
+        if edge.movesTop { height -= translation.height * 2 }
+        if edge.movesBottom { height += translation.height * 2 }
+        width = max(width, 64)
+        height = max(height, 64)
+        return min(max(width / height, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
+    }
+
+    private func frameEdgeLabel(_ edge: MediaCropEdge) -> String {
+        switch edge {
+        case .left: "Crop left"
+        case .right: "Crop right"
+        case .top: "Crop top"
+        case .bottom: "Crop bottom"
+        case .topLeft: "Crop top left"
+        case .topRight: "Crop top right"
+        case .bottomLeft: "Crop bottom left"
+        case .bottomRight: "Crop bottom right"
+        case .center: "Crop"
+        }
+    }
+
+    private static func startingAspect(stored: Double, layout: PursuitWidgetShape) -> CGFloat {
+        let value = stored > 0.05 ? CGFloat(stored) : layout.aspect
+        return min(max(value, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
+    }
+
     private func previewFrame(in size: CGSize) -> CGSize {
         let maxWidth = max(size.width - 40, 120)
         let maxHeight = max(size.height - 24, 120)
-        let aspect = layout.aspect
+        let aspect = min(max(frameAspect, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
         var width = maxWidth
         var height = width / aspect
         if height > maxHeight {
@@ -778,6 +987,7 @@ struct PursuitWidgetEditor: View {
             textX: textX,
             textY: textY,
             layout: layout,
+            frameAspect: Double(frameAspect),
             texts: texts.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
             imageZoom: imageZoom,
             imagePanX: imagePanX,
@@ -935,11 +1145,9 @@ private struct PursuitTextDragModifier<Drag: Gesture>: ViewModifier {
     var gesture: Drag
 
     func body(content: Content) -> some View {
-        if claimsTouches {
-            content.highPriorityGesture(gesture)
-        } else {
-            content.simultaneousGesture(gesture)
-        }
+        content
+            .highPriorityGesture(gesture, isEnabled: claimsTouches)
+            .simultaneousGesture(gesture, isEnabled: !claimsTouches)
     }
 }
 
@@ -977,15 +1185,39 @@ struct PursuitShapeGlyph: View {
 
 extension PursuitWidgetShape {
     /// Resting size of the pursuit widget on the Mosaic board.
-    func moduleSize(scale: CGFloat) -> CGSize {
-        size(base: max(96, 168 * scale))
+    func moduleSize(scale: CGFloat, aspect customAspect: CGFloat? = nil) -> CGSize {
+        sized(base: max(96, 168 * scale), aspect: customAspect ?? aspect)
     }
 
     func size(base: CGFloat) -> CGSize {
-        let aspect = self.aspect
+        sized(base: base, aspect: aspect)
+    }
+
+    private func sized(base: CGFloat, aspect: CGFloat) -> CGSize {
+        let aspect = min(max(aspect, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
         if aspect >= 1 {
             return CGSize(width: base * aspect, height: base)
         }
         return CGSize(width: base, height: base / aspect)
+    }
+}
+
+private struct PursuitFrameCornerMark: View {
+    var edge: MediaCropEdge
+
+    var body: some View {
+        Path { path in
+            let inset: CGFloat = 14
+            let length: CGFloat = 16
+            let origin = CGPoint(
+                x: edge.movesLeft ? inset : 44 - inset,
+                y: edge.movesTop ? inset : 44 - inset
+            )
+            path.move(to: CGPoint(x: origin.x + (edge.movesLeft ? length : -length), y: origin.y))
+            path.addLine(to: origin)
+            path.addLine(to: CGPoint(x: origin.x, y: origin.y + (edge.movesTop ? length : -length)))
+        }
+        .stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
     }
 }

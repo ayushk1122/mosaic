@@ -60,6 +60,7 @@ struct ComposerCarouselCanvasBlock: View {
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerCoordinateSpace) private var composerSpace
 
     @GestureState private var drag: CGFloat = 0
     @State private var settle: CGFloat = 0
@@ -104,7 +105,7 @@ struct ComposerCarouselCanvasBlock: View {
             .shadow(color: .white.opacity(isLifted ? 0.4 : 0), radius: isLifted ? 14 : 0)
             .animation(.easeOut(duration: 0.16), value: isLifted)
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 itemFrame = frame
             }
@@ -290,7 +291,7 @@ struct ComposerCarouselCanvasBlock: View {
             .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
             .contentShape(Circle())
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 editFrame = frame
             }

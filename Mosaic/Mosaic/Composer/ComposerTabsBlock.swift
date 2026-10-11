@@ -13,6 +13,7 @@ struct ComposerTabsCanvasBlock: View {
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerCoordinateSpace) private var composerSpace
     @FocusState private var titleFocus: String?
     @State private var renamingID: String?
     @State private var chipsFrame: CGRect = .zero
@@ -82,7 +83,7 @@ struct ComposerTabsCanvasBlock: View {
         }
         .padding(.vertical, 2 * metric)
         .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named("composerRoot"))
+            proxy.frame(in: .named(composerSpace))
         } action: { frame in
             chipsFrame = frame
             pullInsideBorders(frame)

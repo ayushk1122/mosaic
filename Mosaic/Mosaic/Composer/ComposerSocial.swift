@@ -92,6 +92,7 @@ struct ComposerSocialCanvasBlock: View {
     var onEdit: () -> Void
     var onOpen: (() -> Void)? = nil
 
+    @Environment(\.composerCoordinateSpace) private var composerSpace
     @State private var cornerDrag: SocialCornerDrag?
     @State private var cornerFrames = ComposerSocialCornerFrames()
 
@@ -214,7 +215,7 @@ struct ComposerSocialCanvasBlock: View {
         )
         .frame(width: SocialLogoChrome.hitSide, height: SocialLogoChrome.hitSide)
         .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named("composerRoot"))
+            proxy.frame(in: .named(composerSpace))
         } action: { frame in
             switch corner {
             case .topLeft where cornerFrames.topLeft != frame: cornerFrames.topLeft = frame
@@ -269,7 +270,7 @@ struct ComposerSocialCanvasBlock: View {
                 GeometryReader { proxy in
                     Color.clear.preference(
                         key: ComposerPencilFrameKey.self,
-                        value: [block.id: proxy.frame(in: .named("composerRoot"))]
+                        value: [block.id: proxy.frame(in: .named(composerSpace))]
                     )
                 }
             }
