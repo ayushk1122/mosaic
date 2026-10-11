@@ -1086,6 +1086,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var pursuitID: ComposerDocumentID?
     var pursuitShape: MediaFrameShape
     var pursuitLayout: PursuitWidgetShape
+    /// Width divided by height. Zero uses the chosen shape until the owner crops it.
+    var pursuitFrameAspect: Double
     var pursuitTextX: Double
     var pursuitTextY: Double
     var pursuitTexts: [PursuitTextItem]
@@ -1132,7 +1134,7 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var scrapbookIndex: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex
     }
 
     init(
@@ -1151,6 +1153,7 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitID: ComposerDocumentID? = nil,
         pursuitShape: MediaFrameShape = .rounded,
         pursuitLayout: PursuitWidgetShape = .square,
+        pursuitFrameAspect: Double = 0,
         pursuitTextX: Double = 0,
         pursuitTextY: Double = 0,
         pursuitTexts: [PursuitTextItem] = [],
@@ -1204,6 +1207,7 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.pursuitID = pursuitID
         self.pursuitShape = pursuitShape
         self.pursuitLayout = pursuitLayout
+        self.pursuitFrameAspect = pursuitFrameAspect
         self.pursuitTextX = pursuitTextX
         self.pursuitTextY = pursuitTextY
         self.pursuitTexts = pursuitTexts
@@ -1261,6 +1265,7 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         pursuitID = try container.decodeIfPresent(ComposerDocumentID.self, forKey: .pursuitID)
         pursuitShape = try container.decodeIfPresent(MediaFrameShape.self, forKey: .pursuitShape) ?? .rounded
         pursuitLayout = try container.decodeIfPresent(PursuitWidgetShape.self, forKey: .pursuitLayout) ?? .square
+        pursuitFrameAspect = try container.decodeIfPresent(Double.self, forKey: .pursuitFrameAspect) ?? 0
         pursuitTextX = try container.decodeIfPresent(Double.self, forKey: .pursuitTextX) ?? 0
         pursuitTextY = try container.decodeIfPresent(Double.self, forKey: .pursuitTextY) ?? 0
         pursuitTexts = try container.decodeIfPresent([PursuitTextItem].self, forKey: .pursuitTexts) ?? []

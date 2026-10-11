@@ -1,6 +1,11 @@
 import Foundation
 import Observation
 
+struct ComposerClipboardItem: Equatable {
+    var block: ComposerBlock
+    var documents: [ComposerPursuit]
+}
+
 @MainActor
 @Observable
 final class ComposerStore {
@@ -49,7 +54,7 @@ final class ComposerStore {
         } else {
             snapshot.mosaicBlocks = entry.blocks
             if let pursuits = entry.pursuits {
-                snapshot.pursuits = pursuits
+                snapshot.pursuits = pursuitsKeepingPageEdits(from: pursuits)
             } else {
                 syncPursuitTitlesFromMosaicBlocks()
             }
@@ -137,9 +142,10 @@ final class ComposerStore {
     }
 
     /// Clears anything already saved inside Pursuit pages, once, so each page opens empty.
+    /// Journal pages are documents too, and their blocks are the owner's content.
     func blankPursuitPagesIfNeeded() {
         guard !snapshot.pursuitPagesBlanked else { return }
-        for index in snapshot.pursuits.indices {
+        for index in snapshot.pursuits.indices where snapshot.pursuits[index].role != .page {
             snapshot.pursuits[index].blocks.removeAll()
         }
         snapshot.pursuitPagesBlanked = true
@@ -516,6 +522,44 @@ final class ComposerStore {
         throw CocoaError(.fileWriteUnknown)
     }
 
+    /// The component most recently copied or cut. Shared across the board, Pursuit pages, and journal pages.
+    var clipboard: ComposerClipboardItem?
+
+    func copyBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        guard let block = block(with: blockID, in: documentID) else { return }
+        clipboard = ComposerClipboardItem(block: block, documents: ownedDocuments(of: block))
+    }
+
+    /// Places the clipboard on this page and clears it.
+    @discardableResult
+    func pasteClipboard(at position: BlockPosition, in documentID: ComposerDocumentID?) -> ComposerBlockID? {
+        guard let clipboard else { return nil }
+        let page = blocks(for: documentID)
+        if clipboard.block.kind == .banner, page.contains(where: { $0.kind == .banner }) { return nil }
+        if clipboard.block.kind == .tabs, page.contains(where: { $0.kind == .tabs }) { return nil }
+        let (copy, documents) = Self.reidentified(block: clipboard.block, documents: clipboard.documents)
+        var placed = copy
+        placed.position = position
+        if placed.kind != .banner, placed.kind != .tabs,
+           let selected = page.first(where: { $0.kind == .tabs })?.selectedTabID {
+            placed.tabID = selected
+        }
+        captureUndo(
+            in: documentID,
+            includePursuits: !documents.isEmpty
+                || placed.kind == .pursuit
+                || placed.kind == .node
+                || placed.kind == .scrapbook
+        )
+        snapshot.pursuits.append(contentsOf: documents)
+        mutateBlocks(for: documentID) { blocks in
+            blocks.append(placed)
+        }
+        self.clipboard = nil
+        persist()
+        return placed.id
+    }
+
     func mediaURL(for fileName: String) -> URL {
         Self.mediaDirectory(fileManager: fileManager).appendingPathComponent(fileName)
     }
@@ -555,6 +599,22 @@ final class ComposerStore {
         undoCoalesce = blockID.map { ComposerUndoCoalesce(documentKey: key, blockID: $0, at: now) }
     }
 
+    /// A board undo remembers the scrapbook structure. Pieces added on a journal page after that
+    /// snapshot stay on the page instead of being replaced by the older empty copy.
+    private func pursuitsKeepingPageEdits(from saved: [ComposerPursuit]) -> [ComposerPursuit] {
+        let live = snapshot.pursuits
+        return saved.map { savedPursuit in
+            guard savedPursuit.role == .page,
+                  let current = live.first(where: { $0.id == savedPursuit.id }) else {
+                return savedPursuit
+            }
+            var kept = savedPursuit
+            kept.blocks = current.blocks
+            kept.background = current.background
+            kept.layoutHeight = current.layoutHeight
+            return kept
+        }
+    }
     private func syncPursuitTitlesFromMosaicBlocks() {
         for block in snapshot.mosaicBlocks where block.kind == .pursuit || block.kind == .node {
             guard let pursuitID = block.pursuitID,
@@ -582,6 +642,73 @@ final class ComposerStore {
                 return
             }
         }
+    }
+
+    private func ownedDocuments(of block: ComposerBlock) -> [ComposerPursuit] {
+        var result: [ComposerPursuit] = []
+        var seen = Set<String>()
+        func walk(_ block: ComposerBlock) {
+            var ids: [ComposerDocumentID] = []
+            if block.kind == .scrapbook {
+                ids.append(contentsOf: block.scrapbookPageIDs)
+            }
+            if block.kind == .pursuit || block.kind == .node, let pursuitID = block.pursuitID {
+                ids.append(pursuitID)
+            }
+            for id in ids where seen.insert(id.rawValue).inserted {
+                guard let document = snapshot.pursuits.first(where: { $0.id == id }) else { continue }
+                result.append(document)
+                for child in document.blocks {
+                    walk(child)
+                }
+            }
+            for member in block.groupMembers {
+                walk(member)
+            }
+        }
+        walk(block)
+        return result
+    }
+
+    private static func reidentified(
+        block: ComposerBlock,
+        documents: [ComposerPursuit]
+    ) -> (ComposerBlock, [ComposerPursuit]) {
+        var replacements: [String: String] = [:]
+        func noteBlock(_ block: ComposerBlock) {
+            replacements[block.id.rawValue] = UUID().uuidString
+            for member in block.groupMembers {
+                noteBlock(member)
+            }
+        }
+        func noteDocument(_ document: ComposerPursuit) {
+            replacements[document.id.rawValue] = UUID().uuidString
+            for child in document.blocks {
+                noteBlock(child)
+            }
+        }
+        noteBlock(block)
+        for document in documents {
+            noteDocument(document)
+        }
+        let copy = rewrite(block, replacements: replacements)
+        let pages = documents.map { rewrite($0, replacements: replacements) }
+        return (copy, pages)
+    }
+
+    private static func rewrite<T: Codable>(_ value: T, replacements: [String: String]) -> T {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        guard var json = (try? encoder.encode(value)).flatMap({ String(data: $0, encoding: .utf8) }) else {
+            return value
+        }
+        for (old, new) in replacements {
+            json = json.replacingOccurrences(of: old, with: new)
+        }
+        guard let data = json.data(using: .utf8), let decoded = try? decoder.decode(T.self, from: data) else {
+            return value
+        }
+        return decoded
     }
 
     private func mutateBlocks(for documentID: ComposerDocumentID?, _ update: (inout [ComposerBlock]) -> Void) {

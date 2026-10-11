@@ -22,6 +22,7 @@ struct ComposerTextCanvasBlock: View {
     @State private var claimedFormatTap = false
 
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(\.composerPaperPage) private var onPaper
 
     private var readingColor: Color {
@@ -70,7 +71,7 @@ struct ComposerTextCanvasBlock: View {
                 }
             }
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 itemFrame = frame
             }
@@ -126,7 +127,7 @@ struct ComposerTextCanvasBlock: View {
             .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
             .contentShape(Circle())
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 styleIconFrame = frame
             }

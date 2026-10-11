@@ -21,8 +21,11 @@ struct ComposerMediaCanvasBlock: View {
     @State private var preview: UIImage?
     @State private var videoAspect: CGFloat = 16.0 / 9.0
     @State private var itemFrame: CGRect = .zero
+    @State private var menuFrame: CGRect = .zero
+    @State private var cropFrame: CGRect = .zero
 
     @Environment(\.composerViewportWidth) private var viewportWidth
+    @Environment(\.composerCoordinateSpace) private var composerSpace
 
     private var iconPlacement: ComposerChromePlacement {
         ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
@@ -51,10 +54,19 @@ struct ComposerMediaCanvasBlock: View {
                 cropBelow: iconPlacement.cropBelow
             ))
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 itemFrame = frame
             }
+            .preference(
+                key: ComposerMediaChromeFrameKey.self,
+                value: [
+                    block.id: ComposerMediaChromeFrames(
+                        menu: isSelected ? menuFrame : .zero,
+                        crop: isSelected && showsMenu ? cropFrame : .zero
+                    )
+                ]
+            )
         .task(id: mediaURL) {
             if isVideo, let mediaURL {
                 videoAspect = await Self.videoAspect(at: mediaURL)
@@ -160,6 +172,11 @@ struct ComposerMediaCanvasBlock: View {
             .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
             .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
             .contentShape(Circle())
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(composerSpace))
+            } action: { frame in
+                cropFrame = frame
+            }
             .highPriorityGesture(TapGesture().onEnded { onCrop() })
             .accessibilityLabel("Crop")
             .accessibilityAddTraits(.isButton)
@@ -173,6 +190,11 @@ struct ComposerMediaCanvasBlock: View {
             .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
             .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
             .contentShape(Circle())
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(composerSpace))
+            } action: { frame in
+                menuFrame = frame
+            }
             .highPriorityGesture(TapGesture().onEnded { onOpenMenu() })
             .accessibilityLabel("Media options")
             .accessibilityAddTraits(.isButton)
@@ -223,6 +245,30 @@ struct MediaTriangle: Shape {
         path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         path.closeSubpath()
         return path
+    }
+}
+
+struct ComposerMediaChromeFrames: Equatable {
+    var menu = CGRect.zero
+    var crop = CGRect.zero
+
+    func hitsMenu(_ point: CGPoint) -> Bool {
+        menu.width > 1 && menu.insetBy(dx: -10, dy: -10).contains(point)
+    }
+
+    func hitsCrop(_ point: CGPoint) -> Bool {
+        crop.width > 1 && crop.insetBy(dx: -10, dy: -10).contains(point)
+    }
+}
+
+struct ComposerMediaChromeFrameKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: ComposerMediaChromeFrames] = [:]
+
+    static func reduce(
+        value: inout [ComposerBlockID: ComposerMediaChromeFrames],
+        nextValue: () -> [ComposerBlockID: ComposerMediaChromeFrames]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
 }
 
@@ -470,17 +516,15 @@ struct ComposerMediaLightbox: View {
                 .onTapGesture(perform: onClose)
             if isVideo {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: false)
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 72)
-                    .scaleEffect(0.86)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 28)
                     .allowsHitTesting(false)
             } else if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 72)
-                    .scaleEffect(0.86)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 28)
                     .allowsHitTesting(false)
             } else {
                 ProgressView()

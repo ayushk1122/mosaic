@@ -1,5 +1,16 @@
 import SwiftUI
 
+private struct ComposerCoordinateSpaceKey: EnvironmentKey {
+    static let defaultValue = "composerRoot"
+}
+
+extension EnvironmentValues {
+    var composerCoordinateSpace: String {
+        get { self[ComposerCoordinateSpaceKey.self] }
+        set { self[ComposerCoordinateSpaceKey.self] = newValue }
+    }
+}
+
 enum ComposerResizeCorner: Equatable, Hashable, CaseIterable, Identifiable {
     case topLeft
     case topRight
@@ -41,6 +52,18 @@ enum ComposerResizeCorner: Equatable, Hashable, CaseIterable, Identifiable {
             y: movesTop ? rect.minY : rect.maxY
         )
     }
+
+    /// Where the finger grabs this corner. Pulled slightly inward so the handle sits on the photo, over the dot.
+    func grabPoint(in rect: CGRect) -> CGPoint {
+        let dot = point(in: rect)
+        let pull: CGFloat = 18
+        switch self {
+        case .topLeft: return CGPoint(x: dot.x + pull, y: dot.y + pull)
+        case .topRight: return CGPoint(x: dot.x - pull, y: dot.y + pull)
+        case .bottomLeft: return CGPoint(x: dot.x + pull, y: dot.y - pull)
+        case .bottomRight: return CGPoint(x: dot.x - pull, y: dot.y - pull)
+        }
+    }
 }
 
 struct ComposerResizeCornerFrames: Equatable {
@@ -50,9 +73,19 @@ struct ComposerResizeCornerFrames: Equatable {
     var bottomRight = CGRect.zero
 
     func contains(_ point: CGPoint) -> Bool {
-        [topLeft, topRight, bottomLeft, bottomRight].contains { frame in
+        corner(at: point) != nil
+    }
+
+    func corner(at point: CGPoint) -> ComposerResizeCorner? {
+        let hits: [(ComposerResizeCorner, CGRect)] = [
+            (.topLeft, topLeft),
+            (.topRight, topRight),
+            (.bottomLeft, bottomLeft),
+            (.bottomRight, bottomRight)
+        ]
+        return hits.first { _, frame in
             frame.width > 1 && frame.insetBy(dx: -8, dy: -8).contains(point)
-        }
+        }?.0
     }
 
     mutating func update(_ corner: ComposerResizeCorner, to frame: CGRect) {
@@ -96,6 +129,7 @@ struct ComposerResizeChrome: View {
     var onEnded: (ComposerResizeCorner, CGSize) -> Void
 
     @State private var cornerFrames = ComposerResizeCornerFrames()
+    @Environment(\.composerCoordinateSpace) private var composerSpace
 
     var body: some View {
         let bounds = CGRect(origin: .zero, size: layout)
@@ -117,10 +151,10 @@ struct ComposerResizeChrome: View {
                     onChanged: { onChanged(corner, $0) },
                     onEnded: { onEnded(corner, $0) }
                 )
-                .frame(width: 44, height: 44)
-                .position(corner.point(in: bounds))
+                .frame(width: 52, height: 52)
+                .position(corner.grabPoint(in: bounds))
                 .onGeometryChange(for: CGRect.self) { item in
-                    item.frame(in: .named("composerRoot"))
+                    item.frame(in: .named(composerSpace))
                 } action: { frame in
                     guard frame.width.isFinite, frame.height.isFinite, frame.width > 1, frame.height > 1 else { return }
                     let current: CGRect
@@ -138,6 +172,7 @@ struct ComposerResizeChrome: View {
             }
         }
         .frame(width: max(layout.width, 1), height: max(layout.height, 1))
+        .contentShape(ComposerCornerHitShape())
         .preference(key: ComposerResizeCornerFrameKey.self, value: [blockID: cornerFrames])
         .accessibilityElement(children: .contain)
     }
@@ -150,6 +185,18 @@ struct ComposerResizeChrome: View {
         let originX = anchor.x * layout.width - anchor.x * width
         let originY = anchor.y * layout.height - anchor.y * height
         return CGRect(x: originX, y: originY, width: width, height: height)
+    }
+}
+
+/// Hit shape for the four corner handles. The rest of the box passes touches through to the photo.
+private struct ComposerCornerHitShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for corner in ComposerResizeCorner.allCases {
+            let center = corner.grabPoint(in: rect)
+            path.addRect(CGRect(x: center.x - 28, y: center.y - 28, width: 56, height: 56))
+        }
+        return path
     }
 }
 

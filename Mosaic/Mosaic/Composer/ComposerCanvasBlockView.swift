@@ -92,6 +92,8 @@ struct ComposerCanvasBlockView: View {
     var actions: ComposerBlockActions
     var showsMediaMenu: Bool
     var showsPursuitPencil: Bool
+    /// The selection handles sit on top of the widget, so the board draws the pencil above them.
+    var pencilCoveredByChrome: Bool = false
     var allowsCarouselControl: Bool
     var isViewing: Bool
     var canvasSize: CGSize
@@ -99,6 +101,7 @@ struct ComposerCanvasBlockView: View {
     var mediaMenuBlockID: ComposerBlockID? = nil
     var pinsTabsToPageEdges: Bool = true
 
+    @Environment(\.composerCoordinateSpace) private var composerSpace
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
@@ -296,7 +299,7 @@ struct ComposerCanvasBlockView: View {
     private var pursuitView: some View {
         pursuitWidget
             .overlay(alignment: .bottomTrailing) {
-                if showsPursuitPencil, !isEditing, !isLifted, !isRelocating {
+                if showsPursuitPencil, !pencilCoveredByChrome, !isEditing, !isLifted, !isRelocating {
                     pursuitPencil
                         .padding(8)
                 }
@@ -324,7 +327,10 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitWidget: some View {
         let moving = isLifted || isRelocating
-        let size = block.pursuitLayout.moduleSize(scale: CGFloat(block.style.scale) * livePinchScale)
+        let size = block.pursuitLayout.moduleSize(
+            scale: CGFloat(block.style.scale) * livePinchScale,
+            aspect: block.pursuitFrameAspect > 0.05 ? CGFloat(block.pursuitFrameAspect) : nil
+        )
         return PursuitWidgetFace(
             text: $block.text,
             textX: block.pursuitTextX,
@@ -360,7 +366,7 @@ struct ComposerCanvasBlockView: View {
             .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
             .contentShape(Circle())
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("composerRoot"))
+                proxy.frame(in: .named(composerSpace))
             } action: { frame in
                 pursuitPencilFrame = frame
             }

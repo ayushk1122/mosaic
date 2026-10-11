@@ -60,6 +60,7 @@ struct ComposerFloatingMenu: View {
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
+    @Environment(\.composerCoordinateSpace) private var composerSpace
 
     private let plusSize = ComposerAddMenuMetrics.button
     private let rowWidth = ComposerAddMenuMetrics.rowWidth
@@ -190,7 +191,7 @@ struct ComposerFloatingMenu: View {
                 GeometryReader { proxy in
                     Color.clear.preference(
                         key: ComposerTrashDropZoneFrameKey.self,
-                        value: proxy.frame(in: .named("composerRoot"))
+                        value: proxy.frame(in: .named(composerSpace))
                     )
                 }
             }

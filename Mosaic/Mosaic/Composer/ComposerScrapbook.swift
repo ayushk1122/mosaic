@@ -73,6 +73,7 @@ struct ScrapbookBookView: View {
     @State private var drag: CGFloat = 0
     @State private var settling = false
     @State private var mediaObscured = false
+    @State private var pageWidth: CGFloat = 1
 
     private var block: ComposerBlock? {
         store.block(with: blockID, in: parentDocumentID)
@@ -86,7 +87,6 @@ struct ScrapbookBookView: View {
         ZStack {
             Color.black.opacity(0.94)
                 .ignoresSafeArea()
-                .onTapGesture(perform: onClose)
             VStack(spacing: 14) {
                 header
                 book
@@ -123,7 +123,13 @@ struct ScrapbookBookView: View {
             .accessibilityLabel("Close scrapbook")
 
             titleField
-            Spacer(minLength: 0)
+                .layoutPriority(-1)
+            Spacer(minLength: 8)
+            pageTurnArrows
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            journalEyeButton
+                .layoutPriority(1)
             if !chrome.isViewing {
                 pageButtons
             }
@@ -153,8 +159,26 @@ struct ScrapbookBookView: View {
             .font(.system(.headline, design: .serif))
             .foregroundStyle(.white)
             .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .accessibilityLabel("Scrapbook title")
         }
+    }
+
+    private var journalEyeButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.28)) {
+                chrome.isViewing.toggle()
+            }
+        } label: {
+            Image(systemName: "eye")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(chrome.isViewing ? 0.28 : 0.14), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(chrome.isViewing ? "Exit view" : "View Mosaic")
+        .accessibilityIdentifier("composer.viewMode")
     }
 
     private var pageButtons: some View {
@@ -201,39 +225,26 @@ struct ScrapbookBookView: View {
             ZStack(alignment: .topLeading) {
                 notebook(pageWidth: pageWidth, pageHeight: pageHeight, spiral: spiral)
                 if !settling {
-                    HStack(spacing: 0) {
-                        ScrapbookTurnSurface(
-                            onChanged: { followTurn($0, pageWidth: pageWidth) },
-                            onEnded: { translation, predicted in
-                                finishTurn(translation: translation, predicted: predicted, pageWidth: pageWidth)
-                            }
-                        )
-                        .frame(width: spiral + 44)
-                        Spacer(minLength: 0)
-                            .allowsHitTesting(false)
-                        VStack(spacing: 0) {
-                            ScrapbookTurnSurface(
-                                onChanged: { followTurn($0, pageWidth: pageWidth) },
-                                onEnded: { translation, predicted in
-                                    finishTurn(translation: translation, predicted: predicted, pageWidth: pageWidth)
-                                }
-                            )
-                            Color.clear
-                                .frame(height: 108)
-                                .allowsHitTesting(false)
-                        }
-                        .frame(width: 96)
+                    if index > 0 {
+                        pageTurnCorner(forward: false, spiral: spiral, pageWidth: pageWidth)
                     }
-                    .frame(width: proxy.size.width, height: pageHeight)
-                    pageEdgeHint
+                    pageTurnCorner(forward: true, spiral: spiral, pageWidth: pageWidth)
                 }
                 SpiralBinding(pageHeight: pageHeight, columnWidth: spiral)
                     .frame(width: spiral, height: pageHeight)
-                    .allowsHitTesting(false)
                     .overlay {
+                        ScrapbookSpineScroll()
                         if mediaObscured {
                             Color.black.opacity(0.94)
+                                .allowsHitTesting(false)
                         }
+                    }
+            }
+            .background {
+                Color.clear
+                    .onAppear { self.pageWidth = pageWidth }
+                    .onChange(of: pageWidth) { _, width in
+                        self.pageWidth = width
                     }
             }
             .background(ScrapbookColors.paperEdge)
@@ -252,14 +263,14 @@ struct ScrapbookBookView: View {
             Color.clear.frame(width: spiral)
             ZStack {
                 if abs(drag) > 0.5 {
-                    sheet(underneathID, number: (turningBack ? index : index + 1) + 1)
+                    sheet(underneathID, number: (turningBack ? index : index + 1) + 1, pageHeight: pageHeight)
                     if let movingID {
-                        sheet(movingID, number: (turningBack ? index - 1 : index) + 1)
+                        sheet(movingID, number: (turningBack ? index - 1 : index) + 1, pageHeight: pageHeight)
                             .offset(x: movingOffset)
                             .shadow(color: .black.opacity(0.18), radius: 10, x: -6, y: 2)
                     }
                 } else {
-                    sheet(restingID, number: index + 1)
+                    sheet(restingID, number: index + 1, pageHeight: pageHeight)
                 }
             }
             .frame(width: pageWidth, height: pageHeight)
@@ -268,12 +279,14 @@ struct ScrapbookBookView: View {
         .allowsHitTesting(abs(drag) < 1)
     }
 
-    private func sheet(_ pageID: ComposerDocumentID?, number: Int) -> some View {
+    private func sheet(_ pageID: ComposerDocumentID?, number: Int, pageHeight: CGFloat) -> some View {
         ZStack(alignment: .topTrailing) {
             ScrapbookColors.paper
             if let pageID {
                 MosaicComposerView(documentID: pageID, isBookPage: true)
                     .id(pageID)
+                    .frame(height: pageHeight)
+                    .clipped()
             }
             if number > 0 {
                 Text("\(number)")
@@ -287,20 +300,103 @@ struct ScrapbookBookView: View {
         .clipped()
     }
 
-    private var pageEdgeHint: some View {
-        PageCornerHint()
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-            .opacity(index < livePageIDs.count - 1 && abs(drag) < 1 ? 1 : 0)
-            .allowsHitTesting(false)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+    private func pageTurnCorner(forward: Bool, spiral: CGFloat, pageWidth: CGFloat) -> some View {
+        let enabled = forward ? canTurnForward : index > 0
+        return ZStack(alignment: forward ? .topTrailing : .topLeading) {
+            ScrapbookTurnSurface(turnsForward: forward) { translation in
+                let directed = forward ? min(translation, 0) : max(translation, 0)
+                followTurn(directed, pageWidth: pageWidth)
+            } onEnded: { translation, predicted in
+                let directed = forward ? min(translation, 0) : max(translation, 0)
+                let predictedDirected = forward ? min(predicted, 0) : max(predicted, 0)
+                finishTurn(translation: directed, predicted: predictedDirected, pageWidth: pageWidth)
+            }
+            PageCornerHint(leading: !forward, dimmed: mediaObscured)
+                .padding(8)
+                .opacity(abs(drag) < 1 ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .frame(width: 72, height: 72)
+        .padding(.leading, forward ? 0 : spiral)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: forward ? .topTrailing : .topLeading
+        )
+        .contentShape(JournalCornerHit(forward: forward, spiral: spiral))
+        .allowsHitTesting(enabled)
+        .accessibilityLabel(forward ? "Next page" : "Previous page")
+    }
+
+    private var pageTurnArrows: some View {
+        HStack(spacing: 8) {
+            pageTurnArrow(forward: false)
+            pageTurnArrow(forward: true)
+        }
+    }
+
+    private func pageTurnArrow(forward: Bool) -> some View {
+        let enabled = forward ? canTurnForward : index > 0
+        return Button {
+            turnByArrow(forward: forward, pageWidth: pageWidth)
+        } label: {
+            Image(systemName: forward ? "chevron.right" : "chevron.left")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white.opacity(enabled ? 1 : 0.35))
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(enabled ? 0.14 : 0.06), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled || settling)
+        .accessibilityLabel(forward ? "Next page" : "Previous page")
+    }
+
+    private func turnByArrow(forward: Bool, pageWidth: CGFloat) {
+        guard !settling else { return }
+        let count = max(livePageIDs.count, 1)
+        if forward {
+            guard canTurnForward else { return }
+            if index >= count - 1 {
+                settling = true
+                guard let created = store.insertScrapbookPage(after: index, on: blockID, in: parentDocumentID) else {
+                    settling = false
+                    return
+                }
+                revealTurn(forward: true)
+                Task { @MainActor in
+                    completeTurn(to: created, pageWidth: pageWidth, forward: true)
+                }
+                return
+            }
+        } else {
+            guard index > 0 else { return }
+        }
+        let next = min(max(index + (forward ? 1 : -1), 0), count - 1)
+        guard next != index else { return }
+        settling = true
+        store.rememberScrapbookPage(next, on: blockID, in: parentDocumentID)
+        revealTurn(forward: forward)
+        Task { @MainActor in
+            completeTurn(to: next, pageWidth: pageWidth, forward: forward)
+        }
+    }
+
+    private func revealTurn(forward: Bool) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            drag = forward ? -1 : 1
+        }
+    }
+
+    private var canTurnForward: Bool {
+        index < livePageIDs.count - 1 || (!chrome.isViewing && livePageIDs.count < 30)
     }
 
     private func followTurn(_ translation: CGFloat, pageWidth: CGFloat) {
         guard !settling else { return }
-        let count = livePageIDs.count
         if translation < 0 {
-            let limit = index < count - 1 ? pageWidth : pageWidth * 0.12
+            let limit = canTurnForward ? pageWidth : pageWidth * 0.12
             drag = max(translation, -limit)
         } else {
             let limit = index > 0 ? pageWidth : pageWidth * 0.12
@@ -312,17 +408,43 @@ struct ScrapbookBookView: View {
         guard !settling else { return }
         let count = max(livePageIDs.count, 1)
         let forward = translation < 0 || (translation == 0 && predicted < 0)
-        let next = min(max(index + (forward ? 1 : -1), 0), count - 1)
         let traveled = abs(drag)
         let flung = abs(predicted) > 90
-        guard next != index, traveled > 48 || (flung && traveled > 20) else {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
-                drag = 0
+        guard traveled > 48 || (flung && traveled > 20) else {
+            cancelTurn()
+            return
+        }
+        if forward, index >= count - 1 {
+            guard !chrome.isViewing, count < 30 else {
+                cancelTurn()
+                return
             }
+            settling = true
+            guard let created = store.insertScrapbookPage(after: index, on: blockID, in: parentDocumentID) else {
+                settling = false
+                cancelTurn()
+                return
+            }
+            completeTurn(to: created, pageWidth: pageWidth, forward: true)
+            return
+        }
+        let next = min(max(index + (forward ? 1 : -1), 0), count - 1)
+        guard next != index else {
+            cancelTurn()
             return
         }
         settling = true
         store.rememberScrapbookPage(next, on: blockID, in: parentDocumentID)
+        completeTurn(to: next, pageWidth: pageWidth, forward: forward)
+    }
+
+    private func cancelTurn() {
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+            drag = 0
+        }
+    }
+
+    private func completeTurn(to next: Int, pageWidth: CGFloat, forward: Bool) {
         withAnimation(.easeInOut(duration: 0.42)) {
             drag = forward ? -pageWidth : pageWidth
         }
@@ -398,8 +520,9 @@ private struct SpiralRing: View {
     }
 }
 
-/// Horizontal drags anywhere on the page turn it. Vertical drags still scroll the page.
+/// A top-corner drag. The right corner turns forward and the left corner turns back.
 private struct ScrapbookTurnSurface: UIViewRepresentable {
+    var turnsForward: Bool
     var onChanged: (CGFloat) -> Void
     var onEnded: (_ translation: CGFloat, _ predicted: CGFloat) -> Void
 
@@ -417,6 +540,7 @@ private struct ScrapbookTurnSurface: UIViewRepresentable {
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
         uiView.coordinator = context.coordinator
+        uiView.turnsForward = turnsForward
     }
 
     final class Coordinator {
@@ -427,6 +551,7 @@ private struct ScrapbookTurnSurface: UIViewRepresentable {
 
 private final class ScrapbookTurnView: UIView, UIGestureRecognizerDelegate {
     weak var coordinator: ScrapbookTurnSurface.Coordinator?
+    var turnsForward = true
     private var lockedScroll: UIScrollView?
 
     override init(frame: CGRect) {
@@ -445,9 +570,8 @@ private final class ScrapbookTurnView: UIView, UIGestureRecognizerDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: self)
-        let location = pan.location(in: self)
-        if location.y > bounds.height - 108 { return false }
-        return abs(velocity.x) > abs(velocity.y) * 1.1 && abs(velocity.x) > 40
+        guard abs(velocity.x) > abs(velocity.y) * 1.1, abs(velocity.x) > 40 else { return false }
+        return turnsForward ? velocity.x < 0 : velocity.x > 0
     }
 
     func gestureRecognizer(
@@ -493,23 +617,116 @@ private final class ScrapbookTurnView: UIView, UIGestureRecognizerDelegate {
     }
 }
 
+private struct JournalCornerHit: Shape {
+    var forward: Bool
+    var spiral: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let side: CGFloat = 72
+        let x = forward ? rect.width - side : spiral
+        return Path(CGRect(x: x, y: 0, width: side, height: side))
+    }
+}
+
 private struct PageCornerHint: View {
+    var leading = false
+    var dimmed = false
+
     var body: some View {
+        corner
+            .fill(ScrapbookColors.paperEdge)
+            .overlay {
+                corner
+                    .fill(Color.black.opacity(dimmed ? 0.94 : 0))
+            }
+            .overlay {
+                Path { path in
+                    path.move(to: leading ? CGPoint(x: 28, y: 0) : CGPoint(x: 0, y: 0))
+                    path.addLine(to: leading ? CGPoint(x: 0, y: 28) : CGPoint(x: 28, y: 28))
+                }
+                .stroke(ScrapbookColors.ink.opacity(dimmed ? 0.08 : 0.28), lineWidth: 1)
+            }
+            .frame(width: 28, height: 28)
+            .allowsHitTesting(false)
+    }
+
+    private var corner: Path {
         Path { path in
-            path.move(to: CGPoint(x: 0, y: 0))
-            path.addLine(to: CGPoint(x: 28, y: 0))
-            path.addLine(to: CGPoint(x: 28, y: 28))
-            path.closeSubpath()
-        }
-        .fill(ScrapbookColors.paperEdge)
-        .overlay {
-            Path { path in
+            if leading {
+                path.move(to: CGPoint(x: 28, y: 0))
+                path.addLine(to: CGPoint(x: 0, y: 0))
+                path.addLine(to: CGPoint(x: 0, y: 28))
+            } else {
                 path.move(to: CGPoint(x: 0, y: 0))
+                path.addLine(to: CGPoint(x: 28, y: 0))
                 path.addLine(to: CGPoint(x: 28, y: 28))
             }
-            .stroke(ScrapbookColors.ink.opacity(0.28), lineWidth: 1)
+            path.closeSubpath()
         }
-        .frame(width: 28, height: 28)
+    }
+}
+
+/// Vertical drags on the spiral scroll the open page.
+private struct ScrapbookSpineScroll: UIViewRepresentable {
+    func makeUIView(context: Context) -> ScrapbookSpineScrollView {
+        let view = ScrapbookSpineScrollView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = true
+        return view
+    }
+
+    func updateUIView(_ uiView: ScrapbookSpineScrollView, context: Context) {}
+}
+
+private final class ScrapbookSpineScrollView: UIView {
+    private var originY: CGFloat = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        pan.cancelsTouchesInView = true
+        addGestureRecognizer(pan)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    @objc private func panned(_ pan: UIPanGestureRecognizer) {
+        guard let scroll = pageCanvasScroll() else { return }
+        switch pan.state {
+        case .began:
+            originY = scroll.contentOffset.y
+        case .changed:
+            let maxOffset = max(scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom, 0)
+            let next = min(max(originY - pan.translation(in: self).y, -scroll.adjustedContentInset.top), maxOffset)
+            if !scroll.isScrollEnabled {
+                scroll.isScrollEnabled = true
+            }
+            scroll.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+            ComposerCanvasScrollMark.report(scroll, offset: next)
+        default:
+            break
+        }
+    }
+
+    /// The open page's scroller, which sits beside the spiral. Stops before the board scroller behind the book.
+    private func pageCanvasScroll() -> UIScrollView? {
+        var current: UIView? = self
+        var depth = 0
+        while let view = current, depth < 10 {
+            if let parent = view.superview {
+                for sibling in parent.subviews where sibling !== view {
+                    if let found = sibling.firstTaggedCanvasScroll() {
+                        return found
+                    }
+                }
+                if parent is UIScrollView { return nil }
+            }
+            current = view.superview
+            depth += 1
+        }
+        return nil
     }
 }
 
