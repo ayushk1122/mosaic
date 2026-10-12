@@ -54,7 +54,6 @@ struct MosaicComposerView: View {
     @State private var socialEditRequest: SocialEditRequest?
     @State private var showsBackgroundEditor = false
     @State private var dragScrollRelay = ComposerDragScrollRelay()
-    @State private var dragScrollBoost: CGFloat = 0
     @State private var composerSpace = UUID().uuidString
     @State private var canvasScrollPosition = ScrollPosition()
     @State private var clipboardMenuBlockID: ComposerBlockID?
@@ -376,8 +375,12 @@ struct MosaicComposerView: View {
             }
             ZStack(alignment: .bottomTrailing) {
                 canvasScroll
-                ComposerDragScrollDriver(relay: dragScrollRelay, boost: $dragScrollBoost, onOffset: { y in
-                    canvasScrollPosition.scrollTo(y: y)
+                ComposerDragScrollDriver(relay: dragScrollRelay, onOffset: { y in
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        canvasScrollPosition.scrollTo(y: y)
+                    }
                 }) {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
@@ -594,6 +597,12 @@ struct MosaicComposerView: View {
             pencil: pursuitBoardPencil(block)
         ))
         .zIndex(clipboardMenuBlockID == block.id || styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
+        .background {
+            DragFollowMarker(
+                relay: dragScrollRelay,
+                enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
+            )
+        }
         .offset(liveOffset(for: block))
         .opacity(blockOpacity(for: block))
     }
@@ -1431,9 +1440,16 @@ struct MosaicComposerView: View {
 
     @discardableResult
     private func stopDragFollow() -> CGFloat {
-        let boost = dragScrollBoost
-        dragScrollBoost = 0
+        let boost = dragScrollRelay.boost
+        if let followed = dragScrollRelay.intendedOffset {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                canvasScrollPosition.scrollTo(y: followed)
+            }
+        }
         dragScrollRelay.boost = 0
+        dragScrollRelay.intendedOffset = nil
         dragScrollRelay.active = false
         dragScrollRelay.tracksItem = false
         return boost
@@ -1760,7 +1776,7 @@ struct MosaicComposerView: View {
         guard textDragVisual.blockID == block.id, textDragVisual.isMoving else { return base }
         return CGSize(
             width: base.width + textDragVisual.translation.width,
-            height: base.height + textDragVisual.translation.height + dragScrollBoost
+            height: base.height + textDragVisual.translation.height
         )
     }
 
