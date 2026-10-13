@@ -9,6 +9,7 @@ struct MosaicComposerView: View {
 
     @Environment(ComposerStore.self) private var store
     @Environment(MosaicChrome.self) private var chrome
+    @Environment(MosaicVisit.self) private var visit: MosaicVisit?
     @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @Environment(\.dismiss) private var dismiss
@@ -193,7 +194,11 @@ struct MosaicComposerView: View {
                 }
             }
             .navigationDestination(item: $openedPursuitID) { pursuitID in
+                // Destinations take the stack's environment, which is the owner's during a visit.
                 MosaicComposerView(documentID: pursuitID)
+                    .environment(store)
+                    .environment(chrome)
+                    .environment(visit)
             }
             .fullScreenCover(isPresented: $showsSettings) {
                 if let account {
@@ -244,7 +249,7 @@ struct MosaicComposerView: View {
             }
             .preference(key: ComposerMediaObscuredKey.self, value: focusedMedia != nil)
             .background {
-                if documentID != nil, !isBookPage {
+                if documentID != nil || chrome.isVisiting, !isBookPage {
                     ComposerBackSwipe(isEnabled: focusedMedia == nil && openScrapbookID == nil)
                 }
             }
@@ -352,7 +357,7 @@ struct MosaicComposerView: View {
             .overlay(alignment: .bottomLeading) {
                 if !isBookPage, focusedMedia == nil, openScrapbookID == nil {
                     HStack(alignment: .bottom, spacing: 12) {
-                        if documentID != nil {
+                        if documentID != nil || chrome.isVisiting {
                             backButton
                         }
                         if account != nil, !chrome.isViewing, !isGrouping {
@@ -364,6 +369,14 @@ struct MosaicComposerView: View {
                     }
                     .padding(.leading, 20)
                     .padding(.bottom, 20)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if visit != nil, !isBookPage, focusedMedia == nil, openScrapbookID == nil,
+                   let pursuitID = documentID.flatMap(ComposerBoardSync.uuid) {
+                    MosaicVisitPursuitControls(pursuitID: pursuitID)
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 20)
                 }
             }
             .overlay {
@@ -426,7 +439,7 @@ struct MosaicComposerView: View {
                         .padding(.trailing, 20 + ComposerAddMenuMetrics.button + 12)
                         .padding(.bottom, 20)
                 }
-                if !isBookPage, !isGrouping {
+                if !isBookPage, !isGrouping, !chrome.isVisiting {
                     viewEyeButton
                         .padding(.trailing, eyeTrailingPadding)
                         .padding(.bottom, 20)
@@ -618,6 +631,9 @@ struct MosaicComposerView: View {
                     .fixedSize()
                     .offset(y: -46)
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            visitBadge(for: block)
         }
         .modifier(SelectedCornerPencil(
             isShown: showsResizeChrome(for: block) && isFolder(block.kind) && !chrome.isViewing,
@@ -1786,7 +1802,62 @@ struct MosaicComposerView: View {
         kind == .pursuit || kind == .node
     }
 
+    @ViewBuilder
+    private func visitBadge(for block: ComposerBlock) -> some View {
+        if let visit, block.kind == .pursuit,
+           let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
+           let pursuit = visit.pursuits[id] {
+            if !pursuit.canOpen {
+                Button {
+                    visit.askToRequest(id)
+                } label: {
+                    if pursuit.isRequested {
+                        Label("Requested", systemImage: "lock.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(MosaicBrand.inkBlack)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(.white, in: Capsule())
+                    } else {
+                        visitBadgeGlyph("lock.fill")
+                    }
+                }
+                .buttonStyle(.plain)
+                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+                .offset(x: 8, y: -8)
+                .accessibilityLabel(pursuit.isRequested ? "Requested" : "Request to view \(pursuit.title)")
+                .accessibilityIdentifier("visit.lock.\(id.uuidString.lowercased())")
+            } else if !pursuit.following {
+                Button {
+                    Task { await visit.follow(id) }
+                } label: {
+                    visitBadgeGlyph("plus")
+                }
+                .buttonStyle(.plain)
+                .disabled(visit.busy.contains(id))
+                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+                .offset(x: 8, y: -8)
+                .accessibilityLabel("Follow \(pursuit.title)")
+                .accessibilityIdentifier("visit.follow.\(id.uuidString.lowercased())")
+            }
+        }
+    }
+
+    private func visitBadgeGlyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(MosaicBrand.inkBlack)
+            .frame(width: 24, height: 24)
+            .background(.white, in: Circle())
+    }
+
     private func openPursuit(_ block: ComposerBlock) {
+        if let visit, block.kind == .pursuit,
+           let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
+           visit.pursuits[id]?.canOpen == false {
+            visit.askToRequest(id)
+            return
+        }
         guard let pursuitID = block.pursuitID else { return }
         editingBlockID = nil
         focusedTextBlockID = nil

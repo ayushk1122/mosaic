@@ -14,7 +14,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
         case .feed: "Feed"
         case .mosaic: "Mosaic"
         case .circle: "Circle"
-        case .search: "Search"
+        case .search: "Discover"
         }
     }
 
@@ -57,7 +57,18 @@ extension EnvironmentValues {
 @MainActor
 @Observable
 final class MosaicChrome {
-    var isViewing = false
+    /// Someone else's Mosaic. It stays in view mode.
+    let isVisiting: Bool
+    var isViewing = false {
+        didSet {
+            if isVisiting, !isViewing { isViewing = true }
+        }
+    }
+
+    init(isVisiting: Bool = false) {
+        self.isVisiting = isVisiting
+        self.isViewing = isVisiting
+    }
 }
 
 struct MosaicTabShell: View {
@@ -117,6 +128,10 @@ struct MosaicTabShell: View {
             Group {
                 if tab == .mosaic {
                     MosaicComposerView(documentID: nil)
+                } else if tab == .search {
+                    MosaicDiscoverView()
+                } else if tab == .circle {
+                    MosaicCircleView()
                 } else {
                     MosaicTabPlaceholder(tab: tab)
                 }

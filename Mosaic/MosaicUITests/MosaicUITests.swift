@@ -33,7 +33,7 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Mosaic"].waitForExistence(timeout: 2))
 
-        for title in ["Feed", "Mosaic", "Circle", "Search"] {
+        for title in ["Feed", "Mosaic", "Circle", "Discover"] {
             XCTAssertTrue(tabBar.buttons[title].exists)
         }
 
@@ -42,10 +42,11 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["feed.screen"].exists)
 
         tabBar.buttons["Circle"].tap()
-        XCTAssertTrue(app.navigationBars["Circle"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.descendants(matching: .any)["circle.screen"].waitForExistence(timeout: 2))
 
-        tabBar.buttons["Search"].tap()
-        XCTAssertTrue(app.navigationBars["Search"].waitForExistence(timeout: 2))
+        tabBar.buttons["Discover"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["search.screen"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
     }
 
     @MainActor

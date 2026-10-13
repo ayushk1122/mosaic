@@ -39,6 +39,7 @@ final class ComposerStore {
         } else if let loaded = Self.loadSnapshot(at: self.location.snapshotURL, fileManager: fileManager, decoder: decoder) {
             snapshot = loaded
             shouldPersistPrune = !ComposerBoardSync.pruneUnreferenced(&snapshot).isEmpty
+            shouldPersistPrune = Self.refreshPursuitTitles(&snapshot) || shouldPersistPrune
         } else {
             snapshot = .empty
         }
@@ -242,7 +243,7 @@ final class ComposerStore {
         // Title lives on the pursuit document, outside the block array this method just borrowed.
         if (block.kind == .pursuit || block.kind == .node), let pursuitID = block.pursuitID,
            let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
-            snapshot.pursuits[pursuitIndex].title = block.text
+            snapshot.pursuits[pursuitIndex].title = block.pursuitDisplayName
         }
         persist()
     }
@@ -624,8 +625,34 @@ final class ComposerStore {
         for block in snapshot.mosaicBlocks where block.kind == .pursuit || block.kind == .node {
             guard let pursuitID = block.pursuitID,
                   let index = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) else { continue }
-            snapshot.pursuits[index].title = block.text
+            snapshot.pursuits[index].title = block.pursuitDisplayName
         }
+    }
+
+    /// Sets each Pursuit and node title from its widget, on every board. Returns true when a title changed.
+    @discardableResult
+    static func refreshPursuitTitles(_ snapshot: inout ComposerSnapshot) -> Bool {
+        var names: [ComposerDocumentID: String] = [:]
+        func collect(_ blocks: [ComposerBlock]) {
+            for block in blocks {
+                if block.kind == .pursuit || block.kind == .node, let id = block.pursuitID {
+                    names[id] = block.pursuitDisplayName
+                }
+                collect(block.groupMembers)
+            }
+        }
+        collect(snapshot.mosaicBlocks)
+        for pursuit in snapshot.pursuits {
+            collect(pursuit.blocks)
+        }
+        var changed = false
+        for index in snapshot.pursuits.indices {
+            if let name = names[snapshot.pursuits[index].id], snapshot.pursuits[index].title != name {
+                snapshot.pursuits[index].title = name
+                changed = true
+            }
+        }
+        return changed
     }
 
     private static func undoKey(_ documentID: ComposerDocumentID?) -> String {

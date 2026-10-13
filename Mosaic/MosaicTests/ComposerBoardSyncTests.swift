@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import Mosaic
 
 @MainActor
@@ -123,6 +124,253 @@ struct ComposerBoardSyncTests {
 
         let store = ComposerStore(fileManager: fileManager, persistToDisk: true, location: target)
         #expect(store.mediaURL(for: "day.jpg") == target.mediaDirectory.appendingPathComponent("day.jpg"))
+    }
+
+    @Test
+    func avatarIsASquareJPEGInTheOwnersFolder() throws {
+        let user = UUID()
+        let picture = UUID()
+        #expect(MosaicAvatar.path(userID: user, pictureID: picture)
+            == "\(user.uuidString.lowercased())/\(picture.uuidString.lowercased()).jpg")
+
+        let wide = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 800)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1200, height: 800))
+        }
+        let jpeg = try #require(MosaicAvatar.jpeg(from: wide))
+        let decoded = try #require(UIImage(data: jpeg))
+        #expect(decoded.size.width * decoded.scale == 512)
+        #expect(decoded.size.height * decoded.scale == 512)
+
+        let base = URL(string: "https://example.supabase.co")!
+        #expect(MosaicSettingsClient.avatarObjectURL(base: base, path: "a/b.jpg").absoluteString
+            == "https://example.supabase.co/storage/v1/object/avatars/a/b.jpg")
+        #expect(MosaicSettingsClient.avatarReadURL(base: base, path: "a/b.jpg").absoluteString
+            == "https://example.supabase.co/storage/v1/object/authenticated/avatars/a/b.jpg")
+    }
+
+    @Test
+    func searchReadsUsernamesAndDisplayNames() throws {
+        let id = UUID()
+        let data = Data("""
+        [{"id":"\(id.uuidString.lowercased())","username":"ayush","display_name":"  Ayush K ","avatar_path":"a/b.jpg"},
+         {"id":"\(UUID().uuidString)","username":"ayush2","display_name":null},
+         {"id":"not-a-uuid","username":"broken"}]
+        """.utf8)
+        let people = try MosaicSearchClient.results(from: data)
+        #expect(people.map(\.username) == ["ayush", "ayush2"])
+        #expect(people.first?.id == id)
+        #expect(people.first?.displayName == "Ayush K")
+        #expect(people.last?.displayName == "")
+        #expect(people.first?.avatarPath == "a/b.jpg")
+        #expect(people.last?.avatarPath == nil)
+    }
+
+    @Test
+    func circleRingsGrowOutwardAroundTheMosaic() {
+        #expect(MosaicCircleLayout.plan(count: 0, width: 402).bubbles.isEmpty)
+        #expect(MosaicCircleLayout.ringCount(for: 10) == 1)
+        #expect(MosaicCircleLayout.ringCount(for: 11) == 2)
+        #expect(MosaicCircleLayout.ringCount(for: 26) == 2)
+        #expect(MosaicCircleLayout.ringCount(for: 27) == 3)
+
+        func distance(_ point: CGPoint) -> CGFloat { (point.x * point.x + point.y * point.y).squareRoot() }
+
+        let one = MosaicCircleLayout.plan(count: 8, width: 402)
+        #expect(one.ringRadii.count == 1)
+        #expect(one.bubbles.allSatisfy { abs(distance($0.center) - one.ringRadii[0]) < 0.001 })
+        #expect(abs(one.bubbles[0].center.x) < 0.001 && one.bubbles[0].center.y < 0)
+        #expect(one.size.width <= 402.001)
+        #expect(one.size.width > 400)
+        #expect(one.bubbles[0].size > MosaicCircleLayout.firstSize)
+        let few = MosaicCircleLayout.plan(count: 3, width: 402, height: 700)
+        #expect(abs(few.ringRadii[0] - one.ringRadii[0]) < 0.001)
+
+        let two = MosaicCircleLayout.plan(count: 14, width: 402)
+        #expect(two.ringRadii.count == 2)
+        #expect(two.bubbles.prefix(10).allSatisfy { abs(distance($0.center) - two.ringRadii[0]) < 0.001 })
+        #expect(two.bubbles.suffix(4).allSatisfy { abs(distance($0.center) - two.ringRadii[1]) < 0.001 })
+        #expect(two.bubbles[13].size < two.bubbles[0].size)
+        #expect(two.size.width <= 402.001)
+        #expect(two.size.width > 400)
+        #expect(two.mosaicSize < one.mosaicSize)
+
+        let wide = MosaicCircleLayout.plan(count: 14, width: 1000)
+        func step(_ plan: MosaicCircleLayout.Plan) -> CGFloat {
+            (plan.ringRadii[1] - plan.ringRadii[0]) / plan.bubbles[0].size
+        }
+        #expect(step(two) < step(wide))
+
+        let short = MosaicCircleLayout.plan(count: 8, width: 402, height: 300)
+        #expect(short.size.height <= 300.001)
+    }
+
+    @Test
+    func circleCoversAreSmallThumbnails() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let big = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 2000), format: format).image { context in
+            UIColor.orange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000))
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).jpg")
+        try #require(big.jpegData(compressionQuality: 0.8)).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let thumb = try #require(MosaicThumbnail.image(at: url, maxPixelSize: MosaicThumbnail.bubblePixelSize))
+        let pixels = thumb.cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? .zero
+        #expect(max(pixels.width, pixels.height) <= CGFloat(MosaicThumbnail.bubblePixelSize))
+        #expect(pixels.width > pixels.height)
+        #expect(MosaicThumbnail.isVideo("clip.MOV"))
+        #expect(!MosaicThumbnail.isVideo("cover.jpg"))
+    }
+
+    @Test
+    func circleReadsBubblesAndPeople() throws {
+        let mosaic = UUID()
+        let golf = UUID()
+        let bubbles = try MosaicCircleClient.bubbles(from: Data("""
+        [{"document_id":"\(mosaic.uuidString.lowercased())","role":"mosaic","title":"Mosaic","visibility":"public","follower_count":3,"pending_count":1,"badge_count":2},
+         {"document_id":"\(golf.uuidString.lowercased())","role":"pursuit","title":" Golf ","visibility":"private","follower_count":0,"pending_count":0,"badge_count":0},
+         {"document_id":"nope","role":"pursuit"}]
+        """.utf8))
+        #expect(bubbles.map(\.id) == [mosaic, golf])
+        #expect(bubbles.first?.isMosaic == true)
+        #expect(bubbles.first?.badgeCount == 2)
+        #expect(bubbles.first?.followerCount == 3)
+        #expect(bubbles.last?.title == "Golf")
+        #expect(bubbles.last?.level == .private)
+
+        let request = UUID()
+        let person = UUID()
+        let people = try MosaicCircleClient.people(from: Data("""
+        [{"kind":"request","request_id":"\(request.uuidString.lowercased())","person_id":"\(person.uuidString.lowercased())","username":"ayush2","display_name":"","avatar_path":null},
+         {"kind":"follower","request_id":null,"person_id":"\(person.uuidString.lowercased())","username":"ayush2","display_name":"Ayush Two"}]
+        """.utf8))
+        #expect(people.map(\.kind) == [.request, .follower])
+        #expect(people.first?.requestID == request)
+        #expect(people.first?.name == "ayush2")
+        #expect(people.last?.name == "Ayush Two")
+        #expect(people.first?.id != people.last?.id)
+    }
+
+    @Test
+    func visitReadsProfilePursuitsAndBoards() throws {
+        let owner = UUID()
+        let mosaic = UUID()
+        let profile = try MosaicVisitClient.profile(from: Data("""
+        [{"user_id":"\(owner.uuidString.lowercased())","username":"ayush","display_name":"","avatar_path":null,"mosaic_id":"\(mosaic.uuidString.lowercased())","mosaic_visibility":"private","can_view":false,"request_status":"pending","follows_mosaic":false}]
+        """.utf8))
+        #expect(profile?.userID == owner)
+        #expect(profile?.mosaicID == mosaic)
+        #expect(profile?.name == "ayush")
+        #expect(profile?.isPublic == false)
+        #expect(profile?.canView == false)
+        #expect(profile?.isRequested == true)
+        #expect(try MosaicVisitClient.profile(from: Data("[]".utf8)) == nil)
+
+        let golf = UUID()
+        let family = UUID()
+        let pursuits = try MosaicVisitClient.pursuits(from: Data("""
+        [{"pursuit_id":"\(golf.uuidString.lowercased())","title":" Golf ","visibility":"public","can_open":true,"request_status":null,"following":true},
+         {"pursuit_id":"\(family.uuidString.lowercased())","title":"","visibility":"private","can_open":false,"request_status":"declined","following":false}]
+        """.utf8))
+        #expect(pursuits.map(\.id) == [golf, family])
+        #expect(pursuits.first?.title == "Golf")
+        #expect(pursuits.first?.following == true)
+        #expect(pursuits.last?.level == .private)
+        #expect(pursuits.last?.isRequested == false)
+        #expect(pursuits.last?.displayTitle == "Pursuit")
+
+        let boards = try MosaicVisitClient.boards(from: Data("""
+        [{"id":"\(mosaic.uuidString.lowercased())","parent_id":null,"role":"mosaic","title":"Mosaic","body":{"blocks":[],"mediaAssets":{"a.jpg":"x"}}},
+         {"id":"\(golf.uuidString.lowercased())","parent_id":"\(mosaic.uuidString.lowercased())","role":"pursuit","title":"Golf","body":{"blocks":[]}},
+         {"id":"nope","role":"pursuit","body":{"blocks":[]}}]
+        """.utf8))
+        #expect(boards.map(\.id) == [mosaic, golf])
+        #expect(boards.first?.body.mediaAssets == ["a.jpg": "x"])
+        #expect(boards.last?.parentID == mosaic)
+    }
+
+    @Test
+    func visitDownloadsDisplayCopiesOfPhotosAndOriginalVideos() {
+        let owner = UUID(uuidString: "A05FD464-A05E-4F13-8EE3-52CDC4CC6A21")!
+        let prefix = "a05fd464-a05e-4f13-8ee3-52cdc4cc6a21/abc"
+        #expect(MosaicVisitClient.objectPaths(ownerID: owner, assetID: "ABC", fileName: "p.jpg") == ["\(prefix)/display", "\(prefix)/original"])
+        #expect(MosaicVisitClient.objectPaths(ownerID: owner, assetID: "abc", fileName: "v.MOV") == ["\(prefix)/original"])
+    }
+
+    @Test
+    func discoverReadsFollowsAndFiltersThem() throws {
+        let owner = UUID()
+        let mosaic = UUID()
+        let golf = UUID()
+        let items = try MosaicFollowingClient.items(from: Data("""
+        [{"target_type":"mosaic","target_id":"\(mosaic.uuidString.lowercased())","owner_id":"\(owner.uuidString.lowercased())","username":"ayush","display_name":" Ayush K ","avatar_path":null,"title":null,"cover_file":null,"cover_asset":null},
+         {"target_type":"pursuit","target_id":"\(golf.uuidString.lowercased())","owner_id":"\(owner.uuidString.lowercased())","username":"ayush","display_name":"","title":"Golf","cover_file":"a.jpg","cover_asset":"x"},
+         {"target_type":"board","target_id":"\(golf.uuidString.lowercased())","owner_id":"\(owner.uuidString.lowercased())","username":"ayush"}]
+        """.utf8))
+        #expect(items.map(\.kind) == [.mosaic, .pursuit])
+        #expect(items.first?.ownerName == "Ayush K")
+        #expect(items.last?.ownerName == "ayush")
+        #expect(items.last?.coverAsset == "x")
+        #expect(items.first?.id != items.last?.id)
+        #expect(items.last?.matches("gol") == true)
+        #expect(items.last?.matches("AYU") == true)
+        #expect(items.last?.matches("tennis") == false)
+        #expect(items.first?.matches("golf") == false)
+        #expect(items.first?.matches("  ") == true)
+
+        var other = items[1]
+        other.owner.id = UUID()
+        other.targetID = UUID()
+        let list = items + [other]
+        #expect(MosaicFollowingClient.remaining(list, after: items[0]).map(\.id) == [other.id])
+        #expect(MosaicFollowingClient.remaining(list, after: items[1]).map(\.id) == [items[0].id, other.id])
+    }
+
+    @Test
+    func visitingStaysInViewMode() {
+        let chrome = MosaicChrome(isVisiting: true)
+        #expect(chrome.isViewing)
+        chrome.isViewing.toggle()
+        #expect(chrome.isViewing)
+
+        let own = MosaicChrome()
+        own.isViewing.toggle()
+        #expect(own.isViewing)
+        own.isViewing.toggle()
+        #expect(!own.isViewing)
+    }
+
+    @Test
+    func pursuitTitleFallsBackToItsTextWhenTheNameIsCleared() {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let blockID = store.addBlock(.pursuit, to: nil)
+        guard var block = store.block(with: blockID, in: nil), let pursuitID = block.pursuitID else {
+            Issue.record("No pursuit widget")
+            return
+        }
+        block.text = ""
+        block.pursuitTexts = [
+            PursuitTextItem(text: "  ", y: 0.1),
+            PursuitTextItem(text: "Notes", y: 0.8),
+            PursuitTextItem(text: "Baseball", y: 0.2)
+        ]
+        store.updateBlock(block, in: nil)
+        #expect(store.pursuit(for: pursuitID)?.title == "Baseball")
+
+        block.text = "Leia"
+        store.updateBlock(block, in: nil)
+        #expect(store.pursuit(for: pursuitID)?.title == "Leia")
+
+        var snapshot = store.snapshot
+        if let index = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
+            snapshot.pursuits[index].title = ""
+        }
+        #expect(ComposerStore.refreshPursuitTitles(&snapshot))
+        #expect(snapshot.pursuits.first(where: { $0.id == pursuitID })?.title == "Leia")
+        #expect(!ComposerStore.refreshPursuitTitles(&snapshot))
     }
 
     @Test
@@ -262,12 +510,16 @@ struct ComposerBoardSyncTests {
         let listed = MosaicSettingsList.rows(
             snapshot: snapshot,
             remote: [
-                MosaicRemoteBoard(id: mosaicID, role: "mosaic", title: "Server", isPublic: true),
-                MosaicRemoteBoard(id: synced, role: "pursuit", title: "Old", isPublic: false)
+                MosaicRemoteBoard(id: mosaicID, role: "mosaic", title: "Server", level: .public),
+                MosaicRemoteBoard(id: synced, role: "pursuit", title: "Old", level: .private)
             ]
         )
         #expect(listed.mosaic?.title == "Studio")
-        #expect(listed.mosaic?.isPublic == true)
+        #expect(listed.mosaic?.level == .public)
+        #expect(listed.pursuits.map(\.level) == [.private, .hidden])
+        #expect(MosaicVisibilityLevel.parse("hidden", role: "pursuit") == .hidden)
+        #expect(MosaicVisibilityLevel.parse(nil, role: "pursuit") == .hidden)
+        #expect(MosaicVisibilityLevel.parse(nil, role: "mosaic") == .private)
         #expect(listed.mosaic?.canChange == true)
         #expect(listed.pursuits.map(\.title) == ["Golf", "Pursuit"])
         #expect(listed.pursuits.map(\.canChange) == [true, false])

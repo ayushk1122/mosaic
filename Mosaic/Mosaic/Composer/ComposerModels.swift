@@ -1591,3 +1591,16 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         try container.encodeIfPresent(mosaicBackground, forKey: .mosaicBackground)
     }
 }
+
+extension ComposerBlock {
+    /// The widget's name, or, when the name was cleared, its highest text item.
+    var pursuitDisplayName: String {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return text }
+        return pursuitTexts
+            .sorted { ($0.y, $0.x) < ($1.y, $1.x) }
+            .lazy
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+    }
+}

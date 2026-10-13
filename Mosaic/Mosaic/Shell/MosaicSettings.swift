@@ -1,16 +1,42 @@
+import PhotosUI
 import SwiftUI
+import UIKit
+
+/// Who can see a board. The Mosaic uses only public and private.
+enum MosaicVisibilityLevel: String, CaseIterable, Identifiable, Sendable {
+    case `public`
+    case `private`
+    case hidden
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .public: "Public"
+        case .private: "Private"
+        case .hidden: "Hidden"
+        }
+    }
+
+    static func parse(_ raw: String?, role: String) -> MosaicVisibilityLevel {
+        if let raw, let level = MosaicVisibilityLevel(rawValue: raw) {
+            return level
+        }
+        return role == "mosaic" ? .private : .hidden
+    }
+}
 
 struct MosaicRemoteBoard: Equatable, Sendable {
     var id: UUID
     var role: String
     var title: String
-    var isPublic: Bool
+    var level: MosaicVisibilityLevel
 }
 
 struct MosaicVisibilityRow: Identifiable, Equatable, Sendable {
     var id: UUID
     var title: String
-    var isPublic: Bool
+    var level: MosaicVisibilityLevel
     /// False until the board has a row on the server.
     var canChange: Bool
 }
@@ -65,7 +91,7 @@ enum MosaicSettingsList {
         let mosaic = MosaicVisibilityRow(
             id: remoteMosaic?.id ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID(),
             title: mosaicTitle.isEmpty ? "Mosaic" : mosaicTitle,
-            isPublic: remoteMosaic?.isPublic ?? false,
+            level: remoteMosaic?.level ?? .private,
             canChange: remoteMosaic != nil
         )
 
@@ -80,7 +106,7 @@ enum MosaicSettingsList {
                 MosaicVisibilityRow(
                     id: id,
                     title: title.isEmpty ? "Pursuit" : title,
-                    isPublic: remoteMatch?.isPublic ?? false,
+                    level: remoteMatch?.level ?? .hidden,
                     canChange: remoteMatch != nil
                 )
             )
@@ -91,12 +117,36 @@ enum MosaicSettingsList {
                 MosaicVisibilityRow(
                     id: board.id,
                     title: title.isEmpty ? "Pursuit" : title,
-                    isPublic: board.isPublic,
+                    level: board.level,
                     canChange: true
                 )
             )
         }
         return (mosaic, pursuits)
+    }
+}
+
+enum MosaicAvatar {
+    static let side: CGFloat = 512
+
+    static func path(userID: UUID, pictureID: UUID) -> String {
+        "\(userID.uuidString.lowercased())/\(pictureID.uuidString.lowercased()).jpg"
+    }
+
+    /// Center square, 512 points on a side, as JPEG.
+    static func jpeg(from image: UIImage) -> Data? {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let crop = min(size.width, size.height)
+        let scale = side / crop
+        let drawSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let origin = CGPoint(x: (side - drawSize.width) / 2, y: (side - drawSize.height) / 2)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let rendered = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            image.draw(in: CGRect(origin: origin, size: drawSize))
+        }
+        return rendered.jpegData(compressionQuality: 0.85)
     }
 }
 
@@ -151,7 +201,10 @@ struct MosaicSettingsClient: Sendable {
         return .failed
     }
 
-    func loadProfile(userID: UUID, accessToken: String) async throws -> (username: String, displayName: String) {
+    func loadProfile(
+        userID: UUID,
+        accessToken: String
+    ) async throws -> (username: String, displayName: String, avatarPath: String?) {
         let rows = try await get(
             url: Self.profileURL(base: config.url, userID: userID),
             accessToken: accessToken
@@ -159,7 +212,52 @@ struct MosaicSettingsClient: Sendable {
         guard let row = rows.first else { throw SupabaseDocumentSyncError.unexpectedResponse }
         let username = row["username"] as? String ?? ""
         let displayName = row["display_name"] as? String ?? ""
-        return (username, displayName)
+        return (username, displayName, row["avatar_path"] as? String)
+    }
+
+    /// Uploads a new picture, points the profile at it, then removes the old one.
+    func saveAvatar(_ jpeg: Data, replacing old: String?, userID: UUID, accessToken: String) async throws -> String {
+        let path = MosaicAvatar.path(userID: userID, pictureID: UUID())
+        var upload = URLRequest(url: Self.avatarObjectURL(base: config.url, path: path))
+        upload.httpMethod = "POST"
+        upload.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        upload.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        upload.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        upload.httpBody = jpeg
+        try await send(upload)
+
+        var patch = URLRequest(url: Self.profileURL(base: config.url, userID: userID))
+        patch.httpMethod = "PATCH"
+        patch.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        patch.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+        patch.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        patch.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        patch.httpBody = try JSONSerialization.data(withJSONObject: ["avatar_path": path])
+        try await send(patch)
+
+        if let old, old != path {
+            var remove = URLRequest(url: Self.avatarObjectURL(base: config.url, path: old))
+            remove.httpMethod = "DELETE"
+            remove.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+            remove.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            _ = try? await session.data(for: remove)
+        }
+        return path
+    }
+
+    func loadAvatar(path: String, accessToken: String) async throws -> Data {
+        var request = URLRequest(url: Self.avatarReadURL(base: config.url, path: path))
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        return try await send(request)
+    }
+
+    static func avatarObjectURL(base: URL, path: String) -> URL {
+        base.appending(path: "storage/v1/object/avatars/\(path)")
+    }
+
+    static func avatarReadURL(base: URL, path: String) -> URL {
+        base.appending(path: "storage/v1/object/authenticated/avatars/\(path)")
     }
 
     func saveDisplayName(_ name: String, userID: UUID, accessToken: String) async throws {
@@ -188,12 +286,12 @@ struct MosaicSettingsClient: Sendable {
                 id: id,
                 role: role,
                 title: row["title"] as? String ?? "",
-                isPublic: (row["visibility"] as? String) == "public"
+                level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: role)
             )
         }
     }
 
-    func setVisibility(id: UUID, isPublic: Bool, accessToken: String) async throws {
+    func setVisibility(id: UUID, level: MosaicVisibilityLevel, accessToken: String) async throws {
         let endpoint = config.url
             .appendingPathComponent("rest")
             .appendingPathComponent("v1")
@@ -206,7 +304,7 @@ struct MosaicSettingsClient: Sendable {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "p_id": id.uuidString.lowercased(),
-            "p_visibility": isPublic ? "public" : "private"
+            "p_visibility": level.rawValue
         ])
         try await send(request)
     }
@@ -215,7 +313,7 @@ struct MosaicSettingsClient: Sendable {
         var components = URLComponents(url: base.appending(path: "rest/v1/profiles"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "id", value: "eq.\(userID.uuidString.lowercased())"),
-            URLQueryItem(name: "select", value: "username,display_name")
+            URLQueryItem(name: "select", value: "username,display_name,avatar_path")
         ]
         return components?.url ?? base
     }
@@ -286,6 +384,10 @@ struct MosaicSettingsView: View {
     @State private var confirmsLogOut = false
     @State private var didLoad = false
     @State private var profileLoaded = false
+    @State private var avatarPath: String?
+    @State private var avatarImage: UIImage?
+    @State private var avatarItem: PhotosPickerItem?
+    @State private var savingAvatar = false
     @FocusState private var focused: EditField?
 
     private let field = Color.white.opacity(0.08)
@@ -348,6 +450,9 @@ struct MosaicSettingsView: View {
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(.white)
 
+                    avatarPicker
+                        .frame(maxWidth: .infinity)
+
                     VStack(alignment: .leading, spacing: 10) {
                         sectionTitle("Username")
                         textRow(
@@ -389,9 +494,7 @@ struct MosaicSettingsView: View {
                     if let mosaic {
                         VStack(alignment: .leading, spacing: 10) {
                             sectionTitle("Mosaic")
-                            visibilityRow(mosaic, kind: "Mosaic") { isPublic in
-                                Task { await setMosaicPublic(isPublic) }
-                            }
+                            mosaicRow(mosaic)
                         }
                     }
 
@@ -404,9 +507,7 @@ struct MosaicSettingsView: View {
                         } else {
                             VStack(spacing: 8) {
                                 ForEach(pursuits) { pursuit in
-                                    visibilityRow(pursuit, kind: "Pursuit") { isPublic in
-                                        Task { await setPursuit(pursuit.id, isPublic: isPublic) }
-                                    }
+                                    pursuitRow(pursuit)
                                 }
                             }
                         }
@@ -476,6 +577,47 @@ struct MosaicSettingsView: View {
                 Task { await commit(previous) }
             }
         }
+        .onChange(of: avatarItem) { _, item in
+            guard let item else { return }
+            Task { await saveAvatar(from: item) }
+        }
+    }
+
+    private var avatarPicker: some View {
+        PhotosPicker(selection: $avatarItem, matching: .images, photoLibrary: .shared()) {
+            ZStack(alignment: .bottomTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(field)
+                    if let avatarImage {
+                        Image(uiImage: avatarImage)
+                            .resizable()
+                            .scaledToFill()
+                    }
+                    if savingAvatar {
+                        Circle()
+                            .fill(Color.black.opacity(0.45))
+                        ProgressView()
+                            .tint(.white)
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(MosaicBrand.inkBlack)
+                    .frame(width: 28, height: 28)
+                    .background(.white, in: Circle())
+                    .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 3))
+                    .offset(x: 2, y: 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!profileLoaded || savingAvatar)
+        .accessibilityLabel(avatarImage == nil ? "Add profile picture" : "Change profile picture")
+        .accessibilityIdentifier("settings.avatar")
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -543,19 +685,15 @@ struct MosaicSettingsView: View {
         }
     }
 
-    private func visibilityRow(
-        _ row: MosaicVisibilityRow,
-        kind: String,
-        onChange: @escaping (Bool) -> Void
-    ) -> some View {
+    private func mosaicRow(_ row: MosaicVisibilityRow) -> some View {
         Toggle(isOn: Binding(
-            get: { row.isPublic },
-            set: { onChange($0) }
+            get: { row.level == .public },
+            set: { isPublic in Task { await setMosaicLevel(isPublic ? .public : .private) } }
         )) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
                     .foregroundStyle(.white)
-                Text(row.canChange ? (row.isPublic ? "Public" : "Private") : "Waiting to sync")
+                Text(row.canChange ? row.level.title : "Waiting to sync")
                     .font(.footnote)
                     .foregroundStyle(muted)
             }
@@ -565,7 +703,36 @@ struct MosaicSettingsView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(field, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityLabel("\(kind) \(row.title)")
+        .accessibilityLabel("Mosaic \(row.title)")
+    }
+
+    private func pursuitRow(_ row: MosaicVisibilityRow) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title)
+                    .foregroundStyle(.white)
+                if !row.canChange {
+                    Text("Waiting to sync")
+                        .font(.footnote)
+                        .foregroundStyle(muted)
+                }
+            }
+            Picker("Who can see \(row.title)", selection: Binding(
+                get: { row.level },
+                set: { level in Task { await setPursuitLevel(row.id, level: level) } }
+            )) {
+                ForEach(MosaicVisibilityLevel.allCases) { level in
+                    Text(level.title).tag(level)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!row.canChange)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(field, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pursuit \(row.title)")
     }
 
     private func commit(_ which: EditField) async {
@@ -658,12 +825,48 @@ struct MosaicSettingsView: View {
             savedDisplayName = name
             profileLoaded = true
             availability = .available
+            avatarPath = profile.avatarPath
+            if let path = profile.avatarPath,
+               let data = try? await client.loadAvatar(path: path, accessToken: token) {
+                avatarImage = UIImage(data: data)
+            }
             let remote = try await client.loadBoards(userID: userID, accessToken: token)
             let listed = MosaicSettingsList.rows(snapshot: store.snapshot, remote: remote)
             mosaic = listed.mosaic
             pursuits = listed.pursuits
         } catch {
             status = "Settings could not be loaded."
+        }
+    }
+
+    private func saveAvatar(from item: PhotosPickerItem) async {
+        avatarItem = nil
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let picked = MosaicThumbnail.image(data: data, maxPixelSize: 1536),
+              let jpeg = MosaicAvatar.jpeg(from: picked)
+        else {
+            status = "That photo could not be used."
+            return
+        }
+        guard let config = SupabaseSyncConfig.current(),
+              let userID = account.session?.userID,
+              let token = await account.accessToken()
+        else { return }
+        let previous = avatarImage
+        avatarImage = UIImage(data: jpeg)
+        savingAvatar = true
+        defer { savingAvatar = false }
+        do {
+            let path = try await MosaicSettingsClient(config: config)
+                .saveAvatar(jpeg, replacing: avatarPath, userID: userID, accessToken: token)
+            avatarPath = path
+            if let saved = avatarImage {
+                MosaicAvatarCache.store(saved, for: path)
+            }
+            status = ""
+        } catch {
+            avatarImage = previous
+            status = "The profile picture could not be saved."
         }
     }
 
@@ -686,34 +889,36 @@ struct MosaicSettingsView: View {
         }
     }
 
-    private func setMosaicPublic(_ isPublic: Bool) async {
+    private func setMosaicLevel(_ level: MosaicVisibilityLevel) async {
         guard var mosaic else { return }
-        let previous = mosaic.isPublic
-        mosaic.isPublic = isPublic
+        let previous = mosaic.level
+        mosaic.level = level
         self.mosaic = mosaic
-        guard await applyVisibility(id: mosaic.id, isPublic: isPublic) else {
-            mosaic.isPublic = previous
+        guard await applyVisibility(id: mosaic.id, level: level) else {
+            mosaic.level = previous
             self.mosaic = mosaic
             return
         }
     }
 
-    private func setPursuit(_ id: UUID, isPublic: Bool) async {
+    private func setPursuitLevel(_ id: UUID, level: MosaicVisibilityLevel) async {
         guard let index = pursuits.firstIndex(where: { $0.id == id }) else { return }
-        let previous = pursuits[index].isPublic
-        pursuits[index].isPublic = isPublic
-        guard await applyVisibility(id: id, isPublic: isPublic) else {
-            pursuits[index].isPublic = previous
+        let previous = pursuits[index].level
+        pursuits[index].level = level
+        guard await applyVisibility(id: id, level: level) else {
+            if let again = pursuits.firstIndex(where: { $0.id == id }) {
+                pursuits[again].level = previous
+            }
             return
         }
     }
 
-    private func applyVisibility(id: UUID, isPublic: Bool) async -> Bool {
+    private func applyVisibility(id: UUID, level: MosaicVisibilityLevel) async -> Bool {
         guard let config = SupabaseSyncConfig.current(),
               let token = await account.accessToken()
         else { return false }
         do {
-            try await MosaicSettingsClient(config: config).setVisibility(id: id, isPublic: isPublic, accessToken: token)
+            try await MosaicSettingsClient(config: config).setVisibility(id: id, level: level, accessToken: token)
             status = ""
             return true
         } catch {
