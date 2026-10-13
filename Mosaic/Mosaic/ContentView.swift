@@ -8,8 +8,10 @@
 import SwiftUI
 
 struct ContentView: View {
+    var account: MosaicAccount? = nil
+
     var body: some View {
-        MosaicTabShell()
+        MosaicTabShell(account: account)
     }
 }
 

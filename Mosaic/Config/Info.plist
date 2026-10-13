@@ -2,6 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>SupabaseURL</key>
+	<string>https://dnejxyohyzpwfjmnnarq.supabase.co</string>
+	<key>SupabaseAnonKey</key>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuZWp4eW9oeXpwd2ZqbW5uYXJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4NDM1MzAsImV4cCI6MjEwNzQxOTUzMH0.p-7ubc536tlfvoatAy2QJJlOACE2XY8VI2zrIiMYPiI</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.ayushkrishnappa.Spendant.Mosaic</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mosaic</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Mosaic uses your photo library so you can place photos and videos on your Mosaic.</string>
 	<key>UILaunchScreen</key>

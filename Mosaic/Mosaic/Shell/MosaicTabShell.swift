@@ -53,8 +53,14 @@ struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
+    @State private var remoteSync = ComposerRemoteSync()
+    var account: MosaicAccount?
 
-    init(persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")) {
+    init(
+        account: MosaicAccount? = nil,
+        persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
+    ) {
+        self.account = account
         let store = ComposerStore(persistToDisk: persistToDisk)
         store.placeMosaicTitleIfNeeded()
         store.blankPursuitPagesIfNeeded()
@@ -77,6 +83,14 @@ struct MosaicTabShell: View {
         .animation(.easeOut(duration: 0.28), value: chrome.isViewing)
         .onAppear {
             MosaicTabBarStyling.apply()
+        }
+        .task {
+            guard let account else { return }
+            store.onPersisted = { [weak store] in
+                guard let store else { return }
+                remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+            }
+            remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
         }
         .environment(store)
         .environment(chrome)

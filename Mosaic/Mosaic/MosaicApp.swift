@@ -25,6 +25,13 @@ private struct MosaicRootView: View {
     @State private var launchPhase: LaunchPhase = ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
         ? .finished
         : .animating
+    @State private var account = MosaicAccount()
+    @State private var restoredSession = false
+
+    private var skipsAccount: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
+            || SupabaseSyncConfig.current() == nil
+    }
 
     var body: some View {
         Group {
@@ -36,8 +43,26 @@ private struct MosaicRootView: View {
                     }
                 }
             case .finished:
-                ContentView()
+                signedInShell
             }
+        }
+        .task {
+            guard !skipsAccount else { return }
+            await account.restore()
+            restoredSession = true
+        }
+    }
+
+    @ViewBuilder
+    private var signedInShell: some View {
+        if skipsAccount {
+            ContentView()
+        } else if !restoredSession {
+            MosaicBrand.cream.ignoresSafeArea()
+        } else if account.session == nil {
+            MosaicSignInView(account: account)
+        } else {
+            ContentView(account: account)
         }
     }
 }

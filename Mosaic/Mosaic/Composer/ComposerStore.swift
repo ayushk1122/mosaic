@@ -18,6 +18,8 @@ final class ComposerStore {
     private let persistToDisk: Bool
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    /// Called after a successful local save. Sync uses this to push the board.
+    var onPersisted: (() -> Void)?
 
     init(
         fileManager: FileManager = .default,
@@ -727,6 +729,7 @@ final class ComposerStore {
             try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: url, options: .atomic)
+            onPersisted?()
         } catch {
             // Local-only persistence; surface in a later iteration.
         }
