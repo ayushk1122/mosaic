@@ -128,8 +128,10 @@ struct ScrapbookBookView: View {
             pageTurnArrows
                 .layoutPriority(1)
             Spacer(minLength: 8)
-            journalEyeButton
-                .layoutPriority(1)
+            if !chrome.isVisiting {
+                journalEyeButton
+                    .layoutPriority(1)
+            }
             if !chrome.isViewing {
                 pageButtons
             }

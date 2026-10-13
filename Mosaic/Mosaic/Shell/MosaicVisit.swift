@@ -1,0 +1,805 @@
+import SwiftUI
+
+struct MosaicVisitProfile: Equatable, Sendable {
+    var userID: UUID
+    var username: String
+    var displayName: String
+    var avatarPath: String?
+    var mosaicID: UUID?
+    var isPublic: Bool
+    var canView: Bool
+    var requestStatus: String?
+    var followsMosaic: Bool
+
+    var name: String { displayName.isEmpty ? username : displayName }
+    var isRequested: Bool { requestStatus == "pending" }
+}
+
+struct MosaicVisitPursuit: Identifiable, Equatable, Sendable {
+    var id: UUID
+    var title: String
+    var level: MosaicVisibilityLevel
+    var canOpen: Bool
+    var requestStatus: String?
+    var following: Bool
+
+    var isRequested: Bool { requestStatus == "pending" }
+    var displayTitle: String { title.isEmpty ? "Pursuit" : title }
+}
+
+struct MosaicVisitClient: Sendable {
+    var config: SupabaseSyncConfig
+    var session: URLSession = .shared
+
+    func profile(userID: UUID, accessToken: String) async throws -> MosaicVisitProfile? {
+        let data = try await rpc("profile_view", body: ["p_user_id": userID.uuidString.lowercased()], accessToken: accessToken)
+        return try Self.profile(from: data)
+    }
+
+    func boards(ownerID: UUID, accessToken: String) async throws -> [ComposerSyncDocument] {
+        let data = try await rpc("viewer_boards", body: ["p_owner": ownerID.uuidString.lowercased()], accessToken: accessToken)
+        return try Self.boards(from: data)
+    }
+
+    func pursuits(ownerID: UUID, accessToken: String) async throws -> [MosaicVisitPursuit] {
+        let data = try await rpc("viewer_pursuits", body: ["p_owner": ownerID.uuidString.lowercased()], accessToken: accessToken)
+        return try Self.pursuits(from: data)
+    }
+
+    func requestMosaic(ownerID: UUID, accessToken: String) async throws -> String? {
+        let data = try await rpc("request_mosaic_access", body: ["p_owner": ownerID.uuidString.lowercased()], accessToken: accessToken)
+        return try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String
+    }
+
+    func requestPursuit(id: UUID, accessToken: String) async throws -> String? {
+        let data = try await rpc("request_pursuit_access", body: ["p_pursuit_id": id.uuidString.lowercased()], accessToken: accessToken)
+        return try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String
+    }
+
+    func followMosaic(ownerID: UUID, accessToken: String) async throws {
+        _ = try await rpc("follow_mosaic", body: ["p_owner": ownerID.uuidString.lowercased()], accessToken: accessToken)
+    }
+
+    func unfollowMosaic(ownerID: UUID, accessToken: String) async throws {
+        _ = try await rpc("unfollow_mosaic", body: ["p_owner": ownerID.uuidString.lowercased()], accessToken: accessToken)
+    }
+
+    func followPursuit(id: UUID, accessToken: String) async throws {
+        _ = try await rpc("follow_pursuit", body: ["p_pursuit_id": id.uuidString.lowercased()], accessToken: accessToken)
+    }
+
+    func unfollowPursuit(id: UUID, accessToken: String) async throws {
+        _ = try await rpc(
+            "unfollow",
+            body: ["p_target_type": "pursuit", "p_target_id": id.uuidString.lowercased()],
+            accessToken: accessToken
+        )
+    }
+
+    /// One Storage object, or nil when it is missing or not readable.
+    func download(path: String, accessToken: String) async -> Data? {
+        guard let url = URL(string: "\(config.url.absoluteString)/storage/v1/object/authenticated/media/\(path)") else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode)
+        else { return nil }
+        return data
+    }
+
+    static func profile(from data: Data) throws -> MosaicVisitProfile? {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        guard let row = rows.first,
+              let userID = (row["user_id"] as? String).flatMap(UUID.init(uuidString:))
+        else { return nil }
+        return MosaicVisitProfile(
+            userID: userID,
+            username: row["username"] as? String ?? "",
+            displayName: (row["display_name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            avatarPath: row["avatar_path"] as? String,
+            mosaicID: (row["mosaic_id"] as? String).flatMap(UUID.init(uuidString:)),
+            isPublic: row["mosaic_visibility"] as? String == "public",
+            canView: row["can_view"] as? Bool ?? false,
+            requestStatus: row["request_status"] as? String,
+            followsMosaic: row["follows_mosaic"] as? Bool ?? false
+        )
+    }
+
+    static func pursuits(from data: Data) throws -> [MosaicVisitPursuit] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        return rows.compactMap { row in
+            guard let id = (row["pursuit_id"] as? String).flatMap(UUID.init(uuidString:)) else { return nil }
+            return MosaicVisitPursuit(
+                id: id,
+                title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: "pursuit"),
+                canOpen: row["can_open"] as? Bool ?? false,
+                requestStatus: row["request_status"] as? String,
+                following: row["following"] as? Bool ?? false
+            )
+        }
+    }
+
+    static func boards(from data: Data) throws -> [ComposerSyncDocument] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        let decoder = JSONDecoder()
+        return rows.compactMap { row in
+            guard let id = (row["id"] as? String).flatMap(UUID.init(uuidString:)),
+                  let role = (row["role"] as? String).flatMap(ComposerSyncRole.init(rawValue:)),
+                  let rawBody = row["body"],
+                  let bodyData = try? JSONSerialization.data(withJSONObject: rawBody),
+                  let body = try? decoder.decode(ComposerBoardBody.self, from: bodyData)
+            else { return nil }
+            return ComposerSyncDocument(
+                id: id,
+                parentID: (row["parent_id"] as? String).flatMap(UUID.init(uuidString:)),
+                role: role,
+                title: row["title"] as? String ?? "",
+                visibility: "",
+                body: body
+            )
+        }
+    }
+
+    /// Storage paths to try for one file, best first. Photos have a display copy.
+    static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
+        let owner = ownerID.uuidString.lowercased()
+        let asset = assetID.lowercased()
+        let isVideo = ["mov", "mp4", "m4v"].contains((fileName as NSString).pathExtension.lowercased())
+        return (isVideo ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
+    }
+
+    private func rpc(_ name: String, body: [String: Any], accessToken: String) async throws -> Data {
+        let endpoint = config.url
+            .appendingPathComponent("rest")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("rpc")
+            .appendingPathComponent(name)
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+        return data
+    }
+}
+
+/// Where the visitor stands with each Pursuit on the Mosaic they are looking at.
+@MainActor
+@Observable
+final class MosaicVisit {
+    let ownerID: UUID
+    var pursuits: [UUID: MosaicVisitPursuit]
+    var requestTarget: MosaicVisitPursuit?
+    var busy: Set<UUID> = []
+    var problem: String?
+
+    private let account: MosaicAccount
+    private let client: MosaicVisitClient
+
+    init(ownerID: UUID, pursuits: [MosaicVisitPursuit], account: MosaicAccount, client: MosaicVisitClient) {
+        self.ownerID = ownerID
+        self.pursuits = Dictionary(uniqueKeysWithValues: pursuits.map { ($0.id, $0) })
+        self.account = account
+        self.client = client
+    }
+
+    var publicPursuits: [MosaicVisitPursuit] {
+        pursuits.values
+            .filter { $0.level == .public && $0.canOpen }
+            .sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
+    }
+
+    func askToRequest(_ id: UUID) {
+        guard let pursuit = pursuits[id], !pursuit.canOpen, !pursuit.isRequested else { return }
+        requestTarget = pursuit
+    }
+
+    func follow(_ id: UUID) async {
+        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        busy.insert(id)
+        defer { busy.remove(id) }
+        do {
+            try await client.followPursuit(id: id, accessToken: token)
+            pursuits[id]?.following = true
+        } catch {
+            problem = "That Pursuit could not be followed."
+        }
+    }
+
+    func unfollow(_ id: UUID) async {
+        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        busy.insert(id)
+        defer { busy.remove(id) }
+        do {
+            try await client.unfollowPursuit(id: id, accessToken: token)
+            pursuits[id]?.following = false
+        } catch {
+            problem = "That Pursuit could not be unfollowed."
+        }
+    }
+
+    func request(_ id: UUID) async {
+        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        busy.insert(id)
+        defer { busy.remove(id) }
+        do {
+            pursuits[id]?.requestStatus = try await client.requestPursuit(id: id, accessToken: token) ?? "pending"
+        } catch {
+            problem = "That request could not be sent."
+        }
+    }
+
+    func refresh() async {
+        guard let token = await account.accessToken(),
+              let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token)
+        else { return }
+        pursuits = Dictionary(uniqueKeysWithValues: fresh.map { ($0.id, $0) })
+    }
+}
+
+/// Bottom right of a visited Pursuit page: its cover, and follow or unfollow.
+struct MosaicVisitPursuitControls: View {
+    let pursuitID: UUID
+
+    @Environment(ComposerStore.self) private var store
+    @Environment(MosaicVisit.self) private var visit
+    @State private var cover: UIImage?
+
+    private var coverFile: String? {
+        func find(_ blocks: [ComposerBlock]) -> String? {
+            for block in blocks {
+                if block.kind == .pursuit, block.pursuitID.flatMap(ComposerBoardSync.uuid) == pursuitID {
+                    return block.pursuitImageFileName
+                }
+                if let found = find(block.groupMembers) { return found }
+            }
+            return nil
+        }
+        return find(store.snapshot.mosaicBlocks).flatMap { MosaicThumbnail.isVideo($0) ? nil : $0 }
+    }
+
+    var body: some View {
+        if let pursuit = visit.pursuits[pursuitID] {
+            HStack(spacing: 12) {
+                logo(pursuit)
+                if pursuit.canOpen {
+                    toggle(pursuit)
+                }
+            }
+            .task(id: coverFile) { await loadCover() }
+        }
+    }
+
+    private func logo(_ pursuit: MosaicVisitPursuit) -> some View {
+        ZStack {
+            Circle()
+                .fill(MosaicBrand.inkBlack)
+            if let cover {
+                Image(uiImage: cover)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Text(String(pursuit.displayTitle.prefix(1)).uppercased())
+                    .font(.system(size: ComposerAddMenuMetrics.button * 0.4, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
+        .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+        .accessibilityLabel(pursuit.displayTitle)
+    }
+
+    @ViewBuilder
+    private func toggle(_ pursuit: MosaicVisitPursuit) -> some View {
+        Group {
+            if pursuit.following {
+                Menu {
+                    Button("Unfollow", systemImage: "minus.circle", role: .destructive) {
+                        Task { await visit.unfollow(pursuitID) }
+                    }
+                } label: {
+                    glyph("minus")
+                }
+                .menuStyle(.button)
+            } else {
+                Button {
+                    Task { await visit.follow(pursuitID) }
+                } label: {
+                    glyph("plus")
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(visit.busy.contains(pursuitID))
+        .accessibilityLabel(pursuit.following ? "Unfollow \(pursuit.displayTitle)" : "Follow \(pursuit.displayTitle)")
+        .accessibilityIdentifier("visit.pursuitFollow")
+    }
+
+    private func glyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+            .background(MosaicBrand.inkBlack, in: Circle())
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+    }
+
+    private func loadCover() async {
+        guard let file = coverFile else {
+            cover = nil
+            return
+        }
+        if let cached = MosaicThumbnail.cached(file) {
+            cover = cached
+            return
+        }
+        let url = store.mediaURL(for: file)
+        let image = await Task.detached(priority: .userInitiated) {
+            MosaicThumbnail.image(at: url, maxPixelSize: MosaicThumbnail.bubblePixelSize)
+        }.value
+        guard !Task.isCancelled, let image else { return }
+        MosaicThumbnail.store(image, for: file)
+        cover = image
+    }
+}
+
+/// Whose Mosaic to open, and optionally which of its Pursuits to open on.
+struct MosaicVisitTarget: Hashable, Sendable {
+    var person: MosaicPersonResult
+    var pursuitID: UUID?
+}
+
+/// Another person's Mosaic, opened from Discover. It is always in view mode.
+struct MosaicVisitView: View {
+    let person: MosaicPersonResult
+    var pursuitID: UUID?
+
+    init(target: MosaicVisitTarget) {
+        person = target.person
+        pursuitID = target.pursuitID
+    }
+
+    @Environment(\.mosaicAccount) private var account
+    @Environment(\.dismiss) private var dismiss
+
+    private enum Phase {
+        case loading
+        case failed
+        case noMosaic
+        case locked
+        case ready(ComposerStore, MosaicChrome, MosaicVisit, start: ComposerDocumentID?)
+    }
+
+    @State private var phase = Phase.loading
+    @State private var profile: MosaicVisitProfile?
+    @State private var progress: (done: Int, total: Int) = (0, 0)
+    @State private var requesting = false
+    @State private var showsFollowSheet = false
+    @State private var following = false
+
+    private let muted = Color.white.opacity(0.55)
+
+    var body: some View {
+        content
+            .background(MosaicBrand.inkBlack.ignoresSafeArea())
+            .environment(\.colorScheme, .dark)
+            .toolbar(.hidden, for: .navigationBar)
+            .task { await load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch phase {
+        case .loading:
+            VStack(spacing: 12) {
+                ProgressView()
+                    .tint(muted)
+                if progress.total > 0 {
+                    Text("\(progress.done) of \(progress.total)")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                        .monospacedDigit()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) { backChevron }
+        case .failed:
+            note("This Mosaic could not be opened.")
+        case .noMosaic:
+            note("@\(person.username) has not shared a Mosaic yet.")
+        case .locked:
+            lockedMosaic
+        case .ready(let store, let chrome, let visit, let start):
+            visitedMosaic(store: store, chrome: chrome, visit: visit, start: start)
+        }
+    }
+
+    private var backChevron: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 8)
+        .accessibilityLabel("Back")
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(muted)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) { backChevron }
+    }
+
+    // MARK: Private Mosaic
+
+    private var lockedMosaic: some View {
+        let requested = profile?.isRequested == true
+        return ZStack {
+            blurredBoard
+            VStack(spacing: 14) {
+                MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: 88)
+                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                VStack(spacing: 2) {
+                    Text(profile?.name ?? person.username)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text("@\(person.username)")
+                        .font(.subheadline)
+                        .foregroundStyle(muted)
+                }
+                Button {
+                    Task { await requestMosaic() }
+                } label: {
+                    Label(requested ? "Requested" : "Request to view", systemImage: "lock.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(requested ? .white : MosaicBrand.inkBlack)
+                        .padding(.horizontal, 18)
+                        .frame(height: 40)
+                        .background(requested ? Color.white.opacity(0.16) : .white, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(requested || requesting)
+                .padding(.top, 6)
+                .accessibilityIdentifier("visit.requestMosaic")
+            }
+        }
+        .overlay(alignment: .topLeading) { backChevron }
+        .refreshable { await load() }
+    }
+
+    /// Stand-in tiles behind the blur. Nothing from the private Mosaic is downloaded.
+    private var blurredBoard: some View {
+        GeometryReader { proxy in
+            let columns = 3
+            let gap: CGFloat = 10
+            let width = (proxy.size.width - gap * CGFloat(columns + 1)) / CGFloat(columns)
+            let heights: [CGFloat] = [150, 210, 120, 180, 240, 140, 200, 130, 170, 220, 160, 190]
+            HStack(alignment: .top, spacing: gap) {
+                ForEach(0..<columns, id: \.self) { column in
+                    VStack(spacing: gap) {
+                        ForEach(0..<4, id: \.self) { row in
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color.white.opacity(0.06 + Double((row + column) % 3) * 0.05))
+                                .frame(width: width, height: heights[(column * 4 + row) % heights.count])
+                        }
+                    }
+                }
+            }
+            .padding(gap)
+            .blur(radius: 18)
+        }
+        .ignoresSafeArea()
+    }
+
+    // MARK: Visible Mosaic
+
+    private func visitedMosaic(store: ComposerStore, chrome: MosaicChrome, visit: MosaicVisit, start: ComposerDocumentID?) -> some View {
+        MosaicComposerView(documentID: start)
+            .environment(store)
+            .environment(chrome)
+            .environment(visit)
+            .overlay(alignment: .bottomTrailing) {
+                if start == nil {
+                    HStack(spacing: 12) {
+                        MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: ComposerAddMenuMetrics.button)
+                            .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
+                            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                            .accessibilityLabel("@\(person.username)")
+                        followButton(visit: visit)
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 20)
+                }
+            }
+            .alert(
+                "Request to view \(visit.requestTarget?.displayTitle ?? "this Pursuit")?",
+                isPresented: Binding(
+                    get: { visit.requestTarget != nil },
+                    set: { if !$0 { visit.requestTarget = nil } }
+                ),
+                presenting: visit.requestTarget
+            ) { pursuit in
+                Button("Request") {
+                    Task { await visit.request(pursuit.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert(
+                visit.problem ?? "",
+                isPresented: Binding(
+                    get: { visit.problem != nil },
+                    set: { if !$0 { visit.problem = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            }
+            .sheet(isPresented: $showsFollowSheet) {
+                followSheet(visit: visit)
+                    .presentationDetents([.medium, .large])
+                    .presentationBackground(MosaicBrand.inkBlack)
+            }
+    }
+
+    @ViewBuilder
+    private func followButton(visit: MosaicVisit) -> some View {
+        let isFollowing = profile?.followsMosaic == true
+        Group {
+            if isFollowing {
+                Menu {
+                    Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
+                        Task { await unfollow(visit: visit) }
+                    }
+                } label: {
+                    followGlyph("person.fill.checkmark")
+                }
+                .menuStyle(.button)
+            } else {
+                Button {
+                    showsFollowSheet = true
+                } label: {
+                    followGlyph("person.fill.badge.plus")
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(following)
+        .accessibilityLabel(isFollowing ? "Following" : "Follow")
+        .accessibilityIdentifier("visit.followMosaic")
+    }
+
+    private func followGlyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+            .background(MosaicBrand.inkBlack, in: Circle())
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+    }
+
+    private func followSheet(visit: MosaicVisit) -> some View {
+        let pursuits = visit.publicPursuits
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: 40)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Follow @\(person.username)")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    if !pursuits.isEmpty {
+                        Text("You’ll also follow")
+                            .font(.caption)
+                            .foregroundStyle(muted)
+                    }
+                }
+            }
+            if !pursuits.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(pursuits) { pursuit in
+                            HStack(spacing: 10) {
+                                Image(systemName: pursuit.following ? "checkmark.circle.fill" : "circle.grid.2x2")
+                                    .font(.subheadline)
+                                    .foregroundStyle(muted)
+                                    .frame(width: 22)
+                                Text(pursuit.displayTitle)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 8)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+            Button {
+                Task { await followMosaic(visit: visit) }
+            } label: {
+                Text("Follow")
+                    .font(.headline)
+                    .foregroundStyle(MosaicBrand.inkBlack)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(following)
+            .accessibilityIdentifier("visit.confirmFollow")
+        }
+        .padding(20)
+        .environment(\.colorScheme, .dark)
+    }
+
+    // MARK: Loading and actions
+
+    private func connection() async -> (client: MosaicVisitClient, token: String)? {
+        guard let account,
+              let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken()
+        else { return nil }
+        return (MosaicVisitClient(config: config), token)
+    }
+
+    private func load() async {
+        guard let account, let link = await connection() else {
+            phase = .failed
+            return
+        }
+        let client = link.client, token = link.token
+        do {
+            guard let found = try await client.profile(userID: person.id, accessToken: token) else {
+                phase = .failed
+                return
+            }
+            profile = found
+            guard let mosaicID = found.mosaicID else {
+                phase = .noMosaic
+                return
+            }
+            guard found.canView else {
+                phase = .locked
+                return
+            }
+
+            async let boardsCall = client.boards(ownerID: found.userID, accessToken: token)
+            async let pursuitsCall = client.pursuits(ownerID: found.userID, accessToken: token)
+            let documents = try await boardsCall
+            let pursuits = try await pursuitsCall
+            guard let snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
+                phase = .failed
+                return
+            }
+
+            let location = Self.location(for: found.userID)
+            await downloadMedia(documents: documents, ownerID: found.userID, location: location, client: client, token: token)
+
+            let store = ComposerStore(seedSnapshot: snapshot, persistToDisk: false, location: location)
+            let visit = MosaicVisit(ownerID: found.userID, pursuits: pursuits, account: account, client: client)
+            let start = pursuitID.flatMap { wanted in
+                snapshot.pursuits.first { ComposerBoardSync.uuid($0.id) == wanted }?.id
+            }
+            phase = .ready(store, MosaicChrome(isVisiting: true), visit, start: start)
+        } catch {
+            phase = .failed
+        }
+    }
+
+    private static func location(for ownerID: UUID) -> ComposerStorageLocation {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return ComposerStorageLocation(
+            root: caches
+                .appendingPathComponent("Visits", isDirectory: true)
+                .appendingPathComponent(ownerID.uuidString.lowercased(), isDirectory: true)
+        )
+    }
+
+    private func downloadMedia(
+        documents: [ComposerSyncDocument],
+        ownerID: UUID,
+        location: ComposerStorageLocation,
+        client: MosaicVisitClient,
+        token: String
+    ) async {
+        let fileManager = FileManager.default
+        try? fileManager.createDirectory(at: location.mediaDirectory, withIntermediateDirectories: true)
+        var wanted: [String: String] = [:]
+        for document in documents {
+            for (fileName, assetID) in document.body.mediaAssets ?? [:] {
+                wanted[fileName] = assetID
+            }
+        }
+        let missing = wanted.filter { fileName, _ in
+            !fileManager.fileExists(atPath: location.mediaDirectory.appendingPathComponent(fileName).path)
+        }
+        progress = (wanted.count - missing.count, wanted.count)
+        guard !missing.isEmpty else { return }
+
+        let directory = location.mediaDirectory
+        await withTaskGroup(of: Void.self) { group in
+            var queue = Array(missing)
+            func next() -> Bool {
+                guard let (fileName, assetID) = queue.popLast() else { return false }
+                group.addTask {
+                    for path in MosaicVisitClient.objectPaths(ownerID: ownerID, assetID: assetID, fileName: fileName) {
+                        if let data = await client.download(path: path, accessToken: token) {
+                            try? data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
+                            return
+                        }
+                    }
+                }
+                return true
+            }
+            for _ in 0..<6 where next() {}
+            while await group.next() != nil {
+                progress.done += 1
+                _ = next()
+            }
+        }
+    }
+
+    private func requestMosaic() async {
+        guard let link = await connection(), let ownerID = profile?.userID else { return }
+        requesting = true
+        defer { requesting = false }
+        if let status = try? await link.client.requestMosaic(ownerID: ownerID, accessToken: link.token) {
+            profile?.requestStatus = status
+            if status == "accepted" {
+                await load()
+            }
+        }
+    }
+
+    private func followMosaic(visit: MosaicVisit) async {
+        guard let link = await connection(), let ownerID = profile?.userID else { return }
+        following = true
+        defer { following = false }
+        do {
+            try await link.client.followMosaic(ownerID: ownerID, accessToken: link.token)
+            profile?.followsMosaic = true
+            showsFollowSheet = false
+            await visit.refresh()
+        } catch {
+            visit.problem = "This Mosaic could not be followed."
+        }
+    }
+
+    private func unfollow(visit: MosaicVisit) async {
+        guard let link = await connection(), let ownerID = profile?.userID else { return }
+        following = true
+        defer { following = false }
+        do {
+            try await link.client.unfollowMosaic(ownerID: ownerID, accessToken: link.token)
+            profile?.followsMosaic = false
+            await visit.refresh()
+        } catch {
+            visit.problem = "This Mosaic could not be unfollowed."
+        }
+    }
+}

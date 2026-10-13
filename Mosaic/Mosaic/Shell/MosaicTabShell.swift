@@ -14,7 +14,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
         case .feed: "Feed"
         case .mosaic: "Mosaic"
         case .circle: "Circle"
-        case .search: "Search"
+        case .search: "Discover"
         }
     }
 
@@ -43,22 +43,52 @@ extension EnvironmentValues {
     }
 }
 
+private struct MosaicAccountEnvironmentKey: EnvironmentKey {
+    static let defaultValue: MosaicAccount? = nil
+}
+
+extension EnvironmentValues {
+    var mosaicAccount: MosaicAccount? {
+        get { self[MosaicAccountEnvironmentKey.self] }
+        set { self[MosaicAccountEnvironmentKey.self] = newValue }
+    }
+}
+
 @MainActor
 @Observable
 final class MosaicChrome {
-    var isViewing = false
+    /// Someone else's Mosaic. It stays in view mode.
+    let isVisiting: Bool
+    var isViewing = false {
+        didSet {
+            if isVisiting, !isViewing { isViewing = true }
+        }
+    }
+
+    init(isVisiting: Bool = false) {
+        self.isVisiting = isVisiting
+        self.isViewing = isVisiting
+    }
 }
 
 struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
+    @State private var remoteSync: ComposerRemoteSync
+    var account: MosaicAccount?
 
-    init(persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")) {
-        let store = ComposerStore(persistToDisk: persistToDisk)
+    init(
+        account: MosaicAccount? = nil,
+        persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
+    ) {
+        self.account = account
+        let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
+        let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
         store.blankPursuitPagesIfNeeded()
         _store = State(initialValue: store)
+        _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
     }
 
     var body: some View {
@@ -78,8 +108,17 @@ struct MosaicTabShell: View {
         .onAppear {
             MosaicTabBarStyling.apply()
         }
+        .task {
+            guard let account else { return }
+            store.onPersisted = { [weak store] in
+                guard let store else { return }
+                remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+            }
+            remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+        }
         .environment(store)
         .environment(chrome)
+        .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }
 
@@ -89,6 +128,10 @@ struct MosaicTabShell: View {
             Group {
                 if tab == .mosaic {
                     MosaicComposerView(documentID: nil)
+                } else if tab == .search {
+                    MosaicDiscoverView()
+                } else if tab == .circle {
+                    MosaicCircleView()
                 } else {
                     MosaicTabPlaceholder(tab: tab)
                 }
