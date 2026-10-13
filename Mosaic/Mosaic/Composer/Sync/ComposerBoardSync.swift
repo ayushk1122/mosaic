@@ -67,6 +67,49 @@ struct ComposerDocumentPush: Equatable, Sendable {
 enum ComposerBoardSync {
     static let privateVisibility = "private"
 
+    /// Document ids still reachable from the Mosaic board through Pursuit, node, scrapbook, and group links.
+    static func referencedIDs(in snapshot: ComposerSnapshot) -> Set<String> {
+        var seen = Set<String>()
+        func walkBlocks(_ blocks: [ComposerBlock]) {
+            for block in blocks {
+                if block.kind == .scrapbook {
+                    for pageID in block.scrapbookPageIDs {
+                        guard seen.insert(pageID.rawValue).inserted,
+                              let page = snapshot.pursuits.first(where: { $0.id == pageID })
+                        else { continue }
+                        walkBlocks(page.blocks)
+                    }
+                }
+                if (block.kind == .pursuit || block.kind == .node), let documentID = block.pursuitID {
+                    guard seen.insert(documentID.rawValue).inserted,
+                          let document = snapshot.pursuits.first(where: { $0.id == documentID })
+                    else { continue }
+                    walkBlocks(document.blocks)
+                }
+                walkBlocks(block.groupMembers)
+            }
+        }
+        walkBlocks(snapshot.mosaicBlocks)
+        return seen
+    }
+
+    /// Drops Pursuit, node, and page rows that no board still points to. Returns the removed ids.
+    @discardableResult
+    static func pruneUnreferenced(_ snapshot: inout ComposerSnapshot) -> [ComposerDocumentID] {
+        let keep = referencedIDs(in: snapshot)
+        let removed = snapshot.pursuits.filter { !keep.contains($0.id.rawValue) }.map(\.id)
+        guard !removed.isEmpty else { return [] }
+        let removedKeys = Set(removed.map(\.rawValue))
+        snapshot.pursuits.removeAll { removedKeys.contains($0.id.rawValue) }
+        return removed
+    }
+
+    /// Remote rows the phone no longer owns. The Mosaic id is never listed.
+    static func deadIDs(live: [UUID], remote: [UUID], mosaicID: UUID) -> [UUID] {
+        let liveSet = Set(live)
+        return remote.filter { $0 != mosaicID && !liveSet.contains($0) }
+    }
+
     /// Splits a local snapshot into server rows.
     /// Top-level Pursuits have no parent. Nodes and scrapbook pages parent to the board that contains them.
     static func split(snapshot: ComposerSnapshot, mosaicID: UUID) -> [ComposerSyncDocument] {

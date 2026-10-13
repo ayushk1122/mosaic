@@ -29,6 +29,13 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
         remote ?? local ?? UUID()
     }
 
+    /// A phone that never synced this account must not overwrite a Mosaic the server already has,
+    /// and a phone synced to one Mosaic must not write into another.
+    static func mayPush(local: UUID?, remote: UUID?) -> Bool {
+        guard let remote else { return true }
+        return local == remote
+    }
+
     private enum CodingKeys: String, CodingKey {
         case mosaicID, revisions, mediaAssets
     }
@@ -42,11 +49,11 @@ final class ComposerRemoteSync {
     private var wait: Task<Void, Never>?
     private var active = false
     private var again = false
-    private let fileManager: FileManager
+    private let location: ComposerStorageLocation
     private var mediaFile: (@MainActor (String) -> URL)?
 
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
+    init(location: ComposerStorageLocation = .shared()) {
+        self.location = location
     }
 
     func schedule(
@@ -88,6 +95,7 @@ final class ComposerRemoteSync {
         do {
             var state = loadState()
             let remoteMosaicID = try await client.ownMosaicID(accessToken: accessToken)
+            guard ComposerSyncState.mayPush(local: state?.mosaicID, remote: remoteMosaicID) else { return }
             let mosaicID = ComposerSyncState.choosingMosaicID(local: state?.mosaicID, remote: remoteMosaicID)
             if state?.mosaicID != mosaicID {
                 state = ComposerSyncState(
@@ -110,7 +118,23 @@ final class ComposerRemoteSync {
                 revisions[document.id.uuidString.lowercased()] = next
                 saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
             }
-            guard let userID = account.session?.userID, let mediaFile else { return }
+            guard let userID = account.session?.userID else { return }
+            let liveIDs = documents.map(\.id)
+            if let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
+                let dead = ComposerBoardSync.deadIDs(live: liveIDs, remote: remoteIDs, mosaicID: mosaicID)
+                if !dead.isEmpty {
+                    try? await client.deleteMedia(forDocumentIDs: dead, accessToken: accessToken)
+                    try? await client.deleteDocuments(ids: dead, accessToken: accessToken)
+                    let deadKeys = Set(dead.map { $0.uuidString.lowercased() })
+                    revisions = revisions.filter { !deadKeys.contains($0.key) }
+                    let liveFiles = Set(
+                        ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID).map(\.fileName)
+                    )
+                    mediaAssets = mediaAssets.filter { liveFiles.contains($0.key) }
+                    saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
+                }
+            }
+            guard let mediaFile else { return }
             mediaAssets = await uploadMedia(
                 references: ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID),
                 assets: mediaAssets,
@@ -199,19 +223,13 @@ final class ComposerRemoteSync {
     }
 
     private func loadState() -> ComposerSyncState? {
-        let url = stateURL()
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: location.syncStateURL) else { return nil }
         return try? JSONDecoder().decode(ComposerSyncState.self, from: data)
     }
 
     private func saveState(_ state: ComposerSyncState) {
-        let url = stateURL()
         guard let data = try? JSONEncoder().encode(state) else { return }
-        try? data.write(to: url, options: .atomic)
-    }
-
-    private func stateURL() -> URL {
-        fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("sync-state.json")
+        try? FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
+        try? data.write(to: location.syncStateURL, options: .atomic)
     }
 }

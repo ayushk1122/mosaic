@@ -210,6 +210,23 @@ final class MosaicAccount {
         lastError = message
     }
 
+    /// Ends the session on this phone. The boards stay on the device.
+    func signOut() async {
+        let ending = session
+        session = nil
+        lastError = nil
+        MosaicSessionKeychain.clear()
+        guard let config, let ending else { return }
+        var components = URLComponents(url: config.url.appending(path: "auth/v1/logout"), resolvingAgainstBaseURL: false)
+        components?.query = "scope=local"
+        guard let url = components?.url else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(ending.accessToken)", forHTTPHeaderField: "Authorization")
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
     func accessToken() async -> String? {
         guard let config, var current = session else { return nil }
         if current.expiresAt < Date().addingTimeInterval(60) {

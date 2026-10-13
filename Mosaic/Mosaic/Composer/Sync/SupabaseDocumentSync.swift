@@ -48,6 +48,86 @@ struct SupabaseDocumentSync: Sendable {
         return try Self.revision(from: data)
     }
 
+    /// Every board row the signed-in owner still has on the server.
+    func listOwnDocumentIDs(ownerID: UUID, accessToken: String) async throws -> [UUID] {
+        let url = Self.ownDocumentsURL(base: config.url, ownerID: ownerID)
+        var request = URLRequest(url: url)
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+        return try Self.documentIDs(from: data)
+    }
+
+    /// Removes dead boards. Child rows cascade when their parent is deleted.
+    func deleteDocuments(ids: [UUID], accessToken: String) async throws {
+        guard !ids.isEmpty else { return }
+        let url = Self.deleteDocumentsURL(base: config.url, ids: ids)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+    }
+
+    /// Drops media rows that pointed at boards about to be deleted.
+    func deleteMedia(forDocumentIDs ids: [UUID], accessToken: String) async throws {
+        guard !ids.isEmpty else { return }
+        let url = Self.deleteMediaURL(base: config.url, documentIDs: ids)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+    }
+
+    static func ownDocumentsURL(base: URL, ownerID: UUID) -> URL {
+        var components = URLComponents(url: base.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
+            URLQueryItem(name: "select", value: "id")
+        ]
+        return components?.url ?? base
+    }
+
+    static func deleteDocumentsURL(base: URL, ids: [UUID]) -> URL {
+        var components = URLComponents(url: base.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)
+        let list = ids.map { $0.uuidString.lowercased() }.joined(separator: ",")
+        components?.queryItems = [
+            URLQueryItem(name: "id", value: "in.(\(list))")
+        ]
+        return components?.url ?? base
+    }
+
+    static func deleteMediaURL(base: URL, documentIDs: [UUID]) -> URL {
+        var components = URLComponents(url: base.appending(path: "rest/v1/media_assets"), resolvingAgainstBaseURL: false)
+        let list = documentIDs.map { $0.uuidString.lowercased() }.joined(separator: ",")
+        components?.queryItems = [
+            URLQueryItem(name: "document_id", value: "in.(\(list))")
+        ]
+        return components?.url ?? base
+    }
+
+    static func documentIDs(from data: Data) throws -> [UUID] {
+        let json = try JSONSerialization.jsonObject(with: data)
+        guard let rows = json as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        return rows.compactMap { row in
+            (row["id"] as? String).flatMap(UUID.init(uuidString:))
+        }
+    }
+
     static func saveBody(_ push: ComposerDocumentPush) throws -> [String: Any] {
         let encoder = JSONEncoder()
         let bodyData = try encoder.encode(push.document.body)
@@ -68,7 +148,7 @@ struct SupabaseDocumentSync: Sendable {
     }
 
     static func optionalRevision(from data: Data) -> Int64? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) else { return nil }
         if let rows = json as? [[String: Any]] {
             guard let value = rows.first?["revision"] as? NSNumber else { return nil }
             return value.int64Value
@@ -80,7 +160,7 @@ struct SupabaseDocumentSync: Sendable {
     }
 
     static func revision(from data: Data) throws -> Int64 {
-        let json = try JSONSerialization.jsonObject(with: data)
+        let json = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
         if let rows = json as? [[String: Any]], let value = rows.first?["revision"] as? NSNumber {
             return value.int64Value
         }
@@ -91,7 +171,7 @@ struct SupabaseDocumentSync: Sendable {
     }
 
     static func mosaicID(from data: Data) -> UUID? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) else { return nil }
         if json is NSNull { return nil }
         if let text = json as? String { return UUID(uuidString: text) }
         return nil

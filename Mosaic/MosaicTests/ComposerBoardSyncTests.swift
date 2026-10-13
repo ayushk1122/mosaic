@@ -32,6 +32,100 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func pruneAndDeadIDsDropBoardsNothingPointsAt() {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuitBlockID = store.addBlock(.pursuit, to: nil)
+        let pursuitID = store.block(with: pursuitBlockID, in: nil)?.pursuitID
+        let scrapbookID = store.addBlock(.scrapbook, to: pursuitID)
+        let pageIDs = store.block(with: scrapbookID, in: pursuitID)?.scrapbookPageIDs ?? []
+        #expect(pageIDs.count == 2)
+
+        store.deleteBlock(pursuitBlockID, in: nil)
+        #expect(store.snapshot.pursuits.isEmpty)
+        #expect(pageIDs.allSatisfy { store.pursuit(for: $0) == nil })
+
+        var orphaned = ComposerSnapshot.empty
+        let live = ComposerDocumentID()
+        let deadPage = ComposerDocumentID()
+        orphaned.pursuits = [
+            ComposerPursuit(id: live, title: "Gym", blocks: [], role: .pursuit),
+            ComposerPursuit(id: deadPage, title: "Page 7", blocks: [], role: .page)
+        ]
+        orphaned.mosaicBlocks = [
+            {
+                var block = ComposerBlock.make(kind: .pursuit, position: BlockPosition(x: 0.2, y: 0.2))
+                block.pursuitID = live
+                return block
+            }()
+        ]
+        let removed = ComposerBoardSync.pruneUnreferenced(&orphaned)
+        #expect(removed == [deadPage])
+        #expect(orphaned.pursuits.map(\.id) == [live])
+
+        let mosaicID = UUID()
+        let liveUUID = UUID(uuidString: live.rawValue) ?? UUID()
+        let deadUUID = UUID(uuidString: deadPage.rawValue) ?? UUID()
+        let dead = ComposerBoardSync.deadIDs(
+            live: [mosaicID, liveUUID],
+            remote: [mosaicID, liveUUID, deadUUID],
+            mosaicID: mosaicID
+        )
+        #expect(dead == [deadUUID])
+
+        let base = URL(string: "https://example.supabase.co")!
+        let owner = UUID(uuidString: "00000000-0000-0000-0000-00000000000a")!
+        let listed = SupabaseDocumentSync.ownDocumentsURL(base: base, ownerID: owner)
+        #expect(listed.absoluteString.contains("owner_id=eq.00000000-0000-0000-0000-00000000000a"))
+        let deleteURL = SupabaseDocumentSync.deleteDocumentsURL(base: base, ids: [deadUUID])
+        #expect(deleteURL.absoluteString.contains("id=in.(\(deadUUID.uuidString.lowercased()))"))
+    }
+
+    @Test
+    func eachAccountKeepsItsOwnBoards() throws {
+        let synced = UUID()
+        #expect(ComposerLegacyStorage.shouldClaim(legacyMosaicID: synced, serverMosaicID: synced))
+        #expect(!ComposerLegacyStorage.shouldClaim(legacyMosaicID: synced, serverMosaicID: nil))
+        #expect(!ComposerLegacyStorage.shouldClaim(legacyMosaicID: synced, serverMosaicID: UUID()))
+        #expect(ComposerLegacyStorage.shouldClaim(legacyMosaicID: nil, serverMosaicID: nil))
+        #expect(!ComposerLegacyStorage.shouldClaim(legacyMosaicID: nil, serverMosaicID: UUID()))
+
+        #expect(ComposerSyncState.mayPush(local: nil, remote: nil))
+        #expect(ComposerSyncState.mayPush(local: synced, remote: synced))
+        #expect(!ComposerSyncState.mayPush(local: nil, remote: synced))
+        #expect(!ComposerSyncState.mayPush(local: UUID(), remote: synced))
+
+        let first = UUID()
+        let second = UUID()
+        #expect(ComposerStorageLocation.account(first).root != ComposerStorageLocation.account(second).root)
+        #expect(ComposerStorageLocation.account(first).root.path.hasSuffix("Accounts/\(first.uuidString.lowercased())"))
+
+        let fileManager = FileManager.default
+        let temp = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: temp) }
+        let legacy = ComposerStorageLocation(root: temp)
+        let target = ComposerStorageLocation(root: temp.appendingPathComponent("Accounts/a", isDirectory: true))
+        try fileManager.createDirectory(at: legacy.mediaDirectory, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: legacy.snapshotURL)
+        try fileManager.createDirectory(at: target.root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(ComposerSnapshot.empty).write(to: target.snapshotURL)
+        #expect(ComposerLegacyStorage.isBlank(target, fileManager: fileManager))
+        try Data("jpg".utf8).write(to: legacy.mediaDirectory.appendingPathComponent("day.jpg"))
+        let state = ComposerSyncState(mosaicID: synced)
+        try JSONEncoder().encode(state).write(to: legacy.syncStateURL)
+        #expect(ComposerLegacyStorage.legacyMosaicID(in: legacy) == synced)
+
+        #expect(try ComposerLegacyStorage.claim(from: legacy, to: target, fileManager: fileManager))
+        #expect(fileManager.fileExists(atPath: target.snapshotURL.path))
+        #expect(fileManager.fileExists(atPath: target.mediaDirectory.appendingPathComponent("day.jpg").path))
+        #expect(fileManager.fileExists(atPath: target.syncStateURL.path))
+        #expect(!fileManager.fileExists(atPath: legacy.snapshotURL.path))
+        #expect(try !ComposerLegacyStorage.claim(from: legacy, to: target, fileManager: fileManager))
+
+        let store = ComposerStore(fileManager: fileManager, persistToDisk: true, location: target)
+        #expect(store.mediaURL(for: "day.jpg") == target.mediaDirectory.appendingPathComponent("day.jpg"))
+    }
+
+    @Test
     func assembleRestoresTheBoards() {
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         store.addBlock(.text, to: nil)
@@ -81,6 +175,10 @@ struct ComposerBoardSyncTests {
         #expect(try SupabaseDocumentSync.revision(from: data) == 3)
         #expect(SupabaseDocumentSync.error(from: Data("revision conflict".utf8), status: 400) == .revisionConflict)
         #expect(SupabaseDocumentSync.mosaicID(from: Data("null".utf8)) == nil)
+        #expect(
+            SupabaseDocumentSync.mosaicID(from: Data(#""65c2a70f-dfb3-40a0-a76c-96a6e721fd22""#.utf8))
+                == UUID(uuidString: "65C2A70F-DFB3-40A0-A76C-96A6E721FD22")
+        )
     }
 
     @Test
@@ -148,6 +246,51 @@ struct ComposerBoardSyncTests {
         )
         #expect(state.mediaAssets.isEmpty)
         #expect(state.revisions["a"] == 1)
+    }
+
+    @Test
+    func settingsListUsesLocalTitlesAndServerPrivacy() {
+        let mosaicID = UUID()
+        let synced = UUID()
+        let waiting = UUID()
+        var snapshot = ComposerSnapshot.empty
+        snapshot.mosaicTitle = "  Studio  "
+        snapshot.pursuits = [
+            ComposerPursuit(id: ComposerDocumentID(rawValue: synced.uuidString), title: "Golf", blocks: []),
+            ComposerPursuit(id: ComposerDocumentID(rawValue: waiting.uuidString), title: "", blocks: [])
+        ]
+        let listed = MosaicSettingsList.rows(
+            snapshot: snapshot,
+            remote: [
+                MosaicRemoteBoard(id: mosaicID, role: "mosaic", title: "Server", isPublic: true),
+                MosaicRemoteBoard(id: synced, role: "pursuit", title: "Old", isPublic: false)
+            ]
+        )
+        #expect(listed.mosaic?.title == "Studio")
+        #expect(listed.mosaic?.isPublic == true)
+        #expect(listed.mosaic?.canChange == true)
+        #expect(listed.pursuits.map(\.title) == ["Golf", "Pursuit"])
+        #expect(listed.pursuits.map(\.canChange) == [true, false])
+        #expect(MosaicSettingsList.displayName(from: "  Ada Lovelace  ") == "Ada Lovelace")
+    }
+
+    @Test
+    func usernameFollowsTheServerRule() {
+        #expect(MosaicSettingsList.username(from: "  @Ada_Golf ") == "ada_golf")
+        #expect(MosaicSettingsList.typedUsername("@@Ada_Golf") == "ada_golf")
+        #expect(MosaicSettingsList.usernameProblems("ada_golf").isEmpty)
+        #expect(MosaicSettingsList.usernameProblems("ab") == ["Use at least 3 characters."])
+        #expect(MosaicSettingsList.usernameProblems(String(repeating: "a", count: 21)) == ["Use 20 characters or fewer."])
+        #expect(MosaicSettingsList.usernameProblems("a-") == [
+            "Use at least 3 characters.",
+            "Use only letters, numbers, and underscores."
+        ])
+        #expect(MosaicSettingsList.usernameProblems("ada golf") == ["Use only letters, numbers, and underscores."])
+        let lookup = MosaicSettingsClient.usernameURL(base: URL(string: "https://example.supabase.co")!, username: "ada_golf")
+        #expect(lookup.absoluteString == "https://example.supabase.co/rest/v1/profiles?username=eq.ada_golf&select=id")
+        #expect(MosaicSettingsClient.usernameError(status: 409, body: Data()) == .taken)
+        #expect(MosaicSettingsClient.usernameError(status: 400, body: Data(#"{"code":"23505"}"#.utf8)) == .taken)
+        #expect(MosaicSettingsClient.usernameError(status: 400, body: Data(#"{"code":"23514"}"#.utf8)) == .failed)
     }
 
     @Test

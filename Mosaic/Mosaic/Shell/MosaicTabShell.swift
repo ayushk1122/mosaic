@@ -43,6 +43,17 @@ extension EnvironmentValues {
     }
 }
 
+private struct MosaicAccountEnvironmentKey: EnvironmentKey {
+    static let defaultValue: MosaicAccount? = nil
+}
+
+extension EnvironmentValues {
+    var mosaicAccount: MosaicAccount? {
+        get { self[MosaicAccountEnvironmentKey.self] }
+        set { self[MosaicAccountEnvironmentKey.self] = newValue }
+    }
+}
+
 @MainActor
 @Observable
 final class MosaicChrome {
@@ -53,7 +64,7 @@ struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
-    @State private var remoteSync = ComposerRemoteSync()
+    @State private var remoteSync: ComposerRemoteSync
     var account: MosaicAccount?
 
     init(
@@ -61,10 +72,12 @@ struct MosaicTabShell: View {
         persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
     ) {
         self.account = account
-        let store = ComposerStore(persistToDisk: persistToDisk)
+        let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
+        let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
         store.blankPursuitPagesIfNeeded()
         _store = State(initialValue: store)
+        _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
     }
 
     var body: some View {
@@ -94,6 +107,7 @@ struct MosaicTabShell: View {
         }
         .environment(store)
         .environment(chrome)
+        .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }
 

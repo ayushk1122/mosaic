@@ -27,6 +27,7 @@ private struct MosaicRootView: View {
         : .animating
     @State private var account = MosaicAccount()
     @State private var restoredSession = false
+    @State private var preparedUserID: UUID?
 
     private var skipsAccount: Bool {
         ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
@@ -51,6 +52,11 @@ private struct MosaicRootView: View {
             await account.restore()
             restoredSession = true
         }
+        .onChange(of: account.session?.userID) { _, userID in
+            if userID == nil {
+                preparedUserID = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -59,10 +65,19 @@ private struct MosaicRootView: View {
             ContentView()
         } else if !restoredSession {
             MosaicBrand.cream.ignoresSafeArea()
-        } else if account.session == nil {
-            MosaicSignInView(account: account)
+        } else if let userID = account.session?.userID {
+            if preparedUserID == userID {
+                ContentView(account: account)
+                    .id(userID)
+            } else {
+                MosaicBrand.cream.ignoresSafeArea()
+                    .task(id: userID) {
+                        await ComposerLegacyStorage.prepare(for: account)
+                        preparedUserID = userID
+                    }
+            }
         } else {
-            ContentView(account: account)
+            MosaicSignInView(account: account)
         }
     }
 }

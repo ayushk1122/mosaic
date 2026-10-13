@@ -16,6 +16,7 @@ final class ComposerStore {
 
     private let fileManager: FileManager
     private let persistToDisk: Bool
+    let location: ComposerStorageLocation
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     /// Called after a successful local save. Sync uses this to push the board.
@@ -24,18 +25,25 @@ final class ComposerStore {
     init(
         fileManager: FileManager = .default,
         seedSnapshot: ComposerSnapshot? = nil,
-        persistToDisk: Bool? = nil
+        persistToDisk: Bool? = nil,
+        location: ComposerStorageLocation? = nil
     ) {
         self.fileManager = fileManager
         self.persistToDisk = persistToDisk ?? !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
+        self.location = location ?? .shared(fileManager: fileManager)
+        var shouldPersistPrune = false
         if let seedSnapshot {
             snapshot = seedSnapshot
         } else if !self.persistToDisk {
             snapshot = .empty
-        } else if let loaded = Self.loadSnapshot(fileManager: fileManager, decoder: decoder) {
+        } else if let loaded = Self.loadSnapshot(at: self.location.snapshotURL, fileManager: fileManager, decoder: decoder) {
             snapshot = loaded
+            shouldPersistPrune = !ComposerBoardSync.pruneUnreferenced(&snapshot).isEmpty
         } else {
             snapshot = .empty
+        }
+        if shouldPersistPrune {
+            persist()
         }
     }
 
@@ -241,10 +249,8 @@ final class ComposerStore {
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         let removed = blocks(for: documentID).first(where: { $0.id == blockID })
-        captureUndo(
-            in: documentID,
-            includePursuits: removed?.kind == .pursuit || removed?.kind == .node || removed?.kind == .scrapbook
-        )
+        let owned = removed.map { ownedDocuments(of: $0) } ?? []
+        captureUndo(in: documentID, includePursuits: !owned.isEmpty)
         mutateBlocks(for: documentID) { blocks in
             blocks.removeAll { $0.id == blockID }
             if removed?.kind == .tabs {
@@ -253,12 +259,9 @@ final class ComposerStore {
                 }
             }
         }
-        if (removed?.kind == .pursuit || removed?.kind == .node), let pursuitID = removed?.pursuitID {
-            snapshot.pursuits.removeAll { $0.id == pursuitID }
-        }
-        if removed?.kind == .scrapbook {
-            let pageIDs = Set(removed?.scrapbookPageIDs ?? [])
-            snapshot.pursuits.removeAll { pageIDs.contains($0.id) }
+        if !owned.isEmpty {
+            let ownedIDs = Set(owned.map(\.id))
+            snapshot.pursuits.removeAll { ownedIDs.contains($0.id) }
         }
         persist()
     }
@@ -483,7 +486,7 @@ final class ComposerStore {
     }
 
     func saveMediaData(_ data: Data, fileExtension: String = "jpg") throws -> String {
-        let directory = Self.mediaDirectory(fileManager: fileManager)
+        let directory = location.mediaDirectory
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let fileName = "\(UUID().uuidString).\(fileExtension)"
         let url = directory.appendingPathComponent(fileName)
@@ -492,7 +495,7 @@ final class ComposerStore {
     }
 
     func saveMediaFile(from source: URL, removeSource: Bool = false) throws -> String {
-        let directory = Self.mediaDirectory(fileManager: fileManager)
+        let directory = location.mediaDirectory
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
         let fileName = "\(UUID().uuidString).\(ext)"
@@ -563,7 +566,7 @@ final class ComposerStore {
     }
 
     func mediaURL(for fileName: String) -> URL {
-        Self.mediaDirectory(fileManager: fileManager).appendingPathComponent(fileName)
+        location.mediaDirectory.appendingPathComponent(fileName)
     }
 
     enum MoveDirection {
@@ -725,7 +728,7 @@ final class ComposerStore {
     private func persist() {
         guard persistToDisk else { return }
         do {
-            let url = Self.snapshotURL(fileManager: fileManager)
+            let url = location.snapshotURL
             try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: url, options: .atomic)
@@ -735,8 +738,7 @@ final class ComposerStore {
         }
     }
 
-    private static func loadSnapshot(fileManager: FileManager, decoder: JSONDecoder) -> ComposerSnapshot? {
-        let url = snapshotURL(fileManager: fileManager)
+    private static func loadSnapshot(at url: URL, fileManager: FileManager, decoder: JSONDecoder) -> ComposerSnapshot? {
         guard fileManager.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let snapshot = try? decoder.decode(ComposerSnapshot.self, from: data)
@@ -744,14 +746,6 @@ final class ComposerStore {
             return nil
         }
         return snapshot
-    }
-
-    private static func snapshotURL(fileManager: FileManager) -> URL {
-        documentsDirectory(fileManager: fileManager).appendingPathComponent("composer.json")
-    }
-
-    private static func mediaDirectory(fileManager: FileManager) -> URL {
-        documentsDirectory(fileManager: fileManager).appendingPathComponent("Media", isDirectory: true)
     }
 
     private struct ComposerUndoEntry {
@@ -763,9 +757,5 @@ final class ComposerStore {
         var documentKey: String
         var blockID: ComposerBlockID
         var at: Date
-    }
-
-    private static func documentsDirectory(fileManager: FileManager) -> URL {
-        fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 }

@@ -9,6 +9,7 @@ struct MosaicComposerView: View {
 
     @Environment(ComposerStore.self) private var store
     @Environment(MosaicChrome.self) private var chrome
+    @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -59,6 +60,7 @@ struct MosaicComposerView: View {
     @State private var clipboardMenuBlockID: ComposerBlockID?
     @State private var pasteAnchor: CGPoint?
     @State private var clipboardPressTask: Task<Void, Never>?
+    @State private var showsSettings = false
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -79,15 +81,30 @@ struct MosaicComposerView: View {
             dismiss()
         } label: {
             Image(systemName: "chevron.left")
-                .font(.body.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(Color.white.opacity(0.14), in: Circle())
+                .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+                .background(MosaicBrand.inkBlack, in: Circle())
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
-        .padding(.leading, 16)
-        .padding(.top, 8)
         .accessibilityLabel("Back")
+    }
+
+    private var settingsButton: some View {
+        Button {
+            showsSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
+                .background(MosaicBrand.inkBlack, in: Circle())
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("composer.settings")
     }
 
     private func bannerHeader(_ block: ComposerBlock) -> some View {
@@ -178,6 +195,11 @@ struct MosaicComposerView: View {
             .navigationDestination(item: $openedPursuitID) { pursuitID in
                 MosaicComposerView(documentID: pursuitID)
             }
+            .fullScreenCover(isPresented: $showsSettings) {
+                if let account {
+                    MosaicSettingsView(account: account, store: store)
+                }
+            }
             .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
             .environment(\.composerPaperPage, isBookPage)
     }
@@ -211,11 +233,6 @@ struct MosaicComposerView: View {
                 )
                 guard rounded != trashDropZoneFrame else { return }
                 trashDropZoneFrame = rounded
-            }
-            .overlay(alignment: .topLeading) {
-                if documentID != nil, !isBookPage, focusedMedia == nil, openScrapbookID == nil {
-                    backButton
-                }
             }
             .background {
                 ComposerBoardBackdrop(
@@ -333,10 +350,20 @@ struct MosaicComposerView: View {
     private var coveredBoard: some View {
         boardColumn
             .overlay(alignment: .bottomLeading) {
-                if !chrome.isViewing, !isGrouping {
-                    undoButton
-                        .padding(.leading, 20)
-                        .padding(.bottom, 20)
+                if !isBookPage, focusedMedia == nil, openScrapbookID == nil {
+                    HStack(alignment: .bottom, spacing: 12) {
+                        if documentID != nil {
+                            backButton
+                        }
+                        if account != nil, !chrome.isViewing, !isGrouping {
+                            settingsButton
+                        }
+                        if !chrome.isViewing, !isGrouping {
+                            undoButton
+                        }
+                    }
+                    .padding(.leading, 20)
+                    .padding(.bottom, 20)
                 }
             }
             .overlay {
