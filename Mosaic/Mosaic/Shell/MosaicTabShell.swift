@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 
 enum MosaicTab: String, CaseIterable, Identifiable {
-    case feed
     case mosaic
     case circle
     case search
@@ -11,7 +10,6 @@ enum MosaicTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .feed: "Feed"
         case .mosaic: "Mosaic"
         case .circle: "Circle"
         case .search: "Discover"
@@ -20,7 +18,6 @@ enum MosaicTab: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .feed: "rectangle.stack"
         case .mosaic: "square.grid.2x2"
         case .circle: "person.2"
         case .search: "magnifyingglass"
@@ -80,12 +77,16 @@ struct MosaicTabShell: View {
     @State private var downloadAttempt = 0
     @State private var remoteSync: ComposerRemoteSync
     var account: MosaicAccount?
+    /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
+    var linkedUsername: Binding<String?>
 
     init(
         account: MosaicAccount? = nil,
+        linkedUsername: Binding<String?> = .constant(nil),
         persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
     ) {
         self.account = account
+        self.linkedUsername = linkedUsername
         let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
         let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
@@ -156,8 +157,12 @@ struct MosaicTabShell: View {
             }
         }
         .environment(\.composerMediaVersions, store.mediaVersions)
+        .onChange(of: linkedUsername.wrappedValue, initial: true) { _, name in
+            if name != nil { selection = .search }
+        }
         .environment(store)
         .environment(chrome)
+        .environment(remoteSync)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }
@@ -166,14 +171,13 @@ struct MosaicTabShell: View {
     private func tabRoot(for tab: MosaicTab) -> some View {
         NavigationStack {
             Group {
-                if tab == .mosaic {
+                switch tab {
+                case .mosaic:
                     MosaicComposerView(documentID: nil)
-                } else if tab == .search {
-                    MosaicDiscoverView()
-                } else if tab == .circle {
+                case .search:
+                    MosaicDiscoverView(linkedUsername: linkedUsername) { selection = .mosaic }
+                case .circle:
                     MosaicCircleView()
-                } else {
-                    MosaicTabPlaceholder(tab: tab)
                 }
             }
             .toolbar(chrome.isViewing ? .hidden : .visible, for: .tabBar)
@@ -226,25 +230,6 @@ private enum MosaicTabBarStyling {
         UITabBar.appearance().scrollEdgeAppearance = appearance
         UITabBar.appearance().tintColor = selected
         UITabBar.appearance().unselectedItemTintColor = normal
-    }
-}
-
-private struct MosaicTabPlaceholder: View {
-    let tab: MosaicTab
-
-    @Environment(\.mosaicTabBarHidden) private var tabBarHidden
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
-        .navigationTitle(tab.title)
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar(tabBarHidden ? .hidden : .visible, for: .tabBar)
-        .accessibilityIdentifier(tab.screenAccessibilityIdentifier)
-        .accessibilityLabel(tab.title)
     }
 }
 

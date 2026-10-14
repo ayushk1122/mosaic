@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 import UIKit
 @testable import Mosaic
@@ -147,6 +148,43 @@ struct ComposerBoardSyncTests {
             == "https://example.supabase.co/storage/v1/object/avatars/a/b.jpg")
         #expect(MosaicSettingsClient.avatarReadURL(base: base, path: "a/b.jpg").absoluteString
             == "https://example.supabase.co/storage/v1/object/authenticated/avatars/a/b.jpg")
+
+        let framed = try #require(MosaicAvatar.jpeg(from: wide, zoom: 2, pan: CGSize(width: 0.3, height: -0.1)))
+        #expect(try #require(UIImage(data: framed)).size.width == 512)
+    }
+
+    @Test
+    func avatarFramingKeepsTheCircleCovered() {
+        let wide = CGSize(width: 1200, height: 800)
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 1, pan: .zero) == CGRect(x: 200, y: 0, width: 800, height: 800))
+        // Moving the photo right shows more of its left edge, and stops at that edge.
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 1, pan: CGSize(width: 0.25, height: 0)).minX == 0)
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 1, pan: CGSize(width: 5, height: 5))
+            == CGRect(x: 0, y: 0, width: 800, height: 800))
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 2, pan: .zero) == CGRect(x: 400, y: 200, width: 400, height: 400))
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 2, pan: CGSize(width: -9, height: 9))
+            == CGRect(x: 800, y: 0, width: 400, height: 400))
+        #expect(MosaicAvatar.cropRect(imageSize: wide, zoom: 10, pan: .zero).width == 200)
+        #expect(MosaicAvatar.clampedPan(CGSize(width: 1, height: 1), imageSize: wide, zoom: 1) == CGSize(width: 0.25, height: 0))
+    }
+
+    @Test
+    func avatarCropperStaysScreenWideForAPanorama() {
+        let panorama = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 500)).image { _ in }
+        let host = UIHostingController(rootView: MosaicAvatarCropper(image: panorama, onCancel: {}, onSave: { _ in }))
+        #expect(host.sizeThatFits(in: CGSize(width: 402, height: 874)).width <= 402)
+    }
+
+    @Test
+    func mosaicLinksNameAUsername() throws {
+        #expect(MosaicLink.url(username: "@Ayush")?.absoluteString == "mosaic://@ayush")
+        #expect(MosaicLink.url(username: "") == nil)
+        #expect(MosaicLink.username(from: try #require(URL(string: "mosaic://@ayush"))) == "ayush")
+        #expect(MosaicLink.username(from: try #require(URL(string: "mosaic://@Ayush_2/"))) == "ayush_2")
+        #expect(MosaicLink.username(from: try #require(URL(string: "mosaic://@ayush?ref=copy"))) == "ayush")
+        #expect(MosaicLink.username(from: try #require(URL(string: "mosaic://login-callback?code=x"))) == nil)
+        #expect(MosaicLink.username(from: try #require(URL(string: "mosaic://@a"))) == nil)
+        #expect(MosaicLink.username(from: try #require(URL(string: "https://example.com/@ayush"))) == nil)
     }
 
     @Test
@@ -290,6 +328,73 @@ struct ComposerBoardSyncTests {
         #expect(boards.map(\.id) == [mosaic, golf])
         #expect(boards.first?.body.mediaAssets == ["a.jpg": "x"])
         #expect(boards.last?.parentID == mosaic)
+    }
+
+    @Test
+    func visitLocksPrivatePursuitsAndDropsTheirBoards() throws {
+        let mosaic = UUID(), golf = UUID(), family = UUID(), travel = UUID(), unlisted = UUID()
+        let me = UUID(), journal = UUID()
+        let node = UUID(), page = UUID(), golfNode = UUID(), journalNode = UUID()
+        func id(_ value: UUID) -> String { value.uuidString.lowercased() }
+        let pursuits = try MosaicVisitClient.pursuits(from: Data("""
+        [{"pursuit_id":"\(id(golf))","title":"Golf","visibility":"public","can_open":true,"request_status":null,"following":false},
+         {"pursuit_id":"\(id(family))","title":"Family","visibility":"private","can_open":false,"request_status":"pending","following":false},
+         {"pursuit_id":"\(id(travel))","title":"Travel","visibility":"private","can_open":false,"request_status":"declined","following":false},
+         {"pursuit_id":"\(id(me))","title":"Me","visibility":"private","can_open":true,"request_status":"accepted","following":false},
+         {"pursuit_id":"\(id(journal))","title":"Journal","visibility":"private","can_open":true,"request_status":"accepted","following":true}]
+        """.utf8))
+        let byID = Dictionary(uniqueKeysWithValues: pursuits.map { ($0.id, $0) })
+        #expect(MosaicVisit.access(byID[golf]) == .open)
+        #expect(MosaicVisit.access(byID[family]) == .pending)
+        #expect(MosaicVisit.access(byID[travel]) == .locked)
+        #expect(MosaicVisit.access(byID[unlisted]) == .locked)
+        #expect(MosaicVisit.access(byID[me]) == .locked)
+        #expect(MosaicVisit.access(byID[journal]) == .open)
+        #expect(MosaicVisit.requestProblem(byID[family]) == nil)
+        #expect(MosaicVisit.requestProblem(byID[journal]) == nil)
+        #expect(MosaicVisit.requestProblem(byID[travel]) != nil)
+        #expect(MosaicVisit.requestProblem(byID[me]) != nil)
+        #expect(MosaicVisit.status(afterRequestReply: nil) == "pending")
+        #expect(MosaicVisit.status(afterRequestReply: "requested") == "pending")
+        #expect(MosaicVisit.status(afterRequestReply: "declined") == "declined")
+        #expect(MosaicVisit.status(afterRequestReply: "accepted") == "accepted")
+
+        let boards = try MosaicVisitClient.boards(from: Data("""
+        [{"id":"\(id(mosaic))","parent_id":null,"role":"mosaic","title":"Mosaic","body":{"blocks":[]}},
+         {"id":"\(id(golf))","parent_id":"\(id(mosaic))","role":"pursuit","title":"Golf","body":{"blocks":[]}},
+         {"id":"\(id(golfNode))","parent_id":"\(id(golf))","role":"node","title":"Range","body":{"blocks":[]}},
+         {"id":"\(id(family))","parent_id":"\(id(mosaic))","role":"pursuit","title":"Family","body":{"blocks":[]}},
+         {"id":"\(id(node))","parent_id":"\(id(family))","role":"node","title":"Trip","body":{"blocks":[]}},
+         {"id":"\(id(page))","parent_id":"\(id(node))","role":"page","title":"Day one","body":{"blocks":[]}},
+         {"id":"\(id(unlisted))","parent_id":"\(id(mosaic))","role":"pursuit","title":"Unlisted","body":{"blocks":[]}},
+         {"id":"\(id(me))","parent_id":"\(id(mosaic))","role":"pursuit","title":"Me","body":{"blocks":[]}},
+         {"id":"\(id(journal))","parent_id":"\(id(mosaic))","role":"pursuit","title":"Journal","body":{"blocks":[]}},
+         {"id":"\(id(journalNode))","parent_id":"\(id(journal))","role":"node","title":"Entry","body":{"blocks":[]}}]
+        """.utf8))
+        let visible = MosaicVisit.authorizedDocuments(boards, pursuits: pursuits)
+        #expect(visible.map(\.id) == [mosaic, golf, golfNode, journal, journalNode])
+    }
+
+    @Test
+    func acceptingARequestMovesThePersonToFollowers() throws {
+        let request = UUID(), asker = UUID(), follower = UUID(), other = UUID(), otherRequest = UUID()
+        func id(_ value: UUID) -> String { value.uuidString.lowercased() }
+        let people = try MosaicCircleClient.people(from: Data("""
+        [{"kind":"request","request_id":"\(id(request))","person_id":"\(id(asker))","username":"asker","display_name":""},
+         {"kind":"request","request_id":"\(id(otherRequest))","person_id":"\(id(follower))","username":"already","display_name":""},
+         {"kind":"follower","request_id":null,"person_id":"\(id(follower))","username":"already","display_name":""},
+         {"kind":"follower","request_id":null,"person_id":"\(id(other))","username":"other","display_name":""}]
+        """.utf8))
+
+        let accepted = MosaicCirclePerson.accepting(people[0], in: people)
+        #expect(accepted.map(\.kind) == [.request, .follower, .follower, .follower])
+        #expect(accepted[1].personID == asker)
+        #expect(accepted[1].requestID == nil)
+        #expect(accepted[1].username == "asker")
+
+        let duplicate = MosaicCirclePerson.accepting(people[1], in: people)
+        #expect(duplicate.map(\.personID) == [asker, follower, other])
+        #expect(duplicate.filter { $0.personID == follower }.count == 1)
     }
 
     @Test

@@ -104,6 +104,7 @@ struct ComposerCanvasBlockView: View {
     var pinsTabsToPageEdges: Bool = true
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(MosaicVisit.self) private var visit: MosaicVisit?
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
@@ -307,6 +308,16 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
+            .overlay(alignment: .topTrailing) {
+                if let visit, block.kind == .pursuit,
+                   let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
+                   visit.access(id) != .open {
+                    MosaicVisitLockBadge(access: visit.access(id))
+                        .offset(x: 8, y: -8)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("visit.lock.\(id.uuidString.lowercased())")
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
                 if showsPursuitPencil, !pencilCoveredByChrome, !isEditing, !isLifted, !isRelocating {
                     pursuitPencil

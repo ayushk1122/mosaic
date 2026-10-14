@@ -9,9 +9,10 @@ import SwiftUI
 
 struct ContentView: View {
     var account: MosaicAccount? = nil
+    var linkedUsername: Binding<String?> = .constant(nil)
 
     var body: some View {
-        MosaicTabShell(account: account)
+        MosaicTabShell(account: account, linkedUsername: linkedUsername)
     }
 }
 

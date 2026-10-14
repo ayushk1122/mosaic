@@ -28,6 +28,8 @@ private struct MosaicRootView: View {
     @State private var account = MosaicAccount()
     @State private var restoredSession = false
     @State private var preparedUserID: UUID?
+    /// Kept through sign-in, so a link tapped before the shell exists still opens.
+    @State private var linkedUsername: String?
 
     private var skipsAccount: Bool {
         ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
@@ -45,6 +47,11 @@ private struct MosaicRootView: View {
                 }
             case .finished:
                 signedInShell
+            }
+        }
+        .onOpenURL { url in
+            if let name = MosaicLink.username(from: url) {
+                linkedUsername = name
             }
         }
         .task {
@@ -67,7 +74,7 @@ private struct MosaicRootView: View {
             MosaicBrand.cream.ignoresSafeArea()
         } else if let userID = account.session?.userID {
             if preparedUserID == userID {
-                ContentView(account: account)
+                ContentView(account: account, linkedUsername: $linkedUsername)
                     .id(userID)
             } else {
                 MosaicAccountPreparationView(account: account, userID: userID) {

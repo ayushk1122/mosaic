@@ -1873,28 +1873,8 @@ struct MosaicComposerView: View {
     private func visitBadge(for block: ComposerBlock) -> some View {
         if let visit, block.kind == .pursuit,
            let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
-           let pursuit = visit.pursuits[id] {
-            if !pursuit.canOpen {
-                Button {
-                    visit.askToRequest(id)
-                } label: {
-                    if pursuit.isRequested {
-                        Label("Requested", systemImage: "lock.fill")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(MosaicBrand.inkBlack)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(.white, in: Capsule())
-                    } else {
-                        visitBadgeGlyph("lock.fill")
-                    }
-                }
-                .buttonStyle(.plain)
-                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-                .offset(x: 8, y: -8)
-                .accessibilityLabel(pursuit.isRequested ? "Requested" : "Request to view \(pursuit.title)")
-                .accessibilityIdentifier("visit.lock.\(id.uuidString.lowercased())")
-            } else if !pursuit.following {
+           let pursuit = visit.pursuits[id], pursuit.isOpen {
+            if !pursuit.following {
                 Button {
                     Task { await visit.follow(id) }
                 } label: {
@@ -1921,7 +1901,7 @@ struct MosaicComposerView: View {
     private func openPursuit(_ block: ComposerBlock) {
         if let visit, block.kind == .pursuit,
            let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
-           visit.pursuits[id]?.canOpen == false {
+           visit.access(id) != .open {
             visit.askToRequest(id)
             return
         }

@@ -78,6 +78,26 @@ final class ComposerRemoteSync {
         }
     }
 
+    /// Pushes right away instead of after the usual pause, and returns once nothing is left to push.
+    /// False when the last push could not reach the server or was not allowed.
+    func syncNow(
+        snapshot: ComposerSnapshot,
+        account: MosaicAccount,
+        mediaFile: @escaping @MainActor (String) -> URL
+    ) async -> Bool {
+        guard canUpload else { return false }
+        self.mediaFile = mediaFile
+        latest = snapshot
+        wait?.cancel()
+        await run(account: account)
+        while active || latest != nil {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return lastPushSucceeded
+    }
+
+    @ObservationIgnored private var lastPushSucceeded = false
+
     private func run(account: MosaicAccount) async {
         if active {
             again = true
@@ -87,23 +107,23 @@ final class ComposerRemoteSync {
         defer { active = false }
         guard let snapshot = latest else { return }
         latest = nil
-        await push(snapshot, account: account)
+        lastPushSucceeded = await push(snapshot, account: account)
         if again {
             again = false
             await run(account: account)
         }
     }
 
-    private func push(_ snapshot: ComposerSnapshot, account: MosaicAccount) async {
+    private func push(_ snapshot: ComposerSnapshot, account: MosaicAccount) async -> Bool {
         guard let config = SupabaseSyncConfig.current(),
               let accessToken = await account.accessToken()
-        else { return }
+        else { return false }
         let client = SupabaseDocumentSync(config: config)
         do {
             var state = loadState()
-            guard state?.pendingRestore != true else { return }
+            guard state?.pendingRestore != true else { return false }
             let remoteMosaicID = try await client.ownMosaicID(accessToken: accessToken)
-            guard ComposerSyncState.mayPush(local: state?.mosaicID, remote: remoteMosaicID) else { return }
+            guard ComposerSyncState.mayPush(local: state?.mosaicID, remote: remoteMosaicID) else { return false }
             let mosaicID = ComposerSyncState.choosingMosaicID(local: state?.mosaicID, remote: remoteMosaicID)
             if state?.mosaicID != mosaicID {
                 state = ComposerSyncState(
@@ -126,7 +146,7 @@ final class ComposerRemoteSync {
                 revisions[document.id.uuidString.lowercased()] = next
                 saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
             }
-            guard let userID = account.session?.userID else { return }
+            guard let userID = account.session?.userID else { return true }
             let liveIDs = documents.map(\.id)
             if let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
                 let dead = ComposerBoardSync.deadIDs(live: liveIDs, remote: remoteIDs, mosaicID: mosaicID)
@@ -142,7 +162,7 @@ final class ComposerRemoteSync {
                     saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
                 }
             }
-            guard let mediaFile else { return }
+            guard let mediaFile else { return true }
             mediaAssets = await uploadMedia(
                 references: ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID),
                 assets: mediaAssets,
@@ -165,8 +185,9 @@ final class ComposerRemoteSync {
                 revisions[key] = next
                 saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
             }
+            return true
         } catch {
-            return
+            return false
         }
     }
 
