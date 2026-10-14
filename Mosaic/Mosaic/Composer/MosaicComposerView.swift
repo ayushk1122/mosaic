@@ -61,6 +61,7 @@ struct MosaicComposerView: View {
     @State private var pasteAnchor: CGPoint?
     @State private var clipboardPressTask: Task<Void, Never>?
     @State private var showsSettings = false
+    @State private var profileRefresh = 0
 
     private var blocks: [ComposerBlock] {
         store.blocks(for: documentID)
@@ -213,7 +214,7 @@ struct MosaicComposerView: View {
                     .environment(chrome)
                     .environment(visit)
             }
-            .fullScreenCover(isPresented: $showsSettings) {
+            .fullScreenCover(isPresented: $showsSettings, onDismiss: { profileRefresh += 1 }) {
                 if let account {
                     MosaicSettingsView(account: account, store: store)
                 }
@@ -221,6 +222,9 @@ struct MosaicComposerView: View {
             .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
             .environment(\.composerPaperPage, isBookPage)
             .environment(\.composerMediaVersions, store.mediaVersions)
+            .task(id: documentID) {
+                visit?.recordVisit(to: documentID.flatMap(ComposerBoardSync.uuid))
+            }
             .task(id: visitMediaAttempt) {
                 guard let media = visit?.media else { return }
                 guard let token = await account?.accessToken() else {
@@ -462,6 +466,12 @@ struct MosaicComposerView: View {
                     viewEyeButton
                         .padding(.trailing, eyeTrailingPadding)
                         .padding(.bottom, 20)
+                    if chrome.isViewing, documentID == nil {
+                        MosaicOwnProfileButton(size: ComposerAddMenuMetrics.button, refresh: profileRefresh)
+                            .padding(.trailing, eyeTrailingPadding + ComposerAddMenuMetrics.button + 12)
+                            .padding(.bottom, 20)
+                            .transition(.opacity)
+                    }
                 }
             }
             .onGeometryChange(for: CGRect.self) { proxy in
@@ -2044,16 +2054,16 @@ struct MosaicComposerView: View {
                 chrome.isViewing.toggle()
             }
         } label: {
-            Image(systemName: "eye")
+            Image(systemName: chrome.isViewing ? "pencil" : "eye")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
                 .background(MosaicBrand.inkBlack, in: Circle())
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
-                .opacity(chrome.isViewing ? 1 : 0.45)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(chrome.isViewing ? "Exit view" : "View Mosaic")
+        .accessibilityLabel(chrome.isViewing ? "Edit Mosaic" : "View Mosaic")
         .accessibilityIdentifier("composer.viewMode")
     }
 

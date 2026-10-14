@@ -172,14 +172,15 @@ struct ScrapbookBookView: View {
                 chrome.isViewing.toggle()
             }
         } label: {
-            Image(systemName: "eye")
+            Image(systemName: chrome.isViewing ? "pencil" : "eye")
                 .font(.body.weight(.semibold))
                 .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 36, height: 36)
-                .background(Color.white.opacity(chrome.isViewing ? 0.28 : 0.14), in: Circle())
+                .background(Color.white.opacity(0.14), in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(chrome.isViewing ? "Exit view" : "View Mosaic")
+        .accessibilityLabel(chrome.isViewing ? "Edit Mosaic" : "View Mosaic")
         .accessibilityIdentifier("composer.viewMode")
     }
 

@@ -223,6 +223,12 @@ struct MosaicCircleClient: Sendable {
         return try Self.people(from: data)
     }
 
+    /// Distinct visitors since midnight in `timeZone`, by board. Boards without visits today are absent.
+    func dailyVisits(timeZone: TimeZone = .current, accessToken: String) async throws -> [UUID: Int] {
+        let data = try await rpc("circle_visits", body: ["p_time_zone": timeZone.identifier], accessToken: accessToken)
+        return try Self.visitCounts(from: data)
+    }
+
     func markSeen(documentID: UUID, accessToken: String) async throws {
         _ = try await rpc(
             "mark_circle_seen",
@@ -268,6 +274,20 @@ struct MosaicCircleClient: Sendable {
                 badgeCount: (row["badge_count"] as? NSNumber)?.intValue ?? 0
             )
         }
+    }
+
+    static func visitCounts(from data: Data) throws -> [UUID: Int] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        var counts: [UUID: Int] = [:]
+        for row in rows {
+            guard let id = (row["document_id"] as? String).flatMap(UUID.init(uuidString:)),
+                  let count = (row["visit_count"] as? NSNumber)?.intValue
+            else { continue }
+            counts[id] = count
+        }
+        return counts
     }
 
     static func people(from data: Data) throws -> [MosaicCirclePerson] {
@@ -549,6 +569,7 @@ struct MosaicCircleBubbleView: View {
     @State private var busy: String?
     @State private var relations: [UUID: MosaicCircleRelation] = [:]
     @State private var visiting: MosaicVisitTarget?
+    @State private var dailyVisits: Int?
 
     private let muted = Color.white.opacity(0.55)
     private let field = Color.white.opacity(0.08)
@@ -568,6 +589,7 @@ struct MosaicCircleBubbleView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                engagement
                 if !loaded {
                     ProgressView()
                         .tint(muted)
@@ -617,6 +639,38 @@ struct MosaicCircleBubbleView: View {
             MosaicVisitView(target: target)
         }
         .accessibilityIdentifier("circle.bubbleScreen")
+    }
+
+    /// Followers takes 60% of the row and Daily Visits 40%.
+    private var engagement: some View {
+        let spacing: CGFloat = 12
+        let followerTotal = loaded ? followers.count : bubble.followerCount
+        return HStack(alignment: .top, spacing: spacing) {
+            statCard("\(heading) Followers", value: followerTotal)
+                .containerRelativeFrame(.horizontal) { width, _ in (width - 40 - spacing) * 0.6 }
+                .accessibilityIdentifier("circle.stat.followers")
+            statCard("Daily Visits", value: dailyVisits)
+                .containerRelativeFrame(.horizontal) { width, _ in (width - 40 - spacing) * 0.4 }
+                .accessibilityIdentifier("circle.stat.dailyVisits")
+        }
+    }
+
+    /// A missing value shows a dash, such as visits before they load or when they can't be read.
+    private func statCard(_ title: String, value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.custom("BradleyHandITCTT-Bold", size: 20, relativeTo: .headline))
+                .underline()
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            Text(value.map(String.init) ?? "—")
+                .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(value == nil ? muted : .white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
     }
 
     private func section<Content: View>(
@@ -753,6 +807,7 @@ struct MosaicCircleBubbleView: View {
     private func load(markSeen: Bool = false) async {
         guard let link = await connection() else { return }
         let client = link.client, token = link.token
+        async let visitsCall = try? client.dailyVisits(accessToken: token)
         do {
             people = try await client.people(documentID: bubble.id, accessToken: token)
             status = ""
@@ -760,6 +815,9 @@ struct MosaicCircleBubbleView: View {
             status = "This list could not be loaded."
         }
         loaded = true
+        if let visits = await visitsCall {
+            dailyVisits = visits[bubble.id] ?? 0
+        }
         if markSeen {
             try? await client.markSeen(documentID: bubble.id, accessToken: token)
         }

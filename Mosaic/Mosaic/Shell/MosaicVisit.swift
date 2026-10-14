@@ -104,6 +104,11 @@ struct MosaicVisitClient: Sendable {
         )
     }
 
+    /// Counts toward the owner's Daily Visits. The server ignores the owner and boards the caller can't see.
+    func recordVisit(documentID: UUID, accessToken: String) async throws {
+        _ = try await rpc("record_visit", body: ["p_document_id": documentID.uuidString.lowercased()], accessToken: accessToken)
+    }
+
     /// One Storage object, or nil when it is missing or not readable.
     func download(path: String, accessToken: String) async -> Data? {
         guard let url = URL(string: "\(config.url.absoluteString)/storage/v1/object/authenticated/media/\(path)") else {
@@ -219,10 +224,12 @@ final class MosaicVisit {
     var busy: Set<UUID> = []
     var problem: String?
     var media: MosaicVisitMedia?
+    var mosaicID: UUID?
     /// Called when a refresh opens or closes a Pursuit, so its board can be fetched or dropped.
     var onAccessChanged: (() -> Void)?
     /// Bumped by every follow, unfollow, and request, so a refresh fetched before one can't undo it.
     @ObservationIgnored private var changes = 0
+    @ObservationIgnored private var reportedVisits: Set<UUID> = []
 
     private let account: MosaicAccount
     private let client: MosaicVisitClient
@@ -270,6 +277,35 @@ final class MosaicVisit {
             }
         }
         return documents.filter { !dropped.contains($0.id) }
+    }
+
+    /// Reports a board the visitor is looking at, once per visit; `nil` is the Mosaic itself.
+    /// Failures are ignored so they never get in the way of the visit.
+    func recordVisit(to documentID: UUID?) {
+        guard let id = Self.visitTarget(documentID, mosaicID: mosaicID, pursuits: pursuits, reported: reportedVisits) else { return }
+        reportedVisits.insert(id)
+        Task { [account, client] in
+            guard let token = await account.accessToken() else { return }
+            try? await client.recordVisit(documentID: id, accessToken: token)
+        }
+    }
+
+    /// The board to report, if any: the Mosaic, or a Pursuit the visitor can open.
+    /// Pages and nodes inside a Pursuit aren't Pursuits, so they aren't reported.
+    nonisolated static func visitTarget(
+        _ documentID: UUID?,
+        mosaicID: UUID?,
+        pursuits: [UUID: MosaicVisitPursuit],
+        reported: Set<UUID>
+    ) -> UUID? {
+        let target: UUID?
+        if let documentID {
+            target = pursuits[documentID]?.isOpen == true ? documentID : nil
+        } else {
+            target = mosaicID
+        }
+        guard let target, !reported.contains(target) else { return nil }
+        return target
     }
 
     func askToRequest(_ id: UUID) {
@@ -860,6 +896,7 @@ struct MosaicVisitView: View {
             let store = ComposerStore(seedSnapshot: snapshot, persistToDisk: false, location: location)
             let visit = MosaicVisit(ownerID: found.userID, pursuits: pursuits, account: account, client: client)
             visit.media = media
+            visit.mosaicID = mosaicID
             visit.onAccessChanged = { loadAttempt += 1 }
             let start = pursuitID.flatMap { wanted in
                 snapshot.pursuits.first { ComposerBoardSync.uuid($0.id) == wanted }?.id

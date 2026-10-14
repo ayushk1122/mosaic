@@ -450,6 +450,38 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func visitsReportTheMosaicAndOpenPursuitsOnce() {
+        let mosaic = UUID(), open = UUID(), locked = UUID(), page = UUID()
+        func pursuit(_ id: UUID, canOpen: Bool) -> MosaicVisitPursuit {
+            MosaicVisitPursuit(id: id, title: "", level: .public, canOpen: canOpen, requestStatus: nil, following: false)
+        }
+        let pursuits = [open: pursuit(open, canOpen: true), locked: pursuit(locked, canOpen: false)]
+
+        #expect(MosaicVisit.visitTarget(nil, mosaicID: mosaic, pursuits: pursuits, reported: []) == mosaic)
+        #expect(MosaicVisit.visitTarget(nil, mosaicID: mosaic, pursuits: pursuits, reported: [mosaic]) == nil)
+        #expect(MosaicVisit.visitTarget(nil, mosaicID: nil, pursuits: pursuits, reported: []) == nil)
+        #expect(MosaicVisit.visitTarget(open, mosaicID: mosaic, pursuits: pursuits, reported: [mosaic]) == open)
+        #expect(MosaicVisit.visitTarget(open, mosaicID: mosaic, pursuits: pursuits, reported: [open]) == nil)
+        #expect(MosaicVisit.visitTarget(locked, mosaicID: mosaic, pursuits: pursuits, reported: []) == nil)
+        #expect(MosaicVisit.visitTarget(page, mosaicID: mosaic, pursuits: pursuits, reported: []) == nil)
+    }
+
+    @Test
+    func dailyVisitCountsDecodeByBoard() throws {
+        let mosaic = UUID(), golf = UUID()
+        let json = """
+        [{"document_id": "\(mosaic.uuidString.lowercased())", "visit_count": 3},
+         {"document_id": "\(golf.uuidString.lowercased())", "visit_count": 1},
+         {"document_id": "not-a-uuid", "visit_count": 9},
+         {"document_id": "\(UUID().uuidString)"}]
+        """
+        let counts = try MosaicCircleClient.visitCounts(from: Data(json.utf8))
+        #expect(counts == [mosaic: 3, golf: 1])
+        #expect(try MosaicCircleClient.visitCounts(from: Data("[]".utf8)).isEmpty)
+        #expect(throws: (any Error).self) { try MosaicCircleClient.visitCounts(from: Data("{}".utf8)) }
+    }
+
+    @Test
     func pursuitTitleFallsBackToItsTextWhenTheNameIsCleared() {
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         let blockID = store.addBlock(.pursuit, to: nil)

@@ -157,10 +157,18 @@ struct MosaicDiscoverView: View {
                     content
                 }
                 .frame(height: proxy.size.height * 0.5 - 12, alignment: .top)
+                Text("Following")
+                    .font(.headline)
+                    .foregroundStyle(muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("discover.following.title")
                 Rectangle()
                     .fill(Color.white.opacity(0.1))
                     .frame(height: 1)
-                    .padding(.vertical, 6)
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
                 HStack(alignment: .top, spacing: 14) {
                     followingColumn(.pursuit)
                     followingColumn(.mosaic)
@@ -199,11 +207,21 @@ struct MosaicDiscoverView: View {
 
     private func followingColumn(_ kind: MosaicFollowedItem.Kind) -> some View {
         let query = kind == .pursuit ? pursuitQuery : mosaicQuery
+        let total = following.count { $0.kind == kind }
         let items = following.filter { $0.kind == kind && $0.matches(query) }
         return VStack(alignment: .leading, spacing: 8) {
-            Text(kind == .pursuit ? "Pursuits" : "Mosaics")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(muted)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(kind == .pursuit ? "Pursuits" : "Mosaics")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(muted)
+                if followingLoaded {
+                    Text("\(total)")
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.35))
+                        .accessibilityIdentifier("discover.\(kind.rawValue).total")
+                }
+            }
+            .accessibilityElement(children: .combine)
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.footnote)
