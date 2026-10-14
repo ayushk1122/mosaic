@@ -332,6 +332,7 @@ struct ComposerMediaFrameEditor: View {
     let initialPanX: Double
     let initialPanY: Double
     let initialFrameAspect: Double
+    let showsShapes: Bool
     var onCancel: () -> Void
     var onDone: (MediaFrameShape, Double, Double, Double, Double) -> Void
     var onReplaceVideo: (URL) -> URL? = { _ in nil }
@@ -362,6 +363,7 @@ struct ComposerMediaFrameEditor: View {
         initialPanX: Double,
         initialPanY: Double,
         initialFrameAspect: Double,
+        showsShapes: Bool = true,
         onCancel: @escaping () -> Void,
         onDone: @escaping (MediaFrameShape, Double, Double, Double, Double) -> Void,
         onReplaceVideo: @escaping (URL) -> URL? = { _ in nil }
@@ -373,6 +375,7 @@ struct ComposerMediaFrameEditor: View {
         self.initialPanX = initialPanX
         self.initialPanY = initialPanY
         self.initialFrameAspect = initialFrameAspect
+        self.showsShapes = showsShapes
         self.onCancel = onCancel
         self.onDone = onDone
         self.onReplaceVideo = onReplaceVideo
@@ -394,7 +397,9 @@ struct ComposerMediaFrameEditor: View {
                     .foregroundStyle(Color.white.opacity(0.45))
                     .padding(.bottom, 8)
                 aspectControl
-                shapeChoices
+                if showsShapes {
+                    shapeChoices
+                }
             }
             .background(Color.black)
             .navigationTitle("Crop")

@@ -1409,7 +1409,7 @@ struct MosaicComposerView: View {
                     current.graphWidthScale = ComposerGraphStretch.clamped(width)
                     current.graphHeightScale = ComposerGraphStretch.clamped(height)
                     current.style.scale = 1
-                } else if current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook {
+                } else if current.isContent || current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, 0.45), 3.2)
                 } else {
@@ -1492,7 +1492,8 @@ struct MosaicComposerView: View {
                     initialZoom: block.mediaZoom,
                     initialPanX: block.mediaPanX,
                     initialPanY: block.mediaPanY,
-                    initialFrameAspect: block.mediaFrameAspect,
+                    initialFrameAspect: contentCropAspect(for: block, fileName: fileName) ?? block.mediaFrameAspect,
+                    showsShapes: !block.isContent,
                     onCancel: { mediaEditRequest = nil },
                     onDone: { shape, zoom, panX, panY, frameAspect in
                         guard var current = store.block(with: blockID, in: documentID) else {
@@ -1516,6 +1517,13 @@ struct MosaicComposerView: View {
                 )
             }
         }
+    }
+
+    private func contentCropAspect(for block: ComposerBlock, fileName: String) -> Double? {
+        guard let platform = block.contentPlatform else { return nil }
+        let cover = UIImage(contentsOfFile: store.mediaURL(for: fileName).path)?.size
+        let size = platform.cardSize(cover: cover, cropAspect: block.mediaFrameAspect)
+        return Double(size.width / max(size.height, 1))
     }
 
     private func openMediaFrameEditor(_ blockID: ComposerBlockID) {
@@ -1565,7 +1573,9 @@ struct MosaicComposerView: View {
         switch block.kind {
         case .text, .heading, .list, .media, .pursuit, .node, .carousel, .calendar, .graph, .tabs, .table, .group, .scrapbook:
             return true
-        case .social, .banner, .link:
+        case .link:
+            return block.isContent
+        case .social, .banner:
             return false
         }
     }

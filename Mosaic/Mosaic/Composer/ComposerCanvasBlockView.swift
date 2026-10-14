@@ -269,7 +269,9 @@ struct ComposerCanvasBlockView: View {
             case .link:
                 if block.isContent {
                     ComposerContentCard(block: $block, mediaURL: mediaURL, isViewing: isViewing,
-                                        liveScale: livePinchScale, onDelete: actions.onDelete)
+                                        isSelected: isSelected && !isLifted && !isRelocating,
+                                        liveScale: livePinchScale, onCrop: actions.onCropMedia,
+                                        onDelete: actions.onDelete)
                 } else {
                     linkEditor
                 }
