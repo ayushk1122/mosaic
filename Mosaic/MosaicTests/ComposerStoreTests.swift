@@ -432,6 +432,104 @@ struct ComposerStoreTests {
     }
 
     @Test
+    func carouselsMixMediaSocialsAndContent() throws {
+        let older = Data(#"{"id":"a","fileName":"a.jpg"}"#.utf8)
+        let photo = try JSONDecoder().decode(CarouselMediaItem.self, from: older)
+        #expect(photo.kind == .media && photo.fileName == "a.jpg" && photo.hasContent)
+        let photoJSON = try #require(String(data: JSONEncoder().encode(photo), encoding: .utf8))
+        #expect(!photoJSON.contains("kind"))
+        #expect(CarouselMediaItem(fileName: "").isPending)
+        #expect(!CarouselMediaItem(fileName: "").hasContent)
+
+        let social = CarouselMediaItem(fileName: "", kind: .social, platform: "tiktok", link: "@golfer")
+        #expect(!social.isPending && social.hasContent)
+        #expect(social.linkURL?.absoluteString == "https://www.tiktok.com/@golfer")
+        #expect(ComposerSocialPlatform.tiktok.handle(from: social.link) == "@golfer")
+        #expect(ComposerSocialPlatform.instagram.handle(from: "https://instagram.com/ayush") == "@ayush")
+
+        let content = CarouselMediaItem(
+            fileName: "cover.jpg", kind: .content, platform: "youtube",
+            link: "https://youtu.be/abc", title: "Swing"
+        )
+        #expect(content.linkURL?.absoluteString == "https://youtu.be/abc")
+        #expect(CarouselMediaItem(fileName: "", kind: .content, link: "https://example.com/x").linkURL == nil)
+
+        let decoded = try JSONDecoder().decode([CarouselMediaItem].self, from: JSONEncoder().encode([photo, social, content]))
+        #expect(decoded == [photo, social, content])
+        let future = Data(#"{"id":"f","fileName":"f.jpg","kind":"sticker"}"#.utf8)
+        #expect(try JSONDecoder().decode(CarouselMediaItem.self, from: future).kind == .media)
+
+        let day = CalendarDayEntry(year: 2026, month: 10, day: 14, note: " ", media: [social])
+        #expect(day.hasContent)
+
+        var block = ComposerBlock.make(kind: .carousel, position: BlockPosition(x: 0.1, y: 0.1))
+        block.carouselItems = [photo, social, content]
+        var snapshot = ComposerSnapshot.empty
+        snapshot.mosaicBlocks = [block]
+        let names = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: UUID()).map(\.fileName)
+        #expect(names == ["a.jpg", "cover.jpg"])
+    }
+
+    @Test
+    func carouselCardsKeepTheirItemsShape() {
+        let layout = CarouselLayout(width: 300)
+        let wide = layout.cardSize(aspect: 16.0 / 9.0)
+        #expect(wide.width == layout.maxCardWidth)
+        #expect(abs(wide.width / wide.height - 16.0 / 9.0) < 0.001)
+        let tall = layout.cardSize(aspect: 9.0 / 16.0)
+        #expect(tall.height == layout.cardHeight)
+        #expect(tall.width < wide.width)
+
+        let small = CarouselLayout(scale: CarouselLayout.minimumScale)
+        #expect(abs(small.width - 60) < 0.0001)
+        #expect(CarouselLayout(scale: 0.05).width == small.width)
+        #expect(abs(small.socialSide / layout.socialSide - 0.2) < 0.0001)
+        #expect(abs(small.handleFontSize / layout.handleFontSize - 0.2) < 0.0001)
+        #expect(small.socialSide <= 56 * 0.45, "A social carousel shrinks as small as one social logo")
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let landscape = UIGraphicsImageRenderer(size: CGSize(width: 400, height: 200), format: format).image { _ in }
+        let photo = CarouselMediaItem(fileName: "a.jpg")
+        #expect(ComposerCarouselItemFace.aspect(of: photo, poster: landscape) == 2)
+        #expect(ComposerCarouselItemFace.aspect(of: photo, poster: nil) == 0.8)
+        let social = CarouselMediaItem(fileName: "", kind: .social, platform: "instagram", link: "@a")
+        #expect(ComposerCarouselItemFace.aspect(of: social, poster: nil) == 1)
+        let video = CarouselMediaItem(fileName: "", kind: .content, platform: "youtube", link: "https://youtu.be/a")
+        #expect(abs(ComposerCarouselItemFace.aspect(of: video, poster: nil) - 16.0 / 9.0) < 0.001)
+        let reel = CarouselMediaItem(fileName: "", kind: .content, platform: "tiktok", link: "https://vm.tiktok.com/a")
+        #expect(abs(ComposerCarouselItemFace.aspect(of: reel, poster: nil) - 9.0 / 16.0) < 0.001)
+    }
+
+    @Test
+    func pursuitTitlesDropLineBreaks() throws {
+        #expect(ComposerTitle.singleLine("G\no\nl\nf") == "Golf")
+        #expect(ComposerTitle.singleLine("  My\n\nGolf   Journey \n") == "My Golf Journey")
+        #expect(ComposerTitle.singleLine("Golf\nA") == "Golf A")
+        #expect(ComposerTitle.singleLine(" \n ") == "")
+
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let blockID = store.addBlock(.pursuit, to: nil)
+        var block = try #require(store.block(with: blockID, in: nil))
+        block.text = "F\na\nm\ni\nl\ny"
+        store.updateBlock(block, in: nil)
+        #expect(store.snapshot.pursuits.first?.title == "Family")
+        #expect(store.block(with: blockID, in: nil)?.text == "F\na\nm\ni\nl\ny")
+
+        var snapshot = store.snapshot
+        snapshot.pursuits[0].title = "F\na\nm"
+        #expect(ComposerStore.refreshPursuitTitles(&snapshot))
+        #expect(snapshot.pursuits[0].title == "Family")
+    }
+
+    @Test
+    func calendarNotesOpenOnceWritten() {
+        #expect(!CalendarDayNotes.opensAtFirst(""))
+        #expect(!CalendarDayNotes.opensAtFirst("  \n"))
+        #expect(CalendarDayNotes.opensAtFirst("Range day"))
+    }
+
+    @Test
     func nodeIsAFolderInsideAPursuit() throws {
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         store.addBlock(.pursuit, to: nil)

@@ -147,7 +147,7 @@ struct MosaicVisitClient: Sendable {
             guard let id = (row["pursuit_id"] as? String).flatMap(UUID.init(uuidString:)) else { return nil }
             return MosaicVisitPursuit(
                 id: id,
-                title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: "pursuit"),
                 canOpen: row["can_open"] as? Bool ?? false,
                 requestStatus: row["request_status"] as? String,
@@ -172,7 +172,7 @@ struct MosaicVisitClient: Sendable {
                 id: id,
                 parentID: (row["parent_id"] as? String).flatMap(UUID.init(uuidString:)),
                 role: role,
-                title: row["title"] as? String ?? "",
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 visibility: "",
                 body: body
             )

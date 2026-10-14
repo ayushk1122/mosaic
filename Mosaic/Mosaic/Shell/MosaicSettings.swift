@@ -101,7 +101,7 @@ enum MosaicSettingsList {
             guard let id = ComposerBoardSync.uuid(pursuit.id) else { continue }
             used.insert(id)
             let remoteMatch = remote.first { $0.id == id && $0.role == "pursuit" }
-            let title = pursuit.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = ComposerTitle.singleLine(pursuit.title)
             pursuits.append(
                 MosaicVisibilityRow(
                     id: id,
@@ -112,7 +112,7 @@ enum MosaicSettingsList {
             )
         }
         for board in remote where board.role == "pursuit" && !used.contains(board.id) {
-            let title = board.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = ComposerTitle.singleLine(board.title)
             pursuits.append(
                 MosaicVisibilityRow(
                     id: board.id,

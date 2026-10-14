@@ -119,6 +119,22 @@ struct ComposerContentFraming: Equatable {
     }
 }
 
+enum ComposerContentCoverFile {
+    /// Saves a cover at most 1280 pixels on the long edge. Returns the media file name.
+    static func save(_ cover: UIImage, to store: ComposerStore) throws -> String {
+        let size = cover.size
+        let scale = min(1, 1280 / max(size.width, size.height, 1))
+        let target = CGSize(width: max(1, size.width * scale), height: max(1, size.height * scale))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let resized = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            cover.draw(in: CGRect(origin: .zero, size: target))
+        }
+        guard let data = resized.jpegData(compressionQuality: 0.85) else { throw ComposerRestoreError.invalidMedia }
+        return try store.saveMediaData(data)
+    }
+}
+
 private struct ComposerContentCover: View {
     let image: UIImage
     let frame: CGSize
@@ -244,15 +260,7 @@ struct ComposerContentCard: View {
                 updated.linkURL = url.absoluteString
                 updated.text = title.isEmpty ? platform.title + " content" : title
                 if let cover, cover !== image || updated.mediaFileName == nil {
-                    let size = cover.size
-                    let scale = min(1, 1280 / max(size.width, size.height, 1))
-                    let format = UIGraphicsImageRendererFormat()
-                    format.scale = 1
-                    let resized = UIGraphicsImageRenderer(size: CGSize(width: max(1, size.width * scale), height: max(1, size.height * scale)), format: format).image { _ in
-                        cover.draw(in: CGRect(origin: .zero, size: CGSize(width: max(1, size.width * scale), height: max(1, size.height * scale))))
-                    }
-                    guard let data = resized.jpegData(compressionQuality: 0.85) else { throw ComposerRestoreError.invalidMedia }
-                    updated.mediaFileName = try store.saveMediaData(data)
+                    updated.mediaFileName = try ComposerContentCoverFile.save(cover, to: store)
                 } else if cover == nil && block.linkURL != url.absoluteString {
                     updated.mediaFileName = nil
                 }
@@ -280,13 +288,30 @@ struct ComposerContentCard: View {
     }
 }
 
-private struct ComposerContentEditor: View {
+struct ComposerContentEditor: View {
     @State var platform: ComposerContentPlatform
     @State var link: String
     @State var title: String
     @State var cover: UIImage?
     @State var framing: ComposerContentFraming
     let onSave: (ComposerContentPlatform, URL, String, UIImage?, ComposerContentFraming) throws -> Void
+
+    init(
+        platform: ComposerContentPlatform,
+        link: String,
+        title: String,
+        cover: UIImage?,
+        framing: ComposerContentFraming,
+        onSave: @escaping (ComposerContentPlatform, URL, String, UIImage?, ComposerContentFraming) throws -> Void
+    ) {
+        _platform = State(initialValue: platform)
+        _link = State(initialValue: link)
+        _title = State(initialValue: title)
+        _cover = State(initialValue: cover)
+        _framing = State(initialValue: framing)
+        self.onSave = onSave
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var dragStart: ComposerContentFraming?
     @State private var pinchStart: ComposerContentFraming?

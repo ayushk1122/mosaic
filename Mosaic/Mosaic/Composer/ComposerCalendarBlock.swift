@@ -289,6 +289,13 @@ struct ComposerCalendarCanvasBlock: View {
     }
 }
 
+enum CalendarDayNotes {
+    /// Notes start closed, and open on their own once they have something written.
+    static func opensAtFirst(_ note: String) -> Bool {
+        !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 private struct CalendarDaySheet: View {
     let day: CalendarMonthModel.Day
     let isViewing: Bool
@@ -299,12 +306,16 @@ private struct CalendarDaySheet: View {
     @State private var note: String
     @State private var carousel: ComposerBlock
     @State private var showsCarouselEditor = false
+    @State private var notesOpen: Bool
+    @FocusState private var noteFocused: Bool
 
     init(day: CalendarMonthModel.Day, isViewing: Bool, entry: CalendarDayEntry?, onSave: @escaping (CalendarDayEntry) -> Void) {
         self.day = day
         self.isViewing = isViewing
         self.onSave = onSave
-        _note = State(initialValue: entry?.note ?? "")
+        let note = entry?.note ?? ""
+        _note = State(initialValue: note)
+        _notesOpen = State(initialValue: CalendarDayNotes.opensAtFirst(note))
         var block = ComposerBlock.make(kind: .carousel, position: .defaultPosition(index: 0))
         block.carouselItems = entry?.media ?? []
         block.carouselIndex = entry?.mediaIndex ?? 0
@@ -312,7 +323,7 @@ private struct CalendarDaySheet: View {
     }
 
     private var filledMedia: [CarouselMediaItem] {
-        carousel.carouselItems.filter { !$0.fileName.isEmpty }
+        carousel.carouselItems.filter(\.hasContent)
     }
 
     private var carouselReady: Bool {
@@ -339,7 +350,7 @@ private struct CalendarDaySheet: View {
                         } label: {
                             Image(systemName: "rectangle.stack")
                         }
-                        .accessibilityLabel("Edit media")
+                        .accessibilityLabel("Edit items")
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -366,7 +377,7 @@ private struct CalendarDaySheet: View {
     @ViewBuilder
     private var media: some View {
         if isViewing, filledMedia.isEmpty {
-            Text("No media")
+            Text("Nothing added")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.45))
                 .frame(maxWidth: .infinity, minHeight: 88)
@@ -380,13 +391,14 @@ private struct CalendarDaySheet: View {
                     isLifted: false,
                     isRelocating: false,
                     allowsDirectControl: carouselReady,
-                    onEdit: {}
+                    onEdit: {},
+                    opensLinks: true
                 )
                 if !isViewing, !carouselReady {
                     Color.clear
                         .contentShape(Rectangle())
                         .onTapGesture { showsCarouselEditor = true }
-                        .accessibilityLabel("Add media")
+                        .accessibilityLabel("Add items")
                         .accessibilityAddTraits(.isButton)
                 }
             }
@@ -394,30 +406,54 @@ private struct CalendarDaySheet: View {
         }
     }
 
+    @ViewBuilder
     private var notes: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Notes")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.5))
-            if isViewing {
-                Text(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No notes" : note)
-                    .font(.body)
-                    .foregroundStyle(.white.opacity(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 0.92))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                TextField("Write a note", text: $note, axis: .vertical)
-                    .font(.body)
-                    .foregroundStyle(.white)
-                    .lineLimit(4...8)
+        if !isViewing || CalendarDayNotes.opensAtFirst(note) {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        notesOpen.toggle()
+                    }
+                    noteFocused = notesOpen && !isViewing
+                } label: {
+                    HStack {
+                        Text("Notes")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.5))
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .rotationEffect(.degrees(notesOpen ? 0 : -90))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(notesOpen ? "Hide notes" : "Show notes")
+                .accessibilityIdentifier("calendar.notes.toggle")
+                if notesOpen {
+                    if isViewing {
+                        Text(note)
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        TextField("Write a note", text: $note, axis: .vertical)
+                            .font(.body)
+                            .foregroundStyle(.white)
+                            .lineLimit(4...8)
+                            .focused($noteFocused)
+                    }
+                }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func commit() {
-        let media = carousel.carouselItems.filter { !$0.fileName.isEmpty }
+        let media = carousel.carouselItems.filter(\.hasContent)
         onSave(CalendarDayEntry(
             year: day.year,
             month: day.month,

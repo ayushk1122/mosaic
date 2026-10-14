@@ -261,7 +261,7 @@ struct MosaicCircleClient: Sendable {
             return MosaicCircleBubble(
                 id: id,
                 role: role,
-                title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: role),
                 followerCount: (row["follower_count"] as? NSNumber)?.intValue ?? 0,
                 pendingCount: (row["pending_count"] as? NSNumber)?.intValue ?? 0,
@@ -463,10 +463,9 @@ struct MosaicCircleView: View {
     }
 
     private func title(for bubble: MosaicCircleBubble) -> String {
-        let local = store.snapshot.pursuits
-            .first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?
-            .title
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let local = ComposerTitle.singleLine(
+            store.snapshot.pursuits.first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?.title ?? ""
+        )
         if !local.isEmpty { return local }
         return bubble.title.isEmpty ? "Pursuit" : bubble.title
     }
@@ -559,10 +558,9 @@ struct MosaicCircleBubbleView: View {
 
     private var heading: String {
         if bubble.isMosaic { return "Mosaic" }
-        let local = store.snapshot.pursuits
-            .first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?
-            .title
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let local = ComposerTitle.singleLine(
+            store.snapshot.pursuits.first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?.title ?? ""
+        )
         if !local.isEmpty { return local }
         return bubble.title.isEmpty ? "Pursuit" : bubble.title
     }
