@@ -64,7 +64,7 @@ struct ComposerBlockActions {
     var onSelectTabs: () -> Void
     var onEditSocial: () -> Void
     var onUngroup: () -> Void
-    var onPresentMedia: ((URL) -> Void)?
+    var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)?
     var onBodyTap: (() -> Void)?
     var onOpenSocial: (() -> Void)?
     var onOpenFolder: (ComposerBlock) -> Void
@@ -104,6 +104,7 @@ struct ComposerCanvasBlockView: View {
     var pinsTabsToPageEdges: Bool = true
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(MosaicVisit.self) private var visit: MosaicVisit?
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
@@ -269,7 +270,9 @@ struct ComposerCanvasBlockView: View {
             case .link:
                 if block.isContent {
                     ComposerContentCard(block: $block, mediaURL: mediaURL, isViewing: isViewing,
-                                        liveScale: livePinchScale, onDelete: actions.onDelete)
+                                        isSelected: isSelected && !isLifted && !isRelocating,
+                                        liveScale: livePinchScale, onCrop: actions.onCropMedia,
+                                        onDelete: actions.onDelete)
                 } else {
                     linkEditor
                 }
@@ -305,6 +308,16 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
+            .overlay(alignment: .topTrailing) {
+                if let visit, block.kind == .pursuit,
+                   let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),
+                   visit.access(id) != .open {
+                    MosaicVisitLockBadge(access: visit.access(id))
+                        .offset(x: 8, y: -8)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("visit.lock.\(id.uuidString.lowercased())")
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
                 if showsPursuitPencil, !pencilCoveredByChrome, !isEditing, !isLifted, !isRelocating {
                     pursuitPencil
@@ -328,7 +341,11 @@ struct ComposerCanvasBlockView: View {
                     pursuitBackground = nil
                     return
                 }
-                pursuitBackground = UIImage(contentsOfFile: pursuitImageURL.path)
+                let loaded = await Task.detached(priority: .userInitiated) {
+                    ComposerAnimatedImage.image(contentsOf: pursuitImageURL)
+                }.value
+                guard !Task.isCancelled else { return }
+                pursuitBackground = loaded
             }
     }
 

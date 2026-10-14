@@ -25,7 +25,12 @@ struct ComposerBoardBackdrop: View {
         .clipped()
         .allowsHitTesting(false)
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
-            image = mediaURL.flatMap { UIImage(contentsOfFile: $0.path) }
+            let url = mediaURL
+            let loaded = await Task.detached(priority: .userInitiated) {
+                url.flatMap(ComposerAnimatedImage.image(contentsOf:))
+            }.value
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 
@@ -43,9 +48,7 @@ struct ComposerBoardBackdrop: View {
                 )
             case .media:
                 if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
+                    ComposerPicture(image: image)
                 }
             }
         }

@@ -63,6 +63,14 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
             return URL(string: "https://www.twitch.tv/\(encoded)")
         }
     }
+
+    /// "@name" from a username or profile link, or the platform's name.
+    func handle(from raw: String) -> String {
+        guard let url = profileURL(from: raw) else { return title }
+        let last = url.pathComponents.last { $0 != "/" } ?? ""
+        let name = last.hasPrefix("@") ? String(last.dropFirst()) : last
+        return name.isEmpty ? title : "@\(name)"
+    }
 }
 
 struct ComposerSocialMark: View {

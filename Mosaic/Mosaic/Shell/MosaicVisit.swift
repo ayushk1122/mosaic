@@ -25,6 +25,34 @@ struct MosaicVisitPursuit: Identifiable, Equatable, Sendable {
 
     var isRequested: Bool { requestStatus == "pending" }
     var displayTitle: String { title.isEmpty ? "Pursuit" : title }
+    /// A private Pursuit also needs the visitor to still follow it: following the Mosaic doesn't grant it,
+    /// and unfollowing gives it up until the owner approves another request.
+    var isOpen: Bool { canOpen && (level == .public || following) }
+}
+
+/// What a visitor may do with one Pursuit on someone else's Mosaic.
+enum MosaicVisitAccess: Equatable, Sendable {
+    case open
+    case locked
+    /// Requested and waiting on the owner.
+    case pending
+}
+
+/// The lock on a Pursuit the visitor can't open. It turns amber while a request waits for the owner.
+struct MosaicVisitLockBadge: View {
+    var access: MosaicVisitAccess
+
+    static let pendingColor = Color(red: 0.96, green: 0.66, blue: 0.16)
+
+    var body: some View {
+        Image(systemName: "lock.fill")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(MosaicBrand.inkBlack)
+            .frame(width: 24, height: 24)
+            .background(access == .pending ? Self.pendingColor : .white, in: Circle())
+            .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+            .accessibilityLabel(access == .pending ? "Private, request pending" : "Private, request to view")
+    }
 }
 
 struct MosaicVisitClient: Sendable {
@@ -76,6 +104,11 @@ struct MosaicVisitClient: Sendable {
         )
     }
 
+    /// Counts toward the owner's Daily Visits. The server ignores the owner and boards the caller can't see.
+    func recordVisit(documentID: UUID, accessToken: String) async throws {
+        _ = try await rpc("record_visit", body: ["p_document_id": documentID.uuidString.lowercased()], accessToken: accessToken)
+    }
+
     /// One Storage object, or nil when it is missing or not readable.
     func download(path: String, accessToken: String) async -> Data? {
         guard let url = URL(string: "\(config.url.absoluteString)/storage/v1/object/authenticated/media/\(path)") else {
@@ -119,7 +152,7 @@ struct MosaicVisitClient: Sendable {
             guard let id = (row["pursuit_id"] as? String).flatMap(UUID.init(uuidString:)) else { return nil }
             return MosaicVisitPursuit(
                 id: id,
-                title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: "pursuit"),
                 canOpen: row["can_open"] as? Bool ?? false,
                 requestStatus: row["request_status"] as? String,
@@ -144,19 +177,20 @@ struct MosaicVisitClient: Sendable {
                 id: id,
                 parentID: (row["parent_id"] as? String).flatMap(UUID.init(uuidString:)),
                 role: role,
-                title: row["title"] as? String ?? "",
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 visibility: "",
                 body: body
             )
         }
     }
 
-    /// Storage paths to try for one file, best first. Photos have a display copy.
+    /// Storage paths to try for one file, best first. Photos have a display copy;
+    /// a GIF's display copy is a still, so its original is used.
     nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
-        let isVideo = ["mov", "mp4", "m4v"].contains((fileName as NSString).pathExtension.lowercased())
-        return (isVideo ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
+        let usesOriginal = ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
+        return (usesOriginal ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
     }
 
     private func rpc(_ name: String, body: [String: Any], accessToken: String) async throws -> Data {
@@ -186,9 +220,16 @@ final class MosaicVisit {
     let ownerID: UUID
     var pursuits: [UUID: MosaicVisitPursuit]
     var requestTarget: MosaicVisitPursuit?
+    var pendingTarget: MosaicVisitPursuit?
     var busy: Set<UUID> = []
     var problem: String?
     var media: MosaicVisitMedia?
+    var mosaicID: UUID?
+    /// Called when a refresh opens or closes a Pursuit, so its board can be fetched or dropped.
+    var onAccessChanged: (() -> Void)?
+    /// Bumped by every follow, unfollow, and request, so a refresh fetched before one can't undo it.
+    @ObservationIgnored private var changes = 0
+    @ObservationIgnored private var reportedVisits: Set<UUID> = []
 
     private let account: MosaicAccount
     private let client: MosaicVisitClient
@@ -202,19 +243,88 @@ final class MosaicVisit {
 
     var publicPursuits: [MosaicVisitPursuit] {
         pursuits.values
-            .filter { $0.level == .public && $0.canOpen }
+            .filter { $0.level == .public && $0.isOpen }
             .sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
     }
 
+    /// A Pursuit the server didn't list for this visitor stays locked.
+    func access(_ id: UUID) -> MosaicVisitAccess {
+        Self.access(pursuits[id])
+    }
+
+    nonisolated static func access(_ pursuit: MosaicVisitPursuit?) -> MosaicVisitAccess {
+        guard let pursuit else { return .locked }
+        if pursuit.isOpen { return .open }
+        return pursuit.isRequested ? .pending : .locked
+    }
+
+    /// Only boards the visitor may open. Locked Pursuits and everything inside them are dropped,
+    /// so nothing from them is shown or has its media downloaded.
+    nonisolated static func authorizedDocuments(
+        _ documents: [ComposerSyncDocument],
+        pursuits: [MosaicVisitPursuit]
+    ) -> [ComposerSyncDocument] {
+        let open = Set(pursuits.filter(\.isOpen).map(\.id))
+        var dropped = Set(documents.filter { $0.role == .pursuit && !open.contains($0.id) }.map(\.id))
+        var changed = true
+        while changed {
+            changed = false
+            for document in documents where !dropped.contains(document.id) {
+                if let parent = document.parentID, dropped.contains(parent) {
+                    dropped.insert(document.id)
+                    changed = true
+                }
+            }
+        }
+        return documents.filter { !dropped.contains($0.id) }
+    }
+
+    /// Reports a board the visitor is looking at, once per visit; `nil` is the Mosaic itself.
+    /// Failures are ignored so they never get in the way of the visit.
+    func recordVisit(to documentID: UUID?) {
+        guard let id = Self.visitTarget(documentID, mosaicID: mosaicID, pursuits: pursuits, reported: reportedVisits) else { return }
+        reportedVisits.insert(id)
+        Task { [account, client] in
+            guard let token = await account.accessToken() else { return }
+            try? await client.recordVisit(documentID: id, accessToken: token)
+        }
+    }
+
+    /// The board to report, if any: the Mosaic, or a Pursuit the visitor can open.
+    /// Pages and nodes inside a Pursuit aren't Pursuits, so they aren't reported.
+    nonisolated static func visitTarget(
+        _ documentID: UUID?,
+        mosaicID: UUID?,
+        pursuits: [UUID: MosaicVisitPursuit],
+        reported: Set<UUID>
+    ) -> UUID? {
+        let target: UUID?
+        if let documentID {
+            target = pursuits[documentID]?.isOpen == true ? documentID : nil
+        } else {
+            target = mosaicID
+        }
+        guard let target, !reported.contains(target) else { return nil }
+        return target
+    }
+
     func askToRequest(_ id: UUID) {
-        guard let pursuit = pursuits[id], !pursuit.canOpen, !pursuit.isRequested else { return }
-        requestTarget = pursuit
+        guard let pursuit = pursuits[id] else {
+            problem = "This Pursuit is private."
+            return
+        }
+        switch Self.access(pursuit) {
+        case .open: return
+        case .locked: requestTarget = pursuit
+        case .pending: pendingTarget = pursuit
+        }
     }
 
     func follow(_ id: UUID) async {
         guard !busy.contains(id), let token = await account.accessToken() else { return }
         busy.insert(id)
         defer { busy.remove(id) }
+        changes += 1
         do {
             try await client.followPursuit(id: id, accessToken: token)
             pursuits[id]?.following = true
@@ -227,30 +337,76 @@ final class MosaicVisit {
         guard !busy.contains(id), let token = await account.accessToken() else { return }
         busy.insert(id)
         defer { busy.remove(id) }
+        changes += 1
         do {
             try await client.unfollowPursuit(id: id, accessToken: token)
+            let wasOpen = openIDs
             pursuits[id]?.following = false
+            if openIDs != wasOpen {
+                onAccessChanged?()
+            }
         } catch {
             problem = "That Pursuit could not be unfollowed."
         }
     }
 
     func request(_ id: UUID) async {
-        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        guard !busy.contains(id) else { return }
+        guard let token = await account.accessToken() else {
+            problem = "That request could not be sent."
+            return
+        }
         busy.insert(id)
         defer { busy.remove(id) }
+        changes += 1
+        let reply: String?
         do {
-            pursuits[id]?.requestStatus = try await client.requestPursuit(id: id, accessToken: token) ?? "pending"
+            reply = try await client.requestPursuit(id: id, accessToken: token)
         } catch {
             problem = "That request could not be sent."
+            return
+        }
+        if let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token) {
+            apply(fresh)
+        } else {
+            pursuits[id]?.requestStatus = Self.status(afterRequestReply: reply)
+        }
+        if let problem = Self.requestProblem(pursuits[id]) {
+            self.problem = problem
         }
     }
 
+    /// The request call's own reply isn't a reliable status; only an answered request is taken from it.
+    nonisolated static func status(afterRequestReply reply: String?) -> String {
+        if let reply, reply == "declined" || reply == "accepted" { return reply }
+        return "pending"
+    }
+
+    /// Still locked after a successful request call: the server has no request waiting on the owner.
+    nonisolated static func requestProblem(_ pursuit: MosaicVisitPursuit?) -> String? {
+        guard let pursuit, access(pursuit) == .locked else { return nil }
+        return "Your request to view \(pursuit.displayTitle) wasn’t saved. Please try again."
+    }
+
     func refresh() async {
+        let started = changes
         guard let token = await account.accessToken(),
-              let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token)
+              let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token),
+              changes == started
         else { return }
+        apply(fresh)
+    }
+
+    private func apply(_ fresh: [MosaicVisitPursuit]) {
+        let wasOpen = openIDs
         pursuits = Dictionary(uniqueKeysWithValues: fresh.map { ($0.id, $0) })
+        if openIDs != wasOpen {
+            onAccessChanged?()
+        }
+    }
+
+    private var openIDs: Set<UUID> {
+        Set(pursuits.values.filter(\.isOpen).map(\.id))
     }
 }
 
@@ -279,7 +435,7 @@ struct MosaicVisitPursuitControls: View {
         if let pursuit = visit.pursuits[pursuitID] {
             HStack(spacing: 12) {
                 logo(pursuit)
-                if pursuit.canOpen {
+                if pursuit.isOpen {
                     toggle(pursuit)
                 }
             }
@@ -313,6 +469,9 @@ struct MosaicVisitPursuitControls: View {
         Group {
             if pursuit.following {
                 Menu {
+                    if pursuit.level != .public {
+                        Text("This Pursuit is private. You’ll need to request access again.")
+                    }
                     Button("Unfollow", systemImage: "minus.circle", role: .destructive) {
                         Task { await visit.unfollow(pursuitID) }
                     }
@@ -376,6 +535,7 @@ struct MosaicVisitView: View {
 
     @Environment(\.mosaicAccount) private var account
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     private enum Phase {
         case loading
@@ -391,6 +551,8 @@ struct MosaicVisitView: View {
     @State private var requesting = false
     @State private var showsFollowSheet = false
     @State private var following = false
+    /// The first appearance follows a fresh load, so only later returns refresh access.
+    @State private var visitAppeared = false
 
     private let muted = Color.white.opacity(0.55)
 
@@ -473,7 +635,12 @@ struct MosaicVisitView: View {
                 Button {
                     Task { await requestMosaic() }
                 } label: {
-                    Label(requested ? "Requested" : "Request to view", systemImage: "lock.fill")
+                    Label {
+                        Text(requested ? "Requested" : "Request to view")
+                    } icon: {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(requested ? MosaicVisitLockBadge.pendingColor : MosaicBrand.inkBlack)
+                    }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(requested ? .white : MosaicBrand.inkBlack)
                         .padding(.horizontal, 18)
@@ -548,6 +715,18 @@ struct MosaicVisitView: View {
                 Button("Cancel", role: .cancel) {}
             }
             .alert(
+                "Request pending",
+                isPresented: Binding(
+                    get: { visit.pendingTarget != nil },
+                    set: { if !$0 { visit.pendingTarget = nil } }
+                ),
+                presenting: visit.pendingTarget
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { pursuit in
+                Text("@\(person.username) hasn’t answered your request to view \(pursuit.displayTitle) yet.")
+            }
+            .alert(
                 visit.problem ?? "",
                 isPresented: Binding(
                     get: { visit.problem != nil },
@@ -555,6 +734,16 @@ struct MosaicVisitView: View {
                 )
             ) {
                 Button("OK", role: .cancel) {}
+            }
+            .onAppear {
+                guard start == nil, visitAppeared else {
+                    visitAppeared = true
+                    return
+                }
+                Task { await visit.refresh() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await visit.refresh() } }
             }
             .sheet(isPresented: $showsFollowSheet) {
                 followSheet(visit: visit)
@@ -691,8 +880,8 @@ struct MosaicVisitView: View {
 
             async let boardsCall = client.boards(ownerID: found.userID, accessToken: token)
             async let pursuitsCall = client.pursuits(ownerID: found.userID, accessToken: token)
-            let documents = try await boardsCall
             let pursuits = try await pursuitsCall
+            let documents = MosaicVisit.authorizedDocuments(try await boardsCall, pursuits: pursuits)
             guard let snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
                 phase = .failed
                 return
@@ -707,8 +896,13 @@ struct MosaicVisitView: View {
             let store = ComposerStore(seedSnapshot: snapshot, persistToDisk: false, location: location)
             let visit = MosaicVisit(ownerID: found.userID, pursuits: pursuits, account: account, client: client)
             visit.media = media
+            visit.mosaicID = mosaicID
+            visit.onAccessChanged = { loadAttempt += 1 }
             let start = pursuitID.flatMap { wanted in
                 snapshot.pursuits.first { ComposerBoardSync.uuid($0.id) == wanted }?.id
+            }
+            if let pursuitID, start == nil, visit.access(pursuitID) != .open {
+                visit.askToRequest(pursuitID)
             }
             phase = .ready(store, MosaicChrome(isVisiting: true), visit, start: start)
         } catch is CancellationError {

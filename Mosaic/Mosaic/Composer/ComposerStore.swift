@@ -539,10 +539,12 @@ final class ComposerStore {
         persist()
     }
 
-    func saveMediaData(_ data: Data, fileExtension: String = "jpg") throws -> String {
+    /// A GIF keeps its own extension, so it uploads as a GIF and visitors download the animation.
+    func saveMediaData(_ data: Data, fileExtension: String? = nil) throws -> String {
         let directory = location.mediaDirectory
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fileName = "\(UUID().uuidString).\(fileExtension)"
+        let ext = fileExtension ?? (ComposerAnimatedImage.isGIF(data) ? "gif" : "jpg")
+        let fileName = "\(UUID().uuidString).\(ext)"
         let url = directory.appendingPathComponent(fileName)
         try data.write(to: url, options: .atomic)
         return fileName
@@ -575,8 +577,8 @@ final class ComposerStore {
         if let videoURL = prepared.videoURL {
             return try saveMediaFile(from: videoURL, removeSource: true)
         }
-        if let jpegData = prepared.jpegData {
-            return try saveMediaData(jpegData)
+        if let imageData = prepared.imageData {
+            return try saveMediaData(imageData)
         }
         throw CocoaError(.fileWriteUnknown)
     }

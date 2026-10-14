@@ -23,7 +23,7 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
-    func testLaunchShowsFourTabShellWithMosaicSelected() throws {
+    func testLaunchShowsThreeTabShellWithMosaicSelected() throws {
         let app = XCUIApplication()
         app.launchArguments += ["UITestSkipLaunchAnimation"]
         app.launch()
@@ -33,13 +33,10 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Mosaic"].waitForExistence(timeout: 2))
 
-        for title in ["Feed", "Mosaic", "Circle", "Discover"] {
+        for title in ["Mosaic", "Circle", "Discover"] {
             XCTAssertTrue(tabBar.buttons[title].exists)
         }
-
-        tabBar.buttons["Feed"].tap()
-        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.descendants(matching: .any)["feed.screen"].exists)
+        XCTAssertFalse(tabBar.buttons["Feed"].exists)
 
         tabBar.buttons["Circle"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["circle.screen"].waitForExistence(timeout: 2))

@@ -29,6 +29,26 @@ struct MosaicCirclePerson: Identifiable, Equatable, Sendable {
 
     var id: String { "\(kind.rawValue)-\(requestID?.uuidString ?? personID.uuidString)" }
     var name: String { displayName.isEmpty ? username : displayName }
+    var asResult: MosaicPersonResult {
+        MosaicPersonResult(id: personID, username: username, displayName: displayName, avatarPath: avatarPath)
+    }
+
+    /// An accepted request leaves Requests and appears first under Followers, without reloading the list.
+    static func accepting(_ request: MosaicCirclePerson, in people: [MosaicCirclePerson]) -> [MosaicCirclePerson] {
+        var next = people.filter { $0.id != request.id }
+        guard !next.contains(where: { $0.kind == .follower && $0.personID == request.personID }) else { return next }
+        var follower = request
+        follower.kind = .follower
+        follower.requestID = nil
+        next.insert(follower, at: next.firstIndex(where: { $0.kind == .follower }) ?? next.endIndex)
+        return next
+    }
+}
+
+/// How the signed-in person stands with someone listed in their Circle.
+struct MosaicCircleRelation: Equatable, Sendable {
+    var follows: Bool
+    var requested: Bool
 }
 
 /// Places Pursuit bubbles on rings around the Mosaic, like petals.
@@ -203,6 +223,12 @@ struct MosaicCircleClient: Sendable {
         return try Self.people(from: data)
     }
 
+    /// Distinct visitors since midnight in `timeZone`, by board. Boards without visits today are absent.
+    func dailyVisits(timeZone: TimeZone = .current, accessToken: String) async throws -> [UUID: Int] {
+        let data = try await rpc("circle_visits", body: ["p_time_zone": timeZone.identifier], accessToken: accessToken)
+        return try Self.visitCounts(from: data)
+    }
+
     func markSeen(documentID: UUID, accessToken: String) async throws {
         _ = try await rpc(
             "mark_circle_seen",
@@ -241,13 +267,27 @@ struct MosaicCircleClient: Sendable {
             return MosaicCircleBubble(
                 id: id,
                 role: role,
-                title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                title: ComposerTitle.singleLine(row["title"] as? String ?? ""),
                 level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: role),
                 followerCount: (row["follower_count"] as? NSNumber)?.intValue ?? 0,
                 pendingCount: (row["pending_count"] as? NSNumber)?.intValue ?? 0,
                 badgeCount: (row["badge_count"] as? NSNumber)?.intValue ?? 0
             )
         }
+    }
+
+    static func visitCounts(from data: Data) throws -> [UUID: Int] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        var counts: [UUID: Int] = [:]
+        for row in rows {
+            guard let id = (row["document_id"] as? String).flatMap(UUID.init(uuidString:)),
+                  let count = (row["visit_count"] as? NSNumber)?.intValue
+            else { continue }
+            counts[id] = count
+        }
+        return counts
     }
 
     static func people(from data: Data) throws -> [MosaicCirclePerson] {
@@ -443,10 +483,9 @@ struct MosaicCircleView: View {
     }
 
     private func title(for bubble: MosaicCircleBubble) -> String {
-        let local = store.snapshot.pursuits
-            .first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?
-            .title
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let local = ComposerTitle.singleLine(
+            store.snapshot.pursuits.first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?.title ?? ""
+        )
         if !local.isEmpty { return local }
         return bubble.title.isEmpty ? "Pursuit" : bubble.title
     }
@@ -528,6 +567,9 @@ struct MosaicCircleBubbleView: View {
     @State private var loaded = false
     @State private var status = ""
     @State private var busy: String?
+    @State private var relations: [UUID: MosaicCircleRelation] = [:]
+    @State private var visiting: MosaicVisitTarget?
+    @State private var dailyVisits: Int?
 
     private let muted = Color.white.opacity(0.55)
     private let field = Color.white.opacity(0.08)
@@ -537,10 +579,9 @@ struct MosaicCircleBubbleView: View {
 
     private var heading: String {
         if bubble.isMosaic { return "Mosaic" }
-        let local = store.snapshot.pursuits
-            .first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?
-            .title
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let local = ComposerTitle.singleLine(
+            store.snapshot.pursuits.first(where: { ComposerBoardSync.uuid($0.id) == bubble.id })?.title ?? ""
+        )
         if !local.isEmpty { return local }
         return bubble.title.isEmpty ? "Pursuit" : bubble.title
     }
@@ -548,6 +589,7 @@ struct MosaicCircleBubbleView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                engagement
                 if !loaded {
                     ProgressView()
                         .tint(muted)
@@ -593,7 +635,42 @@ struct MosaicCircleBubbleView: View {
         .toolbarBackground(MosaicBrand.inkBlack, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await load(markSeen: true) }
+        .navigationDestination(item: $visiting) { target in
+            MosaicVisitView(target: target)
+        }
         .accessibilityIdentifier("circle.bubbleScreen")
+    }
+
+    /// Followers takes 60% of the row and Daily Visits 40%.
+    private var engagement: some View {
+        let spacing: CGFloat = 12
+        let followerTotal = loaded ? followers.count : bubble.followerCount
+        return HStack(alignment: .top, spacing: spacing) {
+            statCard("\(heading) Followers", value: followerTotal)
+                .containerRelativeFrame(.horizontal) { width, _ in (width - 40 - spacing) * 0.6 }
+                .accessibilityIdentifier("circle.stat.followers")
+            statCard("Daily Visits", value: dailyVisits)
+                .containerRelativeFrame(.horizontal) { width, _ in (width - 40 - spacing) * 0.4 }
+                .accessibilityIdentifier("circle.stat.dailyVisits")
+        }
+    }
+
+    /// A missing value shows a dash, such as visits before they load or when they can't be read.
+    private func statCard(_ title: String, value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.custom("BradleyHandITCTT-Bold", size: 20, relativeTo: .headline))
+                .underline()
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            Text(value.map(String.init) ?? "—")
+                .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(value == nil ? muted : .white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
     }
 
     private func section<Content: View>(
@@ -616,21 +693,39 @@ struct MosaicCircleBubbleView: View {
         }
     }
 
+    /// Opens the person's Mosaic. A private one shows its lock and a request button there.
     private func personLabel(_ person: MosaicCirclePerson) -> some View {
-        HStack(spacing: 10) {
-            MosaicAvatarView(path: person.avatarPath, name: person.name, size: 34)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(person.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text("@\(person.username)")
-                    .font(.caption)
-                    .foregroundStyle(muted)
-                    .lineLimit(1)
+        let relation = relations[person.personID]
+        return Button {
+            visiting = MosaicVisitTarget(person: person.asResult)
+        } label: {
+            HStack(spacing: 10) {
+                MosaicAvatarView(path: person.avatarPath, name: person.name, size: 34)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 5) {
+                        Text(person.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if relation?.follows != true, relation?.requested == true {
+                            Image(systemName: "person.badge.clock.fill")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(MosaicVisitLockBadge.pendingColor)
+                                .accessibilityLabel("Requested")
+                        }
+                    }
+                    Text("@\(person.username)")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
             }
-            Spacer(minLength: 8)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens @\(person.username)’s Mosaic")
+        .accessibilityIdentifier("circle.person.\(person.username)")
     }
 
     private func roundButton(_ systemName: String, filled: Bool, action: @escaping () -> Void) -> some View {
@@ -666,6 +761,23 @@ struct MosaicCircleBubbleView: View {
     private func followerRow(_ person: MosaicCirclePerson) -> some View {
         HStack(spacing: 8) {
             personLabel(person)
+            if relations[person.personID]?.follows == true {
+                Menu {
+                    Button("Unfollow @\(person.username)", systemImage: "person.badge.minus", role: .destructive) {
+                        Task { await unfollow(person) }
+                    }
+                } label: {
+                    Image(systemName: "person.fill.checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(MosaicBrand.inkBlack)
+                        .frame(width: 28, height: 28)
+                        .background(.white, in: Circle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Following @\(person.username)")
+                .accessibilityIdentifier("circle.following.\(person.username)")
+            }
             Menu {
                 Button("Remove follower", role: .destructive) {
                     Task { await remove(person) }
@@ -695,6 +807,7 @@ struct MosaicCircleBubbleView: View {
     private func load(markSeen: Bool = false) async {
         guard let link = await connection() else { return }
         let client = link.client, token = link.token
+        async let visitsCall = try? client.dailyVisits(accessToken: token)
         do {
             people = try await client.people(documentID: bubble.id, accessToken: token)
             status = ""
@@ -702,9 +815,38 @@ struct MosaicCircleBubbleView: View {
             status = "This list could not be loaded."
         }
         loaded = true
+        if let visits = await visitsCall {
+            dailyVisits = visits[bubble.id] ?? 0
+        }
         if markSeen {
             try? await client.markSeen(documentID: bubble.id, accessToken: token)
         }
+        await loadRelations(token: token)
+    }
+
+    /// Whether the signed-in person follows, or has asked to see, each Mosaic in the list.
+    private func loadRelations(token: String) async {
+        guard let config = SupabaseSyncConfig.current() else { return }
+        let client = MosaicVisitClient(config: config)
+        let ids = Array(Set(people.map(\.personID)))
+        var found: [UUID: MosaicCircleRelation] = [:]
+        await withTaskGroup(of: (UUID, MosaicCircleRelation?).self) { group in
+            var queue = ids.makeIterator()
+            func next() {
+                guard let id = queue.next() else { return }
+                group.addTask {
+                    let profile = try? await client.profile(userID: id, accessToken: token)
+                    return (id, profile.map { MosaicCircleRelation(follows: $0.followsMosaic, requested: $0.isRequested) })
+                }
+            }
+            for _ in 0..<4 { next() }
+            while let (id, relation) = await group.next() {
+                if let relation { found[id] = relation }
+                next()
+            }
+        }
+        guard !Task.isCancelled else { return }
+        relations = found
     }
 
     private func respond(_ person: MosaicCirclePerson, accept: Bool) async {
@@ -714,10 +856,32 @@ struct MosaicCircleBubbleView: View {
         defer { busy = nil }
         do {
             try await client.respond(requestID: requestID, accept: accept, accessToken: token)
-            people.removeAll { $0.id == person.id }
+            withAnimation {
+                if accept {
+                    people = MosaicCirclePerson.accepting(person, in: people)
+                } else {
+                    people.removeAll { $0.id == person.id }
+                }
+            }
             status = ""
+            try? await client.markSeen(documentID: bubble.id, accessToken: token)
         } catch {
             status = "That request could not be answered."
+        }
+    }
+
+    private func unfollow(_ person: MosaicCirclePerson) async {
+        guard let config = SupabaseSyncConfig.current(), let token = await account?.accessToken() else { return }
+        busy = person.id
+        defer { busy = nil }
+        do {
+            try await MosaicVisitClient(config: config).unfollowMosaic(ownerID: person.personID, accessToken: token)
+            withAnimation {
+                relations[person.personID]?.follows = false
+            }
+            status = ""
+        } catch {
+            status = "@\(person.username) could not be unfollowed."
         }
     }
 

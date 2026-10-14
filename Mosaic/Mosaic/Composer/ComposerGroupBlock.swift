@@ -95,7 +95,7 @@ struct ComposerGroupCanvasBlock: View {
     var isViewing: Bool
     var canvasSize: CGSize
     var mediaMenuBlockID: ComposerBlockID?
-    var onPresentMedia: ((URL) -> Void)?
+    var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)?
     var onOpenFolder: (ComposerBlock) -> Void
     var onOpenMediaMenu: (ComposerBlockID) -> Void
     var onCropMedia: (ComposerBlockID) -> Void
@@ -276,7 +276,7 @@ struct ComposerGroupCanvasBlock: View {
             guard let member = block.groupMembers.first(where: { $0.id == id }) else { return }
             if isViewing {
                 guard let name = member.mediaFileName, !name.isEmpty else { return }
-                onPresentMedia?(store.mediaURL(for: name))
+                onPresentMedia?(store.mediaURL(for: name), ComposerMediaCrop(block: member))
             } else if playingMediaIDs.contains(id) {
                 playingMediaIDs.remove(id)
             } else {

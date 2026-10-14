@@ -680,13 +680,91 @@ struct MediaEdgeGrid: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+enum CarouselItemKind: String, Codable, Sendable {
+    case media
+    case social
+    case content
+}
+
+/// One card in a carousel or a calendar day. Items saved before kinds existed are media.
 struct CarouselMediaItem: Codable, Equatable, Identifiable, Sendable {
     var id: String
+    /// The photo or video, or a content card's cover. Empty for socials, and while a photo imports.
     var fileName: String
+    var kind: CarouselItemKind
+    /// A `ComposerSocialPlatform` or `ComposerContentPlatform` raw value.
+    var platform: String
+    /// A social profile link or username, or a content post's link.
+    var link: String
+    var title: String
 
-    init(id: String = UUID().uuidString, fileName: String) {
+    init(
+        id: String = UUID().uuidString,
+        fileName: String,
+        kind: CarouselItemKind = .media,
+        platform: String = "",
+        link: String = "",
+        title: String = ""
+    ) {
         self.id = id
         self.fileName = fileName
+        self.kind = kind
+        self.platform = platform
+        self.link = link
+        self.title = title
+    }
+
+    /// A photo or video still importing.
+    var isPending: Bool { kind == .media && fileName.isEmpty }
+
+    var hasContent: Bool {
+        switch kind {
+        case .media: !fileName.isEmpty
+        case .social, .content: !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var socialPlatform: ComposerSocialPlatform? {
+        kind == .social ? ComposerSocialPlatform(rawValue: platform) ?? .instagram : nil
+    }
+
+    var contentPlatform: ComposerContentPlatform? {
+        kind == .content ? ComposerContentPlatform(rawValue: platform) ?? .youtube : nil
+    }
+
+    /// Where tapping a social or content card goes.
+    var linkURL: URL? {
+        switch kind {
+        case .media: nil
+        case .social: socialPlatform?.profileURL(from: link)
+        case .content: ComposerContentPlatform.parse(link)?.url
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, fileName, kind, platform, link, title
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        fileName = try container.decodeIfPresent(String.self, forKey: .fileName) ?? ""
+        let rawKind = try container.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        kind = CarouselItemKind(rawValue: rawKind) ?? .media
+        platform = try container.decodeIfPresent(String.self, forKey: .platform) ?? ""
+        link = try container.decodeIfPresent(String.self, forKey: .link) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(fileName, forKey: .fileName)
+        guard kind != .media else { return }
+        try container.encode(kind, forKey: .kind)
+        try container.encode(platform, forKey: .platform)
+        try container.encode(link, forKey: .link)
+        try container.encode(title, forKey: .title)
     }
 }
 
@@ -757,7 +835,7 @@ struct CalendarDayEntry: Codable, Equatable, Identifiable, Sendable {
     var id: String { String(format: "%04d-%02d-%02d", year, month, day) }
 
     var hasContent: Bool {
-        media.contains { !$0.fileName.isEmpty } || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        media.contains(where: \.hasContent) || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     init(
@@ -1599,14 +1677,28 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
 }
 
 extension ComposerBlock {
-    /// The widget's name, or, when the name was cleared, its highest text item.
+    /// The widget's name, or, when the name was cleared, its highest text item, on one line.
+    /// The widget keeps its line breaks; this is the title used everywhere else and synced.
     var pursuitDisplayName: String {
-        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty { return text }
+        let name = ComposerTitle.singleLine(text)
+        if !name.isEmpty { return name }
         return pursuitTexts
             .sorted { ($0.y, $0.x) < ($1.y, $1.x) }
             .lazy
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { ComposerTitle.singleLine($0.text) }
             .first { !$0.isEmpty } ?? ""
+    }
+}
+
+enum ComposerTitle {
+    /// A title on one line with single spaces. Lines of one character each were a word written
+    /// downward, so they join without spaces; other lines join with a space.
+    nonisolated static func singleLine(_ raw: String) -> String {
+        let lines = raw
+            .split(whereSeparator: \.isNewline)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }
+        let separator = lines.count > 1 && lines.allSatisfy({ $0.count == 1 }) ? "" : " "
+        return lines.joined(separator: separator)
     }
 }

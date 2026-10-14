@@ -101,7 +101,7 @@ enum MosaicSettingsList {
             guard let id = ComposerBoardSync.uuid(pursuit.id) else { continue }
             used.insert(id)
             let remoteMatch = remote.first { $0.id == id && $0.role == "pursuit" }
-            let title = pursuit.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = ComposerTitle.singleLine(pursuit.title)
             pursuits.append(
                 MosaicVisibilityRow(
                     id: id,
@@ -112,7 +112,7 @@ enum MosaicSettingsList {
             )
         }
         for board in remote where board.role == "pursuit" && !used.contains(board.id) {
-            let title = board.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = ComposerTitle.singleLine(board.title)
             pursuits.append(
                 MosaicVisibilityRow(
                     id: board.id,
@@ -133,20 +133,153 @@ enum MosaicAvatar {
         "\(userID.uuidString.lowercased())/\(pictureID.uuidString.lowercased()).jpg"
     }
 
-    /// Center square, 512 points on a side, as JPEG.
-    static func jpeg(from image: UIImage) -> Data? {
+    static let maxZoom: CGFloat = 4
+
+    /// `pan` is how far the photo's center sits from the circle's center, in circle diameters.
+    /// The photo always covers the circle, so the pan is held to what the zoom leaves room for.
+    static func clampedPan(_ pan: CGSize, imageSize: CGSize, zoom: CGFloat) -> CGSize {
+        let short = min(imageSize.width, imageSize.height)
+        guard short > 0 else { return .zero }
+        let roomX = max(0, (imageSize.width / short * zoom - 1) / 2)
+        let roomY = max(0, (imageSize.height / short * zoom - 1) / 2)
+        return CGSize(width: min(max(pan.width, -roomX), roomX), height: min(max(pan.height, -roomY), roomY))
+    }
+
+    /// The square of the photo, in its own points, that shows inside the circle.
+    static func cropRect(imageSize: CGSize, zoom: CGFloat, pan: CGSize) -> CGRect {
+        let short = min(imageSize.width, imageSize.height)
+        let zoom = min(max(zoom, 1), maxZoom)
+        let pan = clampedPan(pan, imageSize: imageSize, zoom: zoom)
+        let crop = short / zoom
+        let center = CGPoint(x: imageSize.width / 2 - pan.width * crop, y: imageSize.height / 2 - pan.height * crop)
+        return CGRect(x: center.x - crop / 2, y: center.y - crop / 2, width: crop, height: crop)
+    }
+
+    /// The framed square, 512 points on a side, as JPEG. With no zoom or pan it is the center square.
+    static func jpeg(from image: UIImage, zoom: CGFloat = 1, pan: CGSize = .zero) -> Data? {
         let size = image.size
         guard size.width > 0, size.height > 0 else { return nil }
-        let crop = min(size.width, size.height)
-        let scale = side / crop
-        let drawSize = CGSize(width: size.width * scale, height: size.height * scale)
-        let origin = CGPoint(x: (side - drawSize.width) / 2, y: (side - drawSize.height) / 2)
+        let crop = cropRect(imageSize: size, zoom: zoom, pan: pan)
+        let scale = side / crop.width
+        let drawRect = CGRect(x: -crop.minX * scale, y: -crop.minY * scale,
+                              width: size.width * scale, height: size.height * scale)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let rendered = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
-            image.draw(in: CGRect(origin: origin, size: drawSize))
+            image.draw(in: drawRect)
         }
         return rendered.jpegData(compressionQuality: 0.85)
+    }
+}
+
+/// Frames a new profile picture: drag to move it and pinch to zoom inside the circle.
+struct MosaicAvatarCropper: View {
+    let image: UIImage
+    var onCancel: () -> Void
+    var onSave: (Data) -> Void
+
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var dragStart: CGSize?
+    @State private var pinchStart: CGFloat?
+
+    private let circle: CGFloat = 280
+
+    private var displaySize: CGSize {
+        let short = max(min(image.size.width, image.size.height), 1)
+        return CGSize(width: image.size.width / short * circle * zoom, height: image.size.height / short * circle * zoom)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text("Move and scale")
+                    .font(.headline)
+                HStack {
+                    Button("Cancel", action: onCancel)
+                        .accessibilityIdentifier("settings.avatarCropCancel")
+                    Spacer()
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+
+            Spacer(minLength: 0)
+            // The photo is drawn in overlays so its size, which grows with zoom, never widens the screen.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: circle + 120)
+                .overlay {
+                    photo
+                        .opacity(0.3)
+                }
+                .overlay {
+                    photo
+                        .frame(width: circle, height: circle)
+                        .clipShape(Circle())
+                }
+                .overlay {
+                    Circle()
+                        .stroke(.white, lineWidth: 2)
+                        .frame(width: circle, height: circle)
+                }
+                .clipped()
+                .contentShape(Rectangle())
+                .gesture(drag.simultaneously(with: pinch))
+                .accessibilityElement()
+                .accessibilityLabel("Profile picture framing")
+            Spacer(minLength: 0)
+
+            Button {
+                if let jpeg = MosaicAvatar.jpeg(from: image, zoom: zoom, pan: pan) {
+                    onSave(jpeg)
+                }
+            } label: {
+                Text("Done")
+                    .font(.headline)
+                    .foregroundStyle(MosaicBrand.inkBlack)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+            .accessibilityIdentifier("settings.avatarCropDone")
+        }
+        .background(MosaicBrand.inkBlack.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var photo: some View {
+        Image(uiImage: image)
+            .resizable()
+            .frame(width: displaySize.width, height: displaySize.height)
+            .offset(x: pan.width * circle, y: pan.height * circle)
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let start = dragStart ?? pan
+                dragStart = start
+                let moved = CGSize(width: start.width + value.translation.width / circle,
+                                   height: start.height + value.translation.height / circle)
+                pan = MosaicAvatar.clampedPan(moved, imageSize: image.size, zoom: zoom)
+            }
+            .onEnded { _ in dragStart = nil }
+    }
+
+    private var pinch: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let start = pinchStart ?? zoom
+                pinchStart = start
+                zoom = min(max(start * value.magnification, 1), MosaicAvatar.maxZoom)
+                pan = MosaicAvatar.clampedPan(pan, imageSize: image.size, zoom: zoom)
+            }
+            .onEnded { _ in pinchStart = nil }
     }
 }
 
@@ -352,6 +485,19 @@ struct MosaicSettingsView: View {
     var store: ComposerStore
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(ComposerRemoteSync.self) private var remoteSync: ComposerRemoteSync?
+
+    private struct AvatarCrop: Identifiable {
+        let id = UUID()
+        let image: UIImage
+    }
+
+    private enum SaveState {
+        case idle
+        case saving
+        case saved
+    }
+
     private enum EditField: Hashable {
         case username
         case displayName
@@ -388,6 +534,9 @@ struct MosaicSettingsView: View {
     @State private var avatarImage: UIImage?
     @State private var avatarItem: PhotosPickerItem?
     @State private var savingAvatar = false
+    @State private var avatarCrop: AvatarCrop?
+    @State private var linkCopied = false
+    @State private var saveState = SaveState.idle
     @FocusState private var focused: EditField?
 
     private let field = Color.white.opacity(0.08)
@@ -440,6 +589,7 @@ struct MosaicSettingsView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close")
                 Spacer()
+                saveButton
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -579,8 +729,68 @@ struct MosaicSettingsView: View {
         }
         .onChange(of: avatarItem) { _, item in
             guard let item else { return }
-            Task { await saveAvatar(from: item) }
+            Task { await pickAvatar(from: item) }
         }
+        .fullScreenCover(item: $avatarCrop) { crop in
+            MosaicAvatarCropper(image: crop.image) {
+                avatarCrop = nil
+            } onSave: { jpeg in
+                avatarCrop = nil
+                Task { await saveAvatar(jpeg) }
+            }
+        }
+    }
+
+    private var saveButton: some View {
+        Button {
+            Task { await saveAll() }
+        } label: {
+            Group {
+                switch saveState {
+                case .idle:
+                    Text("Save")
+                case .saving:
+                    ProgressView()
+                        .tint(MosaicBrand.inkBlack)
+                case .saved:
+                    Image(systemName: "checkmark")
+                        .accessibilityLabel("Saved")
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(MosaicBrand.inkBlack)
+            .frame(minWidth: 64)
+            .frame(height: 36)
+            .padding(.horizontal, 4)
+            .background(.white, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!profileLoaded || saveState == .saving)
+        .accessibilityIdentifier("settings.save")
+    }
+
+    /// Copies `mosaic://@username`, which opens this Mosaic in the app.
+    private var copyLinkButton: some View {
+        Button {
+            guard let link = MosaicLink.url(username: savedUsername) else { return }
+            UIPasteboard.general.string = link.absoluteString
+            linkCopied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                linkCopied = false
+            }
+        } label: {
+            Image(systemName: linkCopied ? "checkmark" : "square.on.square")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(MosaicBrand.inkBlack)
+                .frame(width: 28, height: 28)
+                .background(.white, in: Circle())
+                .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 3))
+        }
+        .buttonStyle(.plain)
+        .disabled(MosaicLink.url(username: savedUsername) == nil)
+        .accessibilityLabel(linkCopied ? "Mosaic link copied" : "Copy Mosaic link")
+        .accessibilityIdentifier("settings.copyMosaicLink")
     }
 
     private var avatarPicker: some View {
@@ -618,6 +828,10 @@ struct MosaicSettingsView: View {
         .disabled(!profileLoaded || savingAvatar)
         .accessibilityLabel(avatarImage == nil ? "Add profile picture" : "Change profile picture")
         .accessibilityIdentifier("settings.avatar")
+        .overlay(alignment: .bottomLeading) {
+            copyLinkButton
+                .offset(x: -2, y: 2)
+        }
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -735,6 +949,47 @@ struct MosaicSettingsView: View {
         .accessibilityLabel("Pursuit \(row.title)")
     }
 
+    /// Saves typed names, pushes the boards now instead of after the usual pause,
+    /// and rereads privacy so new Pursuits can be set.
+    private func saveAll() async {
+        saveState = .saving
+        status = ""
+        usernameMessage = ""
+        await commit(.username)
+        await commit(.displayName)
+        focused = nil
+        let namesSaved = MosaicSettingsList.username(from: username) == savedUsername
+            && MosaicSettingsList.displayName(from: displayName) == savedDisplayName
+        var synced = true
+        if let remoteSync {
+            synced = await remoteSync.syncNow(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+        }
+        await reloadVisibility()
+        if !namesSaved, status.isEmpty, usernameMessage.isEmpty {
+            status = "Fix your username to save it."
+        } else if !synced {
+            status = "Your Mosaic couldn’t sync. Check your connection and try again."
+        }
+        guard namesSaved, synced else {
+            saveState = .idle
+            return
+        }
+        saveState = .saved
+        try? await Task.sleep(for: .seconds(1.5))
+        if saveState == .saved { saveState = .idle }
+    }
+
+    private func reloadVisibility() async {
+        guard let config = SupabaseSyncConfig.current(),
+              let userID = account.session?.userID,
+              let token = await account.accessToken(),
+              let remote = try? await MosaicSettingsClient(config: config).loadBoards(userID: userID, accessToken: token)
+        else { return }
+        let listed = MosaicSettingsList.rows(snapshot: store.snapshot, remote: remote)
+        mosaic = listed.mosaic
+        pursuits = listed.pursuits
+    }
+
     private func commit(_ which: EditField) async {
         guard profileLoaded, saving != which else { return }
         switch which {
@@ -839,15 +1094,18 @@ struct MosaicSettingsView: View {
         }
     }
 
-    private func saveAvatar(from item: PhotosPickerItem) async {
+    private func pickAvatar(from item: PhotosPickerItem) async {
         avatarItem = nil
         guard let data = try? await item.loadTransferable(type: Data.self),
-              let picked = MosaicThumbnail.image(data: data, maxPixelSize: 1536),
-              let jpeg = MosaicAvatar.jpeg(from: picked)
+              let picked = MosaicThumbnail.image(data: data, maxPixelSize: 1536)
         else {
             status = "That photo could not be used."
             return
         }
+        avatarCrop = AvatarCrop(image: picked)
+    }
+
+    private func saveAvatar(_ jpeg: Data) async {
         guard let config = SupabaseSyncConfig.current(),
               let userID = account.session?.userID,
               let token = await account.accessToken()

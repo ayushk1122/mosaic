@@ -160,9 +160,7 @@ struct PursuitWidgetFace: View {
             CGSize(width: imagePanX * frame.width, height: imagePanY * frame.height),
             limits: MediaFraming.panLimits(contentAspect: aspect, frame: frame, zoom: zoom)
         )
-        return Image(uiImage: image)
-            .resizable()
-            .scaledToFill()
+        return ComposerPicture(image: image)
             .frame(width: filled.width * zoom, height: filled.height * zoom)
             .offset(pan)
             .frame(width: frame.width, height: frame.height)
@@ -380,7 +378,9 @@ struct PursuitWidgetEditor: View {
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     imageData = data
-                    image = UIImage(data: data)
+                    image = await Task.detached(priority: .userInitiated) {
+                        ComposerAnimatedImage.image(data: data)
+                    }.value
                     removeImage = false
                 }
                 pickedImage = nil

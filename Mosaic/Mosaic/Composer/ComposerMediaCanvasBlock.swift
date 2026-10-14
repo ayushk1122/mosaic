@@ -106,11 +106,7 @@ struct ComposerMediaCanvasBlock: View {
                     .allowsHitTesting(false)
             )
         } else if let preview {
-            framed(
-                Image(uiImage: preview)
-                    .resizable()
-                    .scaledToFill()
-            )
+            framed(ComposerPicture(image: preview))
         } else {
             ProgressView()
                 .tint(.white)
@@ -119,33 +115,7 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private func framed<Content: View>(_ content: Content) -> some View {
-        let frame = CGSize(width: displayWidth, height: shapeHeight)
-        let zoom = CGFloat(min(max(block.mediaZoom, 1), 4))
-        let filled = MediaFraming.fillSize(contentAspect: contentAspect, in: frame)
-        let pan = MediaFraming.clampedPan(
-            CGSize(width: block.mediaPanX * frame.width, height: block.mediaPanY * frame.height),
-            limits: MediaFraming.panLimits(contentAspect: contentAspect, frame: frame, zoom: zoom)
-        )
-        return content
-            .frame(width: filled.width * zoom, height: filled.height * zoom)
-            .offset(pan)
-            .frame(width: frame.width, height: frame.height)
-            .clipped()
-            .clipShape(mediaClipShape(block.mediaShape))
-    }
-
-    private var shapeHeight: CGFloat {
-        displayWidth / max(frameAspect, MediaFrameShape.minimumAspect)
-    }
-
-    private var frameAspect: CGFloat {
-        if block.mediaFrameAspect > 0.05 {
-            return CGFloat(block.mediaFrameAspect)
-        }
-        if let preset = block.mediaShape.presetAspect {
-            return preset
-        }
-        return max(contentAspect, 0.4)
+        ComposerMediaCrop(block: block).framed(content, width: displayWidth, contentAspect: contentAspect)
     }
 
     private var contentAspect: CGFloat {
@@ -217,10 +187,12 @@ struct ComposerMediaCanvasBlock: View {
         if isVideo(url) {
             return await videoPoster(at: url)
         }
-        return UIImage(contentsOfFile: url.path)
+        return await Task.detached(priority: .userInitiated) {
+            ComposerAnimatedImage.image(contentsOf: url)
+        }.value
     }
 
-    private static func videoAspect(at url: URL) async -> CGFloat {
+    static func videoAspect(at url: URL) async -> CGFloat {
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return 16.0 / 9.0 }
         let natural = try? await track.load(.naturalSize)
@@ -240,6 +212,51 @@ struct ComposerMediaCanvasBlock: View {
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
         guard let cgImage = try? await generator.image(at: time).image else { return nil }
         return UIImage(cgImage: cgImage)
+    }
+}
+
+/// A media block's frame shape, zoom, and pan. The same crop draws at any width.
+struct ComposerMediaCrop: Equatable {
+    var shape: MediaFrameShape
+    var frameAspect: Double
+    var zoom: Double
+    var panX: Double
+    var panY: Double
+
+    init(block: ComposerBlock) {
+        shape = block.mediaShape
+        frameAspect = block.mediaFrameAspect
+        zoom = block.mediaZoom
+        panX = block.mediaPanX
+        panY = block.mediaPanY
+    }
+
+    /// Width divided by height of the cropped frame.
+    func aspect(contentAspect: CGFloat) -> CGFloat {
+        let aspect: CGFloat = if frameAspect > 0.05 {
+            CGFloat(frameAspect)
+        } else if let preset = shape.presetAspect {
+            preset
+        } else {
+            max(contentAspect, 0.4)
+        }
+        return max(aspect, MediaFrameShape.minimumAspect)
+    }
+
+    func framed<Content: View>(_ content: Content, width: CGFloat, contentAspect: CGFloat) -> some View {
+        let frame = CGSize(width: width, height: width / aspect(contentAspect: contentAspect))
+        let zoom = CGFloat(min(max(zoom, 1), 4))
+        let filled = MediaFraming.fillSize(contentAspect: contentAspect, in: frame)
+        let pan = MediaFraming.clampedPan(
+            CGSize(width: panX * frame.width, height: panY * frame.height),
+            limits: MediaFraming.panLimits(contentAspect: contentAspect, frame: frame, zoom: zoom)
+        )
+        return content
+            .frame(width: filled.width * zoom, height: filled.height * zoom)
+            .offset(pan)
+            .frame(width: frame.width, height: frame.height)
+            .clipped()
+            .clipShape(mediaClipShape(shape))
     }
 }
 
@@ -421,7 +438,8 @@ enum ComposerImagePreparation: Sendable {
 }
 
 struct PreparedCarouselMedia: Sendable {
-    var jpegData: Data?
+    /// A JPEG, or the original bytes of a GIF.
+    var imageData: Data?
     var videoURL: URL?
 }
 
@@ -448,10 +466,13 @@ enum ComposerMediaImport {
             return PreparedCarouselMedia(videoURL: movie.url)
         }
         guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
+        if ComposerAnimatedImage.isGIF(data) {
+            return PreparedCarouselMedia(imageData: data)
+        }
         let prepared = await Task.detached(priority: .userInitiated) {
             ComposerImagePreparation.jpeg(from: data) ?? data
         }.value
-        return PreparedCarouselMedia(jpegData: prepared)
+        return PreparedCarouselMedia(imageData: prepared)
     }
 
     @MainActor
@@ -514,11 +535,20 @@ struct ComposerMediaLightbox: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
 
     let url: URL
+    /// A media block's crop, shown as on the board. Carousel items have none.
+    var crop: ComposerMediaCrop? = nil
     var onClose: () -> Void
 
     @State private var image: UIImage?
+    @State private var videoAspect: CGFloat?
 
     private var isVideo: Bool { ComposerMediaStill.isVideo(url) }
+
+    private var contentAspect: CGFloat? {
+        if isVideo { return videoAspect }
+        guard let image, image.size.height > 0 else { return nil }
+        return image.size.width / image.size.height
+    }
 
     var body: some View {
         ZStack {
@@ -526,15 +556,23 @@ struct ComposerMediaLightbox: View {
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onClose)
-            if isVideo {
+            if let crop, let contentAspect {
+                GeometryReader { proxy in
+                    let width = min(
+                        max(proxy.size.width - 32, 1),
+                        max(proxy.size.height - 56, 1) * crop.aspect(contentAspect: contentAspect)
+                    )
+                    crop.framed(croppedContent, width: width, contentAspect: contentAspect)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+                .allowsHitTesting(false)
+            } else if crop == nil, isVideo {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: false)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 28)
                     .allowsHitTesting(false)
-            } else if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
+            } else if crop == nil, let image {
+                ComposerPicture(image: image, contentMode: .fit)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 28)
                     .allowsHitTesting(false)
@@ -544,14 +582,29 @@ struct ComposerMediaLightbox: View {
             }
         }
         .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
-            guard !isVideo else { return }
-            let loaded = await ComposerMediaStill.image(at: url)
-            guard !Task.isCancelled else { return }
-            image = loaded
+            if isVideo {
+                guard crop != nil else { return }
+                let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
+                guard !Task.isCancelled else { return }
+                videoAspect = loaded
+            } else {
+                let loaded = await ComposerMediaStill.image(at: url)
+                guard !Task.isCancelled else { return }
+                image = loaded
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isModal)
         .accessibilityLabel(isVideo ? "Video" : "Photo")
         .accessibilityAction(.escape, onClose)
+    }
+
+    @ViewBuilder
+    private var croppedContent: some View {
+        if isVideo {
+            ComposerInlineVideo(url: url, isPaused: false, fillsFrame: false)
+        } else if let image {
+            ComposerPicture(image: image)
+        }
     }
 }
