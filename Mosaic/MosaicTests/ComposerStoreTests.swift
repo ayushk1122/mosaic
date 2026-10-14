@@ -231,7 +231,7 @@ struct ComposerStoreTests {
         let social = BlockMenuOption.menuOptions(matching: "social")
         #expect(social == [.social])
         let instagram = BlockMenuOption.menuOptions(matching: "instagram")
-        #expect(instagram == [.social])
+        #expect(instagram == [.social, .content])
         #expect(mosaicMenu.contains(.social))
         #expect(pursuitPage.contains(.social))
     }

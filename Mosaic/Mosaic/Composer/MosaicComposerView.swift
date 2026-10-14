@@ -14,6 +14,7 @@ struct MosaicComposerView: View {
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @State private var visitMediaAttempt = 0
     @State private var menuExpanded = false
     @State private var placingOption: BlockMenuOption?
     @State private var ghostLocation: CGPoint = .zero
@@ -177,7 +178,21 @@ struct MosaicComposerView: View {
     }
 
     var body: some View {
-        measuredComposer
+        Group {
+            if store.isWaitingForDocument(documentID) {
+                VStack(spacing: 16) {
+                    ProgressView().tint(.white)
+                    Text("This board is still downloading.")
+                    Button("Back to Mosaic") { dismiss() }
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MosaicBrand.inkBlack)
+                .accessibilityIdentifier("pursuit.loading")
+            } else {
+                measuredComposer
+            }
+        }
             .toolbar((mosaicTabBarHidden || openScrapbookID != nil) ? .hidden : .visible, for: .tabBar)
             .navigationTitle("")
             .toolbar(.hidden, for: .navigationBar)
@@ -207,6 +222,37 @@ struct MosaicComposerView: View {
             }
             .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
             .environment(\.composerPaperPage, isBookPage)
+            .environment(\.composerMediaVersions, store.mediaVersions)
+            .task(id: visitMediaAttempt) {
+                guard let media = visit?.media else { return }
+                guard let token = await account?.accessToken() else {
+                    if !Task.isCancelled { media.needsRetry(documentID: documentID) }
+                    return
+                }
+                await media.load(documentID: documentID, store: store, token: token)
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let media = visit?.media {
+                    let id = media.boardID(documentID)
+                    if media.loading.contains(id) {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Loading media…").font(.caption)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial)
+                    } else if media.failed.contains(id) {
+                        HStack {
+                            Text("Some media couldn’t load.").font(.caption)
+                            Button("Retry") { visitMediaAttempt += 1 }
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial)
+                    }
+                }
+            }
     }
 
     private var measuredComposer: some View {
@@ -920,7 +966,14 @@ struct MosaicComposerView: View {
         guard canvasSize.width > 0, canvasSize.height > 0 else { return }
         let position = normalizedPosition(from: point)
         let newID = store.addBlock(option.blockKind, at: position, to: documentID)
-        if option.blockKind == .link {
+        if option == .content {
+            if var item = store.block(with: newID, in: documentID) {
+                item.socialPlatform = "content:youtube"
+                item.text = "Content"
+                store.updateBlock(item, in: documentID)
+            }
+            selectedBlockID = newID
+        } else if option.blockKind == .link {
             editingBlockID = newID
         } else if option.blockKind == .social {
             selectedBlockID = newID
@@ -1313,6 +1366,10 @@ struct MosaicComposerView: View {
             } else if styleMenuBlockID != block.id {
                 toggleMediaPlayback(block.id)
             }
+        } else if isTap, block.isContent {
+            selectedBlockID = block.id
+            editingBlockID = nil
+            focusedTextBlockID = nil
         } else if isTap, block.kind == .carousel, !iconAlreadyHandled {
             selectedBlockID = block.id
             styleMenuBlockID = nil
@@ -1470,7 +1527,7 @@ struct MosaicComposerView: View {
     }
 
     private func relocateEnabled(for block: ComposerBlock) -> Bool {
-        guard !chrome.isViewing, supportsCanvasGestures(block.kind), placingOption == nil else { return false }
+        guard !chrome.isViewing, (block.isContent || supportsCanvasGestures(block.kind)), placingOption == nil else { return false }
         if styleMenuBlockID == nil { return true }
         return block.kind == .media && styleMenuBlockID == block.id
     }

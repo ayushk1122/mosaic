@@ -5,6 +5,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ComposerMediaCanvasBlock: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     @Binding var block: ComposerBlock
     let mediaURL: URL?
     let scale: CGFloat
@@ -67,11 +69,15 @@ struct ComposerMediaCanvasBlock: View {
                     )
                 ]
             )
-        .task(id: mediaURL) {
+        .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
             if isVideo, let mediaURL {
-                videoAspect = await Self.videoAspect(at: mediaURL)
+                let loaded = await Self.videoAspect(at: mediaURL)
+                guard !Task.isCancelled else { return }
+                videoAspect = loaded
             } else {
-                preview = await Self.loadPreview(at: mediaURL)
+                let loaded = await Self.loadPreview(at: mediaURL)
+                guard !Task.isCancelled else { return }
+                preview = loaded
             }
         }
     }
@@ -289,6 +295,8 @@ private struct MediaIconHitShape: Shape {
 }
 
 struct ComposerInlineVideo: UIViewRepresentable {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     let url: URL
     let isPaused: Bool
     let fillsFrame: Bool
@@ -306,7 +314,7 @@ struct ComposerInlineVideo: UIViewRepresentable {
 
     func updateUIView(_ uiView: ComposerPlayerView, context: Context) {
         uiView.playerLayer.videoGravity = fillsFrame ? .resizeAspectFill : .resizeAspect
-        if context.coordinator.url != url {
+        if context.coordinator.url != url || context.coordinator.mediaVersion != mediaVersions[url.lastPathComponent, default: 0] {
             context.coordinator.stop()
             installPlayer(on: uiView, context: context)
             return
@@ -325,6 +333,7 @@ struct ComposerInlineVideo: UIViewRepresentable {
         player.actionAtItemEnd = .none
         view.player = player
         context.coordinator.url = url
+        context.coordinator.mediaVersion = mediaVersions[url.lastPathComponent, default: 0]
         context.coordinator.player = player
         context.coordinator.isPaused = isPaused
         context.coordinator.startLooping()
@@ -345,6 +354,7 @@ struct ComposerInlineVideo: UIViewRepresentable {
 
     final class Coordinator {
         var url: URL?
+        var mediaVersion = 0
         var player: AVPlayer?
         var isPaused = false
         private var endObserver: NSObjectProtocol?
@@ -501,6 +511,8 @@ private struct MediaBodyTapModifier: ViewModifier {
 }
 
 struct ComposerMediaLightbox: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     let url: URL
     var onClose: () -> Void
 
@@ -531,9 +543,11 @@ struct ComposerMediaLightbox: View {
                     .tint(.white)
             }
         }
-        .task {
+        .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
             guard !isVideo else { return }
-            image = await ComposerMediaStill.image(at: url)
+            let loaded = await ComposerMediaStill.image(at: url)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isModal)

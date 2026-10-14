@@ -10,6 +10,8 @@ struct ComposerClipboardItem: Equatable {
 @Observable
 final class ComposerStore {
     private(set) var snapshot: ComposerSnapshot
+    private(set) var isRestoringDocuments = false
+    private(set) var mediaVersions: [String: Int] = [:]
     private var undoStacks: [String: [ComposerUndoEntry]] = [:]
     private var undoCoalesce: ComposerUndoCoalesce?
     private var isApplyingUndo = false
@@ -31,6 +33,8 @@ final class ComposerStore {
         self.fileManager = fileManager
         self.persistToDisk = persistToDisk ?? !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
         self.location = location ?? .shared(fileManager: fileManager)
+        isRestoringDocuments = (try? Data(contentsOf: self.location.syncStateURL))
+            .flatMap { try? JSONDecoder().decode(ComposerSyncState.self, from: $0) }?.pendingRestore ?? false
         var shouldPersistPrune = false
         if let seedSnapshot {
             snapshot = seedSnapshot
@@ -38,7 +42,7 @@ final class ComposerStore {
             snapshot = .empty
         } else if let loaded = Self.loadSnapshot(at: self.location.snapshotURL, fileManager: fileManager, decoder: decoder) {
             snapshot = loaded
-            shouldPersistPrune = !ComposerBoardSync.pruneUnreferenced(&snapshot).isEmpty
+            shouldPersistPrune = !isRestoringDocuments && !ComposerBoardSync.pruneUnreferenced(&snapshot).isEmpty
             shouldPersistPrune = Self.refreshPursuitTitles(&snapshot) || shouldPersistPrune
         } else {
             snapshot = .empty
@@ -46,6 +50,55 @@ final class ComposerStore {
         if shouldPersistPrune {
             persist()
         }
+    }
+
+    func isWaitingForDocument(_ id: ComposerDocumentID?) -> Bool {
+        guard let id else { return false }
+        return isRestoringDocuments && !snapshot.pursuits.contains { $0.id == id }
+    }
+
+    /// Preserve every edit made on the landing board while adding the downloaded children.
+    /// The pending flag stays set until both local files have been saved successfully.
+    func finishRestoring(snapshot remote: ComposerSnapshot, state: ComposerSyncState) throws {
+        var merged = snapshot
+        let existing = Set(merged.pursuits.map(\.id))
+        merged.pursuits.append(contentsOf: remote.pursuits.filter { !existing.contains($0.id) })
+        let ids = Set(merged.pursuits.map { $0.id.rawValue })
+        guard ComposerBoardSync.referencedIDs(in: merged).isSubset(of: ids) else {
+            throw ComposerRestoreError.incompleteBoards
+        }
+        ComposerBoardSync.pruneUnreferenced(&merged)
+        Self.refreshPursuitTitles(&merged)
+        if persistToDisk {
+            try encoder.encode(merged).write(to: location.snapshotURL, options: .atomic)
+            try encoder.encode(state).write(to: location.syncStateURL, options: .atomic)
+        }
+        snapshot = merged
+        // Undoing a landing-board edit must also recover children that were still downloading.
+        for key in Array(undoStacks.keys) {
+            guard var entries = undoStacks[key] else { continue }
+            for index in entries.indices {
+                guard key == Self.undoKey(nil) || entries[index].pursuits != nil else { continue }
+                var saved = entries[index].pursuits ?? merged.pursuits
+                let savedIDs = Set(saved.map(\.id))
+                saved.append(contentsOf: remote.pursuits.filter { !savedIDs.contains($0.id) })
+                if key == Self.undoKey(nil) {
+                    var before = merged
+                    before.mosaicBlocks = entries[index].blocks
+                    before.pursuits = saved
+                    ComposerBoardSync.pruneUnreferenced(&before)
+                    saved = before.pursuits
+                }
+                entries[index].pursuits = saved
+            }
+            undoStacks[key] = entries
+        }
+        isRestoringDocuments = false
+        onPersisted?()
+    }
+
+    func mediaDidDownload(_ fileName: String) {
+        mediaVersions[fileName, default: 0] += 1
     }
 
     func canUndo(in documentID: ComposerDocumentID?) -> Bool {

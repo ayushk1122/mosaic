@@ -39,7 +39,82 @@ struct SupabaseDocumentSync: Sendable {
 
     func ownMosaicID(accessToken: String) async throws -> UUID? {
         let data = try await rpc(name: "own_mosaic_id", body: [:], accessToken: accessToken)
-        return Self.mosaicID(from: data)
+        // A malformed response must not be treated as a new account.
+        if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "null" {
+            return nil
+        }
+        guard let id = Self.mosaicID(from: data) else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        return id
+    }
+
+    /// Fetch only the landing board so the editor can open before all Pursuits arrive.
+    func ownDocument(id: UUID, ownerID: UUID, accessToken: String) async throws -> ComposerRestoredDocument {
+        var components = URLComponents(url: config.url.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
+            URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())"),
+            URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision")
+        ]
+        var request = URLRequest(url: components.url!)
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+        let rows = try JSONDecoder().decode([ComposerRestoredDocument].self, from: data)
+        guard rows.count == 1, let row = rows.first, row.id == id, row.ownerID == ownerID, row.revision > 0 else {
+            throw SupabaseDocumentSyncError.unexpectedResponse
+        }
+        return row
+    }
+
+    /// Owner-only restoration includes revisions from the same rows as the board bodies.
+    /// Keep paging until an empty page, even if the server caps responses below our limit.
+    func ownDocuments(ownerID: UUID, accessToken: String) async throws -> [ComposerRestoredDocument] {
+        var result: [ComposerRestoredDocument] = []
+        var seen = Set<UUID>()
+        while true {
+            try Task.checkCancellation()
+            var components = URLComponents(url: config.url.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [
+                URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
+                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision"),
+                URLQueryItem(name: "order", value: "id.asc"),
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "offset", value: String(result.count))
+            ]
+            var request = URLRequest(url: components.url!)
+            request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw SupabaseDocumentSyncError.requestFailed
+            }
+            let page = try JSONDecoder().decode([ComposerRestoredDocument].self, from: data)
+            guard !page.isEmpty else { return result }
+            for row in page {
+                guard row.ownerID == ownerID, row.revision > 0, seen.insert(row.id).inserted else {
+                    throw SupabaseDocumentSyncError.unexpectedResponse
+                }
+            }
+            result.append(contentsOf: page)
+        }
+    }
+
+    func downloadOriginal(ownerID: UUID, assetID: UUID, accessToken: String) async throws -> Data {
+        let path = ComposerMediaCatalog.objectPath(ownerID: ownerID, assetID: assetID, name: "original")
+        let url = config.url.appending(path: "storage/v1/object/authenticated/media").appending(path: path)
+        var request = URLRequest(url: url)
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+            throw ComposerRestoreError.mediaUnavailable
+        }
+        return data
     }
 
     func save(push: ComposerDocumentPush, accessToken: String) async throws -> Int64 {

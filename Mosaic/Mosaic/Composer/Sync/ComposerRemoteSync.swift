@@ -4,11 +4,13 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     var mosaicID: UUID
     var revisions: [String: Int64]
     var mediaAssets: [String: String]
+    var pendingRestore: Bool
 
-    init(mosaicID: UUID, revisions: [String: Int64] = [:], mediaAssets: [String: String] = [:]) {
+    init(mosaicID: UUID, revisions: [String: Int64] = [:], mediaAssets: [String: String] = [:], pendingRestore: Bool = false) {
         self.mosaicID = mosaicID
         self.revisions = revisions
         self.mediaAssets = mediaAssets
+        self.pendingRestore = pendingRestore
     }
 
     init(from decoder: Decoder) throws {
@@ -16,6 +18,7 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
         mosaicID = try container.decode(UUID.self, forKey: .mosaicID)
         revisions = try container.decodeIfPresent([String: Int64].self, forKey: .revisions) ?? [:]
         mediaAssets = try container.decodeIfPresent([String: String].self, forKey: .mediaAssets) ?? [:]
+        pendingRestore = try container.decodeIfPresent(Bool.self, forKey: .pendingRestore) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -23,6 +26,7 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
         try container.encode(mosaicID, forKey: .mosaicID)
         try container.encode(revisions, forKey: .revisions)
         try container.encode(mediaAssets, forKey: .mediaAssets)
+        try container.encode(pendingRestore, forKey: .pendingRestore)
     }
 
     static func choosingMosaicID(local: UUID?, remote: UUID?) -> UUID {
@@ -37,7 +41,7 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case mosaicID, revisions, mediaAssets
+        case mosaicID, revisions, mediaAssets, pendingRestore
     }
 }
 
@@ -56,11 +60,14 @@ final class ComposerRemoteSync {
         self.location = location
     }
 
+    var canUpload: Bool { loadState()?.pendingRestore != true }
+
     func schedule(
         snapshot: ComposerSnapshot,
         account: MosaicAccount,
         mediaFile: @escaping @MainActor (String) -> URL
     ) {
+        guard canUpload else { return }
         self.mediaFile = mediaFile
         latest = snapshot
         wait?.cancel()
@@ -94,6 +101,7 @@ final class ComposerRemoteSync {
         let client = SupabaseDocumentSync(config: config)
         do {
             var state = loadState()
+            guard state?.pendingRestore != true else { return }
             let remoteMosaicID = try await client.ownMosaicID(accessToken: accessToken)
             guard ComposerSyncState.mayPush(local: state?.mosaicID, remote: remoteMosaicID) else { return }
             let mosaicID = ComposerSyncState.choosingMosaicID(local: state?.mosaicID, remote: remoteMosaicID)

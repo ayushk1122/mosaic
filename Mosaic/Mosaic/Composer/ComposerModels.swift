@@ -46,6 +46,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case calendar
     case graph
     case link
+    case content
     case node
     case scrapbook
     case tabs
@@ -67,6 +68,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .carousel: "Carousel"
         case .calendar: "Calendar"
         case .graph: "Graph"
+        case .content: "Content"
         case .link: "Link"
         case .node: "Node"
         case .scrapbook: "Scrapbook"
@@ -89,6 +91,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .carousel: "rectangle.stack"
         case .calendar: "calendar"
         case .graph: "chart.xyaxis.line"
+        case .content: "play.rectangle"
         case .link: "link"
         case .node: "folder"
         case .scrapbook: "book.closed"
@@ -111,6 +114,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .carousel: "◎"
         case .calendar: "▦"
         case .graph: "↗"
+        case .content: "▶"
         case .link: "🔗"
         case .node: "N"
         case .scrapbook: "Bk"
@@ -133,6 +137,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .carousel: .carousel
         case .calendar: .calendar
         case .graph: .graph
+        case .content: .link
         case .link: .link
         case .node: .node
         case .scrapbook: .scrapbook
@@ -155,6 +160,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .carousel: "carousel carosoul slider"
         case .calendar: "calendar date day month year schedule"
         case .graph: "graph chart line plot axis"
+        case .content: "content video post reel youtube instagram tiktok twitch"
         case .link: "link url web"
         case .group: "group selection multi select cluster"
         case .node: "node folder organize"

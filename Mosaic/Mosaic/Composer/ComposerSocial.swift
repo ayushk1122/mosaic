@@ -293,6 +293,63 @@ private struct SocialOpenModifier: ViewModifier {
     }
 }
 
+/// Shared source rows for profile links and individual content links.
+struct ComposerSocialPlatformPicker: View {
+    let platforms: [ComposerSocialPlatform]
+    @Binding var platform: ComposerSocialPlatform
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Choose a platform")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.72))
+            VStack(spacing: 8) {
+                ForEach(platforms) { option in
+                    Button {
+                        platform = option
+                    } label: {
+                        HStack(spacing: 12) {
+                            ComposerSocialMark(platform: option, side: 28)
+                            Text(option.title)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.white)
+                            Spacer()
+                            if platform == option {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            platform == option ? Color.white.opacity(0.12) : Color.white.opacity(0.04),
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+struct ComposerSocialLinkField: View {
+    let placeholder: String
+    @Binding var link: String
+
+    var body: some View {
+        TextField(placeholder, text: $link)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .foregroundStyle(.white)
+    }
+}
+
 struct ComposerSocialEditor: View {
     @State private var platform: ComposerSocialPlatform
     @State private var link: String
@@ -314,44 +371,8 @@ struct ComposerSocialEditor: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Choose a platform")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-                VStack(spacing: 8) {
-                    ForEach(ComposerSocialPlatform.allCases) { option in
-                        Button {
-                            platform = option
-                        } label: {
-                            HStack(spacing: 12) {
-                                ComposerSocialMark(platform: option, side: 28)
-                                Text(option.title)
-                                    .font(.body.weight(.medium))
-                                    .foregroundStyle(.white)
-                                Spacer()
-                                if platform == option {
-                                    Image(systemName: "checkmark")
-                                        .font(.body.weight(.semibold))
-                                        .foregroundStyle(.white)
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(
-                                platform == option ? Color.white.opacity(0.12) : Color.white.opacity(0.04),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                TextField("Profile link or username", text: $link)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .foregroundStyle(.white)
+                ComposerSocialPlatformPicker(platforms: ComposerSocialPlatform.allCases, platform: $platform)
+                ComposerSocialLinkField(placeholder: "Profile link or username", link: $link)
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

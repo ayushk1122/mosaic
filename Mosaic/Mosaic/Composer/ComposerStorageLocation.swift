@@ -51,7 +51,7 @@ enum ComposerLegacyStorage {
               let data = try? Data(contentsOf: location.snapshotURL),
               let snapshot = try? JSONDecoder().decode(ComposerSnapshot.self, from: data)
         else { return false }
-        return snapshot.pursuits.isEmpty && snapshot.mosaicBlocks.count <= 1
+        return ComposerAccountRestore.isStarterBoard(snapshot)
     }
 
     /// Moves the boards file, media, and sync state. An account that already has boards keeps them.
