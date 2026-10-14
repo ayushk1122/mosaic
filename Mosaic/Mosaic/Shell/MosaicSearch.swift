@@ -76,7 +76,7 @@ struct MosaicSearchClient: Sendable {
     var config: SupabaseSyncConfig
     var session: URLSession = .shared
 
-    /// Usernames that start with the query, at most 20, through `search_profiles`.
+    /// People whose username or display name matches the query, at most 20, through `search_profiles`.
     func people(matching query: String, accessToken: String) async throws -> [MosaicPersonResult] {
         let endpoint = config.url
             .appendingPathComponent("rest")
@@ -352,7 +352,7 @@ struct MosaicDiscoverView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(muted)
-            TextField("", text: $query, prompt: Text("Search usernames").foregroundStyle(muted))
+            TextField("", text: $query, prompt: Text("Search names and usernames").foregroundStyle(muted))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -388,7 +388,7 @@ struct MosaicDiscoverView: View {
             note("Search is not available right now.")
         } else if results.isEmpty {
             if phase == .done {
-                note("No one goes by @\(cleaned) yet.")
+                note("No one matches “\(cleaned)” yet.")
             } else {
                 ProgressView()
                     .tint(muted)

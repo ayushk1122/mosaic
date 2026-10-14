@@ -84,7 +84,12 @@ struct ComposerBannerBlock: View {
             onSelect()
         }
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
-            image = mediaURL.flatMap { UIImage(contentsOfFile: $0.path) }
+            let url = mediaURL
+            let loaded = await Task.detached(priority: .userInitiated) {
+                url.flatMap(ComposerAnimatedImage.image(contentsOf:))
+            }.value
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("composer.banner.\(block.id.rawValue)")
@@ -105,9 +110,7 @@ struct ComposerBannerBlock: View {
             .overlay {
                 Group {
                     if let image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
+                        ComposerPicture(image: image)
                     } else if let mediaURL, Self.isVideo(mediaURL) {
                         ComposerInlineVideo(url: mediaURL, isPaused: true, fillsFrame: true)
                             .allowsHitTesting(false)

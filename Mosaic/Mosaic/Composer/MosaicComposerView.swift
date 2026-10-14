@@ -438,7 +438,7 @@ struct MosaicComposerView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.88), value: openScrapbookID)
             .overlay {
                 if let focusedMedia {
-                    ComposerMediaLightbox(url: focusedMedia.url) {
+                    ComposerMediaLightbox(url: focusedMedia.url, crop: focusedMedia.crop) {
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                             self.focusedMedia = nil
                         }
@@ -789,8 +789,8 @@ struct MosaicComposerView: View {
             onUngroup: {
                 ungroup(block.id)
             },
-            onPresentMedia: chrome.isViewing ? { url in
-                presentMedia(at: url)
+            onPresentMedia: chrome.isViewing ? { url, crop in
+                presentMedia(at: url, crop: crop)
             } : nil,
             onBodyTap: nil,
             onOpenSocial: nil,
@@ -1731,16 +1731,16 @@ struct MosaicComposerView: View {
         selectedBlockID = blockID
     }
 
-    private func presentMedia(at url: URL) {
+    private func presentMedia(at url: URL, crop: ComposerMediaCrop?) {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
-            focusedMedia = FocusedComposerMedia(url: url)
+            focusedMedia = FocusedComposerMedia(url: url, crop: crop)
         }
     }
 
     private func handleViewingTap(on block: ComposerBlock) {
         if block.kind == .media {
             guard let name = block.mediaFileName, !name.isEmpty else { return }
-            presentMedia(at: store.mediaURL(for: name))
+            presentMedia(at: store.mediaURL(for: name), crop: ComposerMediaCrop(block: block))
         } else if isFolder(block.kind) {
             openPursuit(block)
         } else if block.kind == .social {
@@ -2238,6 +2238,7 @@ private struct TextPinchVisual: Equatable {
 
 private struct FocusedComposerMedia: Identifiable, Equatable {
     let url: URL
+    var crop: ComposerMediaCrop?
     var id: String { url.absoluteString }
 }
 

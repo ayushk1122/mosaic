@@ -32,7 +32,7 @@ enum ComposerMediaStill {
             return await videoPoster(at: url)
         }
         return await Task.detached(priority: .userInitiated) {
-            UIImage(contentsOfFile: url.path)
+            ComposerAnimatedImage.image(contentsOf: url)
         }.value
     }
 
@@ -56,7 +56,7 @@ struct ComposerCarouselCanvasBlock: View {
     let isRelocating: Bool
     let allowsDirectControl: Bool
     var onEdit: () -> Void
-    var onPresentMedia: ((URL) -> Void)? = nil
+    var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)? = nil
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
@@ -169,9 +169,7 @@ struct ComposerCarouselCanvasBlock: View {
         let item = slot < count ? block.carouselItems[slot] : nil
         return ZStack {
             if let item, !item.fileName.isEmpty, let image = posters[item.fileName] {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                ComposerPicture(image: image)
             } else if item != nil {
                 Color.white.opacity(0.06)
                 ProgressView()
@@ -204,9 +202,7 @@ struct ComposerCarouselCanvasBlock: View {
             if isCenter, isVideo, playing, let url {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: true)
             } else if let image = posters[item.fileName] {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                ComposerPicture(image: image)
             } else {
                 Color.white.opacity(0.08)
                 ProgressView()
@@ -237,7 +233,7 @@ struct ComposerCarouselCanvasBlock: View {
         .onTapGesture {
             guard isCenter, hasFile, let url else { return }
             if let onPresentMedia {
-                onPresentMedia(url)
+                onPresentMedia(url, nil)
                 return
             }
             guard isVideo else { return }
@@ -491,9 +487,7 @@ struct ComposerCarouselEditor: View {
     private func thumbnail(_ item: CarouselMediaItem) -> some View {
         ZStack {
             if let image = posters[item.fileName] {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                ComposerPicture(image: image)
             } else {
                 Color.white.opacity(0.08)
                 ProgressView()

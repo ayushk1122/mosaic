@@ -1,6 +1,8 @@
 import Foundation
+import ImageIO
 import Testing
 import UIKit
+import UniformTypeIdentifiers
 @testable import Mosaic
 
 @MainActor
@@ -325,6 +327,57 @@ struct ComposerStoreTests {
         let prepared = try #require(ComposerImagePreparation.jpeg(from: data, maxPixel: 20))
         let result = try #require(UIImage(data: prepared))
         #expect(max(result.size.width, result.size.height) <= 20)
+    }
+
+    @Test
+    func fullViewKeepsTheBoardCrop() {
+        var block = ComposerBlock.make(kind: .media, position: BlockPosition(x: 0.1, y: 0.1))
+        #expect(ComposerMediaCrop(block: block).aspect(contentAspect: 1.5) == 1.5)
+        #expect(ComposerMediaCrop(block: block).aspect(contentAspect: 0.2) == 0.4)
+        block.mediaShape = .wide
+        #expect(abs(ComposerMediaCrop(block: block).aspect(contentAspect: 1) - 16.0 / 9.0) < 0.0001)
+        block.mediaFrameAspect = 0.75
+        block.mediaZoom = 2
+        block.mediaPanX = 0.1
+        let crop = ComposerMediaCrop(block: block)
+        #expect(crop.aspect(contentAspect: 1) == 0.75)
+        #expect(crop.zoom == 2 && crop.panX == 0.1 && crop.shape == .wide)
+    }
+
+    @Test
+    func gifsKeepTheirAnimation() throws {
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, UTType.gif.identifier as CFString, 3, nil))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        for color in [UIColor.red, .green, .blue] {
+            let frame = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 600), format: format).image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 1200, height: 600))
+            }
+            let properties = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.25]] as CFDictionary
+            CGImageDestinationAddImage(destination, try #require(frame.cgImage), properties)
+        }
+        #expect(CGImageDestinationFinalize(destination))
+        let gif = data as Data
+
+        #expect(ComposerAnimatedImage.isGIF(gif))
+        #expect(!ComposerAnimatedImage.isGIF(try #require(UIImage(systemName: "star")?.pngData())))
+        let animated = try #require(ComposerAnimatedImage.image(data: gif))
+        #expect(animated.images?.count == 3)
+        #expect(abs(animated.duration - 0.75) < 0.01)
+        #expect(max(animated.size.width, animated.size.height) <= CGFloat(ComposerAnimatedImage.maxPixel))
+
+        #expect(ComposerAnimatedImage.frameIndices(count: 4, limit: 10) == [0, 1, 2, 3])
+        #expect(ComposerAnimatedImage.frameIndices(count: 10, limit: 5) == [0, 2, 4, 6, 8])
+
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false, location: ComposerStorageLocation(root: temp))
+        let name = try store.saveMediaData(gif)
+        #expect(name.hasSuffix(".gif"))
+        #expect(ComposerAnimatedImage.image(contentsOf: store.mediaURL(for: name))?.images?.count == 3)
+        #expect(try store.saveMediaData(Data([0xFF, 0xD8, 0xFF])).hasSuffix(".jpg"))
     }
 
     @Test

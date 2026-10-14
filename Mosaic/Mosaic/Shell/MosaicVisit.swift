@@ -179,12 +179,13 @@ struct MosaicVisitClient: Sendable {
         }
     }
 
-    /// Storage paths to try for one file, best first. Photos have a display copy.
+    /// Storage paths to try for one file, best first. Photos have a display copy;
+    /// a GIF's display copy is a still, so its original is used.
     nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
-        let isVideo = ["mov", "mp4", "m4v"].contains((fileName as NSString).pathExtension.lowercased())
-        return (isVideo ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
+        let usesOriginal = ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
+        return (usesOriginal ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
     }
 
     private func rpc(_ name: String, body: [String: Any], accessToken: String) async throws -> Data {

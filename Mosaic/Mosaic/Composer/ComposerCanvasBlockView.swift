@@ -64,7 +64,7 @@ struct ComposerBlockActions {
     var onSelectTabs: () -> Void
     var onEditSocial: () -> Void
     var onUngroup: () -> Void
-    var onPresentMedia: ((URL) -> Void)?
+    var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)?
     var onBodyTap: (() -> Void)?
     var onOpenSocial: (() -> Void)?
     var onOpenFolder: (ComposerBlock) -> Void
@@ -341,7 +341,11 @@ struct ComposerCanvasBlockView: View {
                     pursuitBackground = nil
                     return
                 }
-                pursuitBackground = UIImage(contentsOfFile: pursuitImageURL.path)
+                let loaded = await Task.detached(priority: .userInitiated) {
+                    ComposerAnimatedImage.image(contentsOf: pursuitImageURL)
+                }.value
+                guard !Task.isCancelled else { return }
+                pursuitBackground = loaded
             }
     }
 

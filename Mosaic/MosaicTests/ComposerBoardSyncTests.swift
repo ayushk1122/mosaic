@@ -403,6 +403,7 @@ struct ComposerBoardSyncTests {
         let prefix = "a05fd464-a05e-4f13-8ee3-52cdc4cc6a21/abc"
         #expect(MosaicVisitClient.objectPaths(ownerID: owner, assetID: "ABC", fileName: "p.jpg") == ["\(prefix)/display", "\(prefix)/original"])
         #expect(MosaicVisitClient.objectPaths(ownerID: owner, assetID: "abc", fileName: "v.MOV") == ["\(prefix)/original"])
+        #expect(MosaicVisitClient.objectPaths(ownerID: owner, assetID: "abc", fileName: "a.gif") == ["\(prefix)/original"])
     }
 
     @Test
