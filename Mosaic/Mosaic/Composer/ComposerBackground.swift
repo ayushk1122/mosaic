@@ -8,6 +8,8 @@ extension ComposerRGBColor {
 }
 
 struct ComposerBoardBackdrop: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     var background: ComposerBoardBackground?
     var mediaURL: URL?
     var fallback: Color
@@ -22,7 +24,7 @@ struct ComposerBoardBackdrop: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .allowsHitTesting(false)
-        .task(id: mediaURL) {
+        .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
             image = mediaURL.flatMap { UIImage(contentsOfFile: $0.path) }
         }
     }

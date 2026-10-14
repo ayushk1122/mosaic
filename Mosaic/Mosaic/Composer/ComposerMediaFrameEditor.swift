@@ -324,6 +324,7 @@ private struct VideoTrimRequest: Identifiable {
 }
 
 struct ComposerMediaFrameEditor: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
     let mediaURL: URL
     let isVideo: Bool
     let initialShape: MediaFrameShape
@@ -429,9 +430,11 @@ struct ComposerMediaFrameEditor: View {
         .alert("This video can’t be trimmed on this device.", isPresented: $trimFailed) {
             Button("OK", role: .cancel) {}
         }
-        .task(id: playbackURL) {
+        .task(id: ComposerMediaLoadKey(playbackURL, versions: mediaVersions)) {
             if isVideo {
-                aspect = await Self.videoAspect(at: playbackURL)
+                let loadedAspect = await Self.videoAspect(at: playbackURL)
+                guard !Task.isCancelled else { return }
+                aspect = loadedAspect
             } else {
                 let loaded = UIImage(contentsOfFile: playbackURL.path)
                 image = loaded

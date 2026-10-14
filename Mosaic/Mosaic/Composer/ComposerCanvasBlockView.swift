@@ -78,6 +78,8 @@ struct ComposerBlockActions {
 }
 
 struct ComposerCanvasBlockView: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     let documentID: ComposerDocumentID?
     @Binding var block: ComposerBlock
     let isEditing: Bool
@@ -108,12 +110,12 @@ struct ComposerCanvasBlockView: View {
     var body: some View {
         canvasContent
         .frame(
-            maxWidth: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook ? nil : 280,
+            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
+            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
             editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
             onTap: actions.onBeginEditing,
             onDelete: actions.onDelete
@@ -265,7 +267,12 @@ struct ComposerCanvasBlockView: View {
                     isSelected: isSelected && !isViewing
                 )
             case .link:
-                linkEditor
+                if block.isContent {
+                    ComposerContentCard(block: $block, mediaURL: mediaURL, isViewing: isViewing,
+                                        liveScale: livePinchScale, onDelete: actions.onDelete)
+                } else {
+                    linkEditor
+                }
             case .node, .pursuit:
                 pursuitView
         }
@@ -316,7 +323,7 @@ struct ComposerCanvasBlockView: View {
                     focusBlockID.wrappedValue = block.id
                 }
             }
-            .task(id: pursuitImageURL) {
+            .task(id: ComposerMediaLoadKey(pursuitImageURL, versions: mediaVersions)) {
                 guard let pursuitImageURL else {
                     pursuitBackground = nil
                     return

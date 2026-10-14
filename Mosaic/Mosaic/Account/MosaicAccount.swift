@@ -66,7 +66,7 @@ enum MosaicAuthResponse {
 }
 
 enum MosaicSessionKeychain {
-    private static let service = "com.ayushkrishnappa.Spendant.Mosaic.session"
+    private static let service = "com.ayushkrishnappa.Mosaic.session"
     private static let account = "supabase"
 
     static func load() -> MosaicSession? {
@@ -116,6 +116,8 @@ enum MosaicSessionKeychain {
 final class MosaicAccount {
     private(set) var session: MosaicSession?
     private(set) var lastError: String?
+    private var tokenRefresh: Task<MosaicSession, Error>?
+    private var tokenRefreshID: UUID?
     private var config: SupabaseSyncConfig?
     private var webSession: ASWebAuthenticationSession?
     private var codeVerifier: String?
@@ -126,16 +128,8 @@ final class MosaicAccount {
     }
 
     func restore() async {
-        guard config != nil, var stored = MosaicSessionKeychain.load() else { return }
-        if stored.expiresAt < Date().addingTimeInterval(60) {
-            do {
-                stored = try await refresh(stored)
-                MosaicSessionKeychain.save(stored)
-            } catch {
-                MosaicSessionKeychain.clear()
-                return
-            }
-        }
+        guard config != nil, let stored = MosaicSessionKeychain.load() else { return }
+        // A cached account opens immediately. Network operations refresh the token lazily.
         session = stored
     }
 
@@ -213,6 +207,9 @@ final class MosaicAccount {
     /// Ends the session on this phone. The boards stay on the device.
     func signOut() async {
         let ending = session
+        tokenRefresh?.cancel()
+        tokenRefresh = nil
+        tokenRefreshID = nil
         session = nil
         lastError = nil
         MosaicSessionKeychain.clear()
@@ -228,19 +225,34 @@ final class MosaicAccount {
     }
 
     func accessToken() async -> String? {
-        guard let config, var current = session else { return nil }
-        if current.expiresAt < Date().addingTimeInterval(60) {
-            do {
-                current = try await refresh(current)
-                session = current
-                MosaicSessionKeychain.save(current)
-            } catch {
-                session = nil
-                MosaicSessionKeychain.clear()
-                return nil
+        guard config != nil, let current = session else { return nil }
+        guard current.expiresAt < Date().addingTimeInterval(60) else { return current.accessToken }
+        // Downloads and uploads can start together; share one refresh to avoid rotating twice.
+        let task: Task<MosaicSession, Error>
+        if let tokenRefresh {
+            task = tokenRefresh
+        } else {
+            task = Task { try await self.refresh(current) }
+            tokenRefresh = task
+            tokenRefreshID = UUID()
+        }
+        let refreshID = tokenRefreshID
+        defer {
+            if tokenRefreshID == refreshID {
+                tokenRefresh = nil
+                tokenRefreshID = nil
             }
         }
-        return current.accessToken
+        do {
+            let refreshed = try await task.value
+            guard !task.isCancelled, session?.userID == current.userID else { return nil }
+            session = refreshed
+            MosaicSessionKeychain.save(refreshed)
+            return refreshed.accessToken
+        } catch {
+            // A failed connection must not sign the user out of their cached boards.
+            return nil
+        }
     }
 
     private func exchangePKCE(code: String, verifier: String, config: SupabaseSyncConfig) async throws -> MosaicSession {

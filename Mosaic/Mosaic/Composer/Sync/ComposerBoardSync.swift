@@ -10,7 +10,7 @@ struct ComposerSyncDocument: Equatable, Sendable {
     var body: ComposerBoardBody
 }
 
-enum ComposerSyncRole: String, Equatable, Sendable {
+enum ComposerSyncRole: String, Codable, Equatable, Sendable {
     case mosaic
     case pursuit
     case node
@@ -204,7 +204,7 @@ enum ComposerBoardSync {
                 ComposerPursuit(
                     id: ComposerDocumentID(rawValue: document.id.uuidString),
                     title: document.title,
-                    blocks: document.body.blocks,
+                    blocks: normalizedReferences(document.body.blocks),
                     role: ComposerDocumentRole(rawValue: document.role.rawValue) ?? .pursuit,
                     layoutHeight: document.body.layoutHeight,
                     background: document.body.background
@@ -212,13 +212,28 @@ enum ComposerBoardSync {
             }
         return ComposerSnapshot(
             mosaicTitle: mosaic.title,
-            mosaicBlocks: mosaic.body.blocks,
+            mosaicBlocks: normalizedReferences(mosaic.body.blocks),
             pursuits: pursuits,
             mosaicTitlePlaced: mosaic.body.mosaicTitlePlaced ?? false,
             pursuitPagesBlanked: mosaic.body.pursuitPagesBlanked ?? false,
             mosaicLayoutHeight: mosaic.body.layoutHeight,
             mosaicBackground: mosaic.body.background
         )
+    }
+
+    /// PostgreSQL UUIDs are lowercase; local document identities use UUID.uuidString.
+    private static func normalizedReferences(_ blocks: [ComposerBlock]) -> [ComposerBlock] {
+        blocks.map { block in
+            var block = block
+            if let id = block.pursuitID, let uuid = UUID(uuidString: id.rawValue) {
+                block.pursuitID = ComposerDocumentID(rawValue: uuid.uuidString)
+            }
+            block.scrapbookPageIDs = block.scrapbookPageIDs.map { id in
+                UUID(uuidString: id.rawValue).map { ComposerDocumentID(rawValue: $0.uuidString) } ?? id
+            }
+            block.groupMembers = normalizedReferences(block.groupMembers)
+            return block
+        }
     }
 
     static func uuid(_ id: ComposerDocumentID) -> UUID? {

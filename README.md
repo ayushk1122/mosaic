@@ -1,13 +1,21 @@
 # Mosaic
 
 **Owner:** Mosaic team
-**Status:** Foundation — documentation only; Iteration 0A is not implemented
+**Status:** Working SwiftUI board editor with account-backed Supabase storage
 
 Mosaic helps people capture the work they put into meaningful Pursuits and turn those moments into a visual story of progress.
 
 ## Current maturity
 
-The repository contains an initial SwiftUI application shell and generated test targets. Product behavior, fixtures, and the Iteration 0A Golf journey are not yet implemented.
+**Current repository fact:** The app contains a local board editor (Mosaic, Pursuits, nodes, and scrapbook pages), media and layout tools, Google sign-in, account-specific storage, Supabase uploads, discovery, profile settings, and sharing/access flows.
+
+**Current repository fact:** Existing accounts open their cached boards without waiting for network refresh. On a new or starter-only installation, login downloads the main Mosaic board first and opens the editor; Pursuits, scrapbook pages, and media then download in the background. Interrupted downloads resume on reopening or Retry, and edits stay local until the remaining boards are present. See [account restoration and sync](docs/architecture/account-sync.md).
+
+**Current repository fact:** Visits to other people’s boards open after access checks and layout loading, while media downloads per opened board. Repeat visits reuse unchanged media; failed files offer Retry without blocking navigation.
+
+**Current repository fact:** The Content composer item links to YouTube videos, Instagram posts/reels, TikTok posts, and Twitch clips/VODs. It stores a preview cover with the board and opens the source link when tapped in view mode. Existing photo and 10-second video uploads remain supported.
+
+The foundation product and architecture documents below describe the earlier Golf iteration and have not yet been reconciled with the implemented board editor. Their historical decisions are preserved; they are not a complete description of the current source tree.
 
 ## Prerequisites
 
@@ -39,7 +47,7 @@ xcodebuild test \
 - Product: [vision and principles](docs/product/vision-and-principles.md), [glossary](docs/product/glossary.md), and [Pursuit model](docs/product/pursuit-model.md)
 - Design: [visual language](docs/design/visual-language.md)
 - Feature: [Golf Iteration 0](docs/features/golf/iteration-0.md)
-- Architecture: [overview](docs/architecture/overview.md)
+- Architecture: [overview](docs/architecture/overview.md), [account restoration and sync](docs/architecture/account-sync.md)
 - Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md) and [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md)
 - Quality: [testing strategy](docs/quality/testing.md)
 

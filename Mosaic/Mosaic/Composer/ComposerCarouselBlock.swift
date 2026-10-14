@@ -90,7 +90,7 @@ struct ComposerCarouselCanvasBlock: View {
     }
 
     private var posterKey: String {
-        block.carouselItems.map(\.fileName).joined(separator: "|")
+        block.carouselItems.map { "\($0.fileName):\(store.mediaVersions[$0.fileName, default: 0])" }.joined(separator: "|")
     }
 
     var body: some View {
@@ -333,7 +333,10 @@ private func loadCarouselPosters(
         markLoading(name)
         let url = urlFor(name)
         Task { @MainActor in
-            let image = await ComposerMediaStill.image(at: url)
+            var image = await ComposerMediaStill.image(at: url)
+            if image == nil, FileManager.default.fileExists(atPath: url.path) {
+                image = await ComposerMediaStill.image(at: url)
+            }
             finish(name, image)
         }
     }
@@ -452,7 +455,7 @@ struct ComposerCarouselEditor: View {
             replacingID = nil
             Task { await importPicked(chosen, replacing: replacing) }
         }
-        .onChange(of: items.map(\.fileName).joined(separator: "|"), initial: true) { _, _ in
+        .onChange(of: items.map { "\($0.fileName):\(store.mediaVersions[$0.fileName, default: 0])" }.joined(separator: "|"), initial: true) { _, _ in
             requestPosters()
         }
     }

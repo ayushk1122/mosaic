@@ -70,14 +70,70 @@ private struct MosaicRootView: View {
                 ContentView(account: account)
                     .id(userID)
             } else {
-                MosaicBrand.cream.ignoresSafeArea()
-                    .task(id: userID) {
-                        await ComposerLegacyStorage.prepare(for: account)
-                        preparedUserID = userID
-                    }
+                MosaicAccountPreparationView(account: account, userID: userID) {
+                    preparedUserID = userID
+                }
+                .id(userID)
             }
         } else {
             MosaicSignInView(account: account)
+        }
+    }
+}
+
+/// Open the editor once the landing board is cached; children and media load in the shell.
+private struct MosaicAccountPreparationView: View {
+    var account: MosaicAccount
+    var userID: UUID
+    var onReady: () -> Void
+    @State private var attempt = 0
+    @State private var failure: String?
+
+    var body: some View {
+        ZStack {
+            MosaicBrand.cream.ignoresSafeArea()
+            VStack(spacing: 18) {
+                if let failure {
+                    Text("Couldn’t load your Mosaic")
+                        .font(.title2.bold())
+                    Text(failure)
+                        .multilineTextAlignment(.center)
+                    Button("Try again") {
+                        self.failure = nil
+                        attempt += 1
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Sign out") {
+                        Task { await account.signOut() }
+                    }
+                } else {
+                    ProgressView()
+                    Text("Loading your Mosaic…")
+                }
+            }
+            .padding(32)
+            .foregroundStyle(MosaicBrand.inkBlack)
+        }
+        .task(id: attempt) {
+            do {
+                await ComposerLegacyStorage.prepare(for: account)
+                try Task.checkCancellation()
+                let location = ComposerStorageLocation.account(userID)
+                if !ComposerAccountRestore.hasLocalAccount(at: location) {
+                    guard let config = SupabaseSyncConfig.current(),
+                          let token = await account.accessToken(), account.session?.userID == userID
+                    else { throw SupabaseDocumentSyncError.requestFailed }
+                    try await ComposerAccountRestore(client: SupabaseDocumentSync(config: config))
+                        .prepare(ownerID: userID, accessToken: token, location: location)
+                }
+                try Task.checkCancellation()
+                guard account.session?.userID == userID else { return }
+                onReady()
+            } catch {
+                guard !Task.isCancelled, account.session?.userID == userID else { return }
+                failure = (error as? ComposerRestoreError)?.errorDescription
+                    ?? "Check your connection and try again. Your saved Mosaic hasn’t been changed."
+            }
         }
     }
 }

@@ -17,6 +17,8 @@ enum ComposerBannerMetrics {
 }
 
 struct ComposerBannerBlock: View {
+    @Environment(\.composerMediaVersions) private var mediaVersions
+
     @Binding var block: ComposerBlock
     let mediaURL: URL?
     var isSelected: Bool
@@ -81,7 +83,7 @@ struct ComposerBannerBlock: View {
             guard !isViewing, !isEditing else { return }
             onSelect()
         }
-        .task(id: mediaURL) {
+        .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
             image = mediaURL.flatMap { UIImage(contentsOfFile: $0.path) }
         }
         .accessibilityElement(children: .contain)

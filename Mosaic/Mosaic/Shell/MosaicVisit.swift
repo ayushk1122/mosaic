@@ -152,7 +152,7 @@ struct MosaicVisitClient: Sendable {
     }
 
     /// Storage paths to try for one file, best first. Photos have a display copy.
-    static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
+    nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
         let isVideo = ["mov", "mp4", "m4v"].contains((fileName as NSString).pathExtension.lowercased())
@@ -188,6 +188,7 @@ final class MosaicVisit {
     var requestTarget: MosaicVisitPursuit?
     var busy: Set<UUID> = []
     var problem: String?
+    var media: MosaicVisitMedia?
 
     private let account: MosaicAccount
     private let client: MosaicVisitClient
@@ -282,7 +283,7 @@ struct MosaicVisitPursuitControls: View {
                     toggle(pursuit)
                 }
             }
-            .task(id: coverFile) { await loadCover() }
+            .task(id: ComposerMediaLoadKey(coverFile.map { store.mediaURL(for: $0) }, versions: store.mediaVersions)) { await loadCover() }
         }
     }
 
@@ -347,16 +348,12 @@ struct MosaicVisitPursuitControls: View {
             cover = nil
             return
         }
-        if let cached = MosaicThumbnail.cached(file) {
-            cover = cached
-            return
-        }
         let url = store.mediaURL(for: file)
+        let pixelSize = MosaicThumbnail.bubblePixelSize
         let image = await Task.detached(priority: .userInitiated) {
-            MosaicThumbnail.image(at: url, maxPixelSize: MosaicThumbnail.bubblePixelSize)
+            MosaicThumbnail.image(at: url, maxPixelSize: pixelSize)
         }.value
         guard !Task.isCancelled, let image else { return }
-        MosaicThumbnail.store(image, for: file)
         cover = image
     }
 }
@@ -388,9 +385,9 @@ struct MosaicVisitView: View {
         case ready(ComposerStore, MosaicChrome, MosaicVisit, start: ComposerDocumentID?)
     }
 
+    @State private var loadAttempt = 0
     @State private var phase = Phase.loading
     @State private var profile: MosaicVisitProfile?
-    @State private var progress: (done: Int, total: Int) = (0, 0)
     @State private var requesting = false
     @State private var showsFollowSheet = false
     @State private var following = false
@@ -402,7 +399,7 @@ struct MosaicVisitView: View {
             .background(MosaicBrand.inkBlack.ignoresSafeArea())
             .environment(\.colorScheme, .dark)
             .toolbar(.hidden, for: .navigationBar)
-            .task { await load() }
+            .task(id: loadAttempt) { await load() }
     }
 
     @ViewBuilder
@@ -412,17 +409,17 @@ struct MosaicVisitView: View {
             VStack(spacing: 12) {
                 ProgressView()
                     .tint(muted)
-                if progress.total > 0 {
-                    Text("\(progress.done) of \(progress.total)")
-                        .font(.caption)
-                        .foregroundStyle(muted)
-                        .monospacedDigit()
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topLeading) { backChevron }
         case .failed:
-            note("This Mosaic could not be opened.")
+            VStack(spacing: 12) {
+                Text("This Mosaic could not be opened.")
+                Button("Retry") { loadAttempt += 1 }
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) { backChevron }
         case .noMosaic:
             note("@\(person.username) has not shared a Mosaic yet.")
         case .locked:
@@ -668,7 +665,9 @@ struct MosaicVisitView: View {
     }
 
     private func load() async {
-        guard let account, let link = await connection() else {
+        phase = .loading
+        guard let account, let viewerID = account.session?.userID,
+              let link = await connection() else {
             phase = .failed
             return
         }
@@ -678,6 +677,8 @@ struct MosaicVisitView: View {
                 phase = .failed
                 return
             }
+            try Task.checkCancellation()
+            guard account.session?.userID == viewerID else { throw CancellationError() }
             profile = found
             guard let mosaicID = found.mosaicID else {
                 phase = .noMosaic
@@ -697,70 +698,24 @@ struct MosaicVisitView: View {
                 return
             }
 
-            let location = Self.location(for: found.userID)
-            await downloadMedia(documents: documents, ownerID: found.userID, location: location, client: client, token: token)
+            try Task.checkCancellation()
+            guard account.session?.userID == viewerID else { throw CancellationError() }
+            let location = MosaicVisitMedia.location(viewerID: viewerID, ownerID: found.userID)
+            let media = try MosaicVisitMedia(documents: documents, mosaicID: mosaicID,
+                                            ownerID: found.userID, location: location, client: client)
 
             let store = ComposerStore(seedSnapshot: snapshot, persistToDisk: false, location: location)
             let visit = MosaicVisit(ownerID: found.userID, pursuits: pursuits, account: account, client: client)
+            visit.media = media
             let start = pursuitID.flatMap { wanted in
                 snapshot.pursuits.first { ComposerBoardSync.uuid($0.id) == wanted }?.id
             }
             phase = .ready(store, MosaicChrome(isVisiting: true), visit, start: start)
+        } catch is CancellationError {
+            return
         } catch {
+            guard !Task.isCancelled else { return }
             phase = .failed
-        }
-    }
-
-    private static func location(for ownerID: UUID) -> ComposerStorageLocation {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return ComposerStorageLocation(
-            root: caches
-                .appendingPathComponent("Visits", isDirectory: true)
-                .appendingPathComponent(ownerID.uuidString.lowercased(), isDirectory: true)
-        )
-    }
-
-    private func downloadMedia(
-        documents: [ComposerSyncDocument],
-        ownerID: UUID,
-        location: ComposerStorageLocation,
-        client: MosaicVisitClient,
-        token: String
-    ) async {
-        let fileManager = FileManager.default
-        try? fileManager.createDirectory(at: location.mediaDirectory, withIntermediateDirectories: true)
-        var wanted: [String: String] = [:]
-        for document in documents {
-            for (fileName, assetID) in document.body.mediaAssets ?? [:] {
-                wanted[fileName] = assetID
-            }
-        }
-        let missing = wanted.filter { fileName, _ in
-            !fileManager.fileExists(atPath: location.mediaDirectory.appendingPathComponent(fileName).path)
-        }
-        progress = (wanted.count - missing.count, wanted.count)
-        guard !missing.isEmpty else { return }
-
-        let directory = location.mediaDirectory
-        await withTaskGroup(of: Void.self) { group in
-            var queue = Array(missing)
-            func next() -> Bool {
-                guard let (fileName, assetID) = queue.popLast() else { return false }
-                group.addTask {
-                    for path in MosaicVisitClient.objectPaths(ownerID: ownerID, assetID: assetID, fileName: fileName) {
-                        if let data = await client.download(path: path, accessToken: token) {
-                            try? data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
-                            return
-                        }
-                    }
-                }
-                return true
-            }
-            for _ in 0..<6 where next() {}
-            while await group.next() != nil {
-                progress.done += 1
-                _ = next()
-            }
         }
     }
 

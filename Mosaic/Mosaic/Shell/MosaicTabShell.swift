@@ -75,6 +75,9 @@ struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var downloads = ComposerBackgroundRestore()
+    @State private var downloadAttempt = 0
     @State private var remoteSync: ComposerRemoteSync
     var account: MosaicAccount?
 
@@ -86,7 +89,6 @@ struct MosaicTabShell: View {
         let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
         let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
-        store.blankPursuitPagesIfNeeded()
         _store = State(initialValue: store)
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
     }
@@ -116,6 +118,44 @@ struct MosaicTabShell: View {
             }
             remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
         }
+        .task(id: downloadAttempt) {
+            guard let account, let owner = account.session?.userID,
+                  ComposerBackgroundRestore.needsWork(store: store) else { return }
+            do {
+                guard let config = SupabaseSyncConfig.current(), let token = await account.accessToken(),
+                      account.session?.userID == owner else { throw SupabaseDocumentSyncError.requestFailed }
+                try Task.checkCancellation()
+                try await downloads.run(store: store, client: SupabaseDocumentSync(config: config),
+                                        ownerID: owner, accessToken: token)
+            } catch {
+                guard !Task.isCancelled else { return }
+                downloads.failure = "Some content couldn’t load. Your edits are saved on this device."
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, !downloads.isLoading { downloadAttempt += 1 }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if downloads.isLoading || downloads.failure != nil || store.isRestoringDocuments {
+                HStack(spacing: 10) {
+                    if downloads.isLoading || downloads.failure == nil { ProgressView().tint(.white) }
+                    Text(downloads.failure ?? (store.isRestoringDocuments ? "Loading Pursuits…" : "Downloading media · \(downloads.remainingMedia) left"))
+                        .font(.caption)
+                    Spacer(minLength: 0)
+                    if downloads.failure != nil {
+                        Button("Retry") { downloadAttempt += 1 }
+                            .font(.caption.bold())
+                            .disabled(downloads.isLoading)
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(MosaicBrand.inkBlack)
+                .accessibilityIdentifier("mosaic.downloadStatus")
+            }
+        }
+        .environment(\.composerMediaVersions, store.mediaVersions)
         .environment(store)
         .environment(chrome)
         .environment(\.mosaicAccount, account)
