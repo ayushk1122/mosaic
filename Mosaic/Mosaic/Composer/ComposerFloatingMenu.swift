@@ -2,6 +2,8 @@ import SwiftUI
 
 enum ComposerAddMenuMetrics {
     static let button: CGFloat = 48
+    /// The back button and the scroll bubble sit in line at the top of a board, so they share a height.
+    static let topControl: CGFloat = 32
     static let rowWidth: CGFloat = 156
     static let rowHeight: CGFloat = 36
     static let visibleRows = 4

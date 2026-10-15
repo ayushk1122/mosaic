@@ -78,6 +78,7 @@ struct ComposerCarouselItemFace: View {
     let item: CarouselMediaItem
     let poster: UIImage?
     var compact = false
+    var isUnavailable = false
 
     /// Width divided by height, matching the item's block on a board: a photo or video's own
     /// shape, a content card's shape, and a square logo for a social.
@@ -100,6 +101,8 @@ struct ComposerCarouselItemFace: View {
             case .media:
                 if let poster {
                     ComposerPicture(image: poster)
+                } else if isUnavailable {
+                    ComposerMediaUnavailable(isVideo: ComposerMediaStill.isVideo(URL(fileURLWithPath: item.fileName)), compact: compact)
                 } else {
                     Color.white.opacity(0.08)
                     ProgressView()
@@ -204,6 +207,8 @@ struct ComposerCarouselCanvasBlock: View {
     @State private var playing = false
     @State private var posters: [String: UIImage] = [:]
     @State private var loadingPosters: Set<String> = []
+    @State private var failedPosters: Set<String> = []
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
 
@@ -330,7 +335,11 @@ struct ComposerCarouselCanvasBlock: View {
             if isCenter, isVideo, playing, let url {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: true)
             } else {
-                ComposerCarouselItemFace(item: item, poster: poster)
+                ComposerCarouselItemFace(
+                    item: item,
+                    poster: poster,
+                    isUnavailable: failedPosters.contains(item.fileName) && !mediaWaiting.includes(item.fileName)
+                )
             }
             if isCenter, isVideo, !playing {
                 Image(systemName: "play.fill")
@@ -449,6 +458,9 @@ struct ComposerCarouselCanvasBlock: View {
         } finish: { name, image in
             if let image {
                 posters[name] = image
+                failedPosters.remove(name)
+            } else {
+                failedPosters.insert(name)
             }
             loadingPosters.remove(name)
         }
@@ -538,6 +550,8 @@ struct ComposerCarouselEditor: View {
 
     @State private var posters: [String: UIImage] = [:]
     @State private var loadingPosters: Set<String> = []
+    @State private var failedPosters: Set<String> = []
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
     @State private var showPicker = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var replacingID: String?
@@ -703,7 +717,12 @@ struct ComposerCarouselEditor: View {
 
     private func thumbnail(_ item: CarouselMediaItem) -> some View {
         ZStack {
-            ComposerCarouselItemFace(item: item, poster: posters[item.fileName], compact: true)
+            ComposerCarouselItemFace(
+                item: item,
+                poster: posters[item.fileName],
+                compact: true,
+                isUnavailable: failedPosters.contains(item.fileName) && !mediaWaiting.includes(item.fileName)
+            )
             if item.kind == .media, ComposerMediaStill.isVideo(store.mediaURL(for: item.fileName)) {
                 Image(systemName: "play.fill")
                     .font(.caption.weight(.semibold))
@@ -831,6 +850,9 @@ struct ComposerCarouselEditor: View {
         } finish: { name, image in
             if let image {
                 posters[name] = image
+                failedPosters.remove(name)
+            } else {
+                failedPosters.insert(name)
             }
             loadingPosters.remove(name)
         }

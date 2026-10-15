@@ -7,6 +7,10 @@ import Observation
 final class MosaicVisitMedia {
     private(set) var loading: Set<UUID> = []
     private(set) var failed: Set<UUID> = []
+    /// Boards whose media has been fetched at least once.
+    private(set) var attempted: Set<UUID> = []
+    /// Files currently downloading.
+    private(set) var pendingFiles: Set<String> = []
     private let documents: [ComposerSyncDocument]
     private let mosaicID: UUID
     private let ownerID: UUID
@@ -68,17 +72,28 @@ final class MosaicVisitMedia {
         failed.insert(boardID(documentID))
     }
 
+    /// Before a board's first fetch every missing file may still come; afterwards only the ones downloading.
+    func waiting(for documentID: ComposerDocumentID?) -> ComposerMediaWaiting {
+        let id = boardID(documentID)
+        return ComposerMediaWaiting(all: !attempted.contains(id) && !failed.contains(id), files: pendingFiles)
+    }
+
     func load(documentID: ComposerDocumentID?, store: ComposerStore, token: String) async {
         let id = boardID(documentID)
         guard !loading.contains(id), let document = documents.first(where: { $0.id == id }),
               !Task.isCancelled else { return }
         loading.insert(id)
         failed.remove(id)
-        defer { loading.remove(id) }
+        defer {
+            loading.remove(id)
+            attempted.insert(id)
+        }
         let wanted = document.body.mediaAssets ?? [:]
         let missing = wanted.filter { name, _ in
             !FileManager.default.fileExists(atPath: location.mediaDirectory.appendingPathComponent(name).path)
         }
+        pendingFiles.formUnion(missing.keys)
+        defer { pendingFiles.subtract(missing.keys) }
         let client = client, ownerID = ownerID
         await withTaskGroup(of: (String, Data?).self) { group in
             var queue = Array(missing).makeIterator()
@@ -97,6 +112,7 @@ final class MosaicVisitMedia {
             }
             for _ in 0..<4 { next() }
             while let (name, data) = await group.next() {
+                pendingFiles.remove(name)
                 guard !Task.isCancelled else { group.cancelAll(); continue }
                 do {
                     guard let data else { throw ComposerRestoreError.mediaUnavailable }

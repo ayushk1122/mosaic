@@ -124,6 +124,26 @@ enum MosaicSettingsList {
         }
         return (mosaic, pursuits)
     }
+
+    /// The server's level for each board that can be changed, to compare unsaved choices against.
+    static func savedLevels(_ rows: [MosaicVisibilityRow]) -> [UUID: MosaicVisibilityLevel] {
+        var levels: [UUID: MosaicVisibilityLevel] = [:]
+        for row in rows where row.canChange {
+            levels[row.id] = row.level
+        }
+        return levels
+    }
+
+    /// Privacy choices made since the last save.
+    static func changedLevels(
+        _ rows: [MosaicVisibilityRow],
+        saved: [UUID: MosaicVisibilityLevel]
+    ) -> [MosaicVisibilityRow] {
+        rows.filter { row in
+            guard row.canChange, let level = saved[row.id] else { return false }
+            return level != row.level
+        }
+    }
 }
 
 enum MosaicAvatar {
@@ -495,7 +515,6 @@ struct MosaicSettingsView: View {
     private enum SaveState {
         case idle
         case saving
-        case saved
     }
 
     private enum EditField: Hashable {
@@ -523,8 +542,13 @@ struct MosaicSettingsView: View {
     @State private var availability = Availability.unknown
     @State private var displayName = ""
     @State private var savedDisplayName = ""
+    @Environment(MosaicPursuitPrivacy.self) private var pursuitPrivacy: MosaicPursuitPrivacy?
     @State private var mosaic: MosaicVisibilityRow?
     @State private var pursuits: [MosaicVisibilityRow] = []
+    @State private var savedLevels: [UUID: MosaicVisibilityLevel] = [:]
+    /// A framed picture waiting for Save.
+    @State private var pendingAvatar: Data?
+    @State private var confirmsClose = false
     @State private var status = ""
     @State private var saving: EditField?
     @State private var confirmsLogOut = false
@@ -569,16 +593,29 @@ struct MosaicSettingsView: View {
         return MosaicSettingsList.displayName(from: displayName).isEmpty ? .none : .valid
     }
 
+    private var visibilityRows: [MosaicVisibilityRow] {
+        (mosaic.map { [$0] } ?? []) + pursuits
+    }
+
+    /// Names, picture, and privacy all wait for Save.
+    private var hasChanges: Bool {
+        guard profileLoaded else { return false }
+        return MosaicSettingsList.username(from: username) != savedUsername
+            || MosaicSettingsList.displayName(from: displayName) != savedDisplayName
+            || pendingAvatar != nil
+            || !MosaicSettingsList.changedLevels(visibilityRows, saved: savedLevels).isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Button {
-                    let open = focused
                     focused = nil
-                    if let open {
-                        Task { await commit(open) }
+                    if hasChanges {
+                        confirmsClose = true
+                    } else {
+                        dismiss()
                     }
-                    dismiss()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
@@ -587,7 +624,20 @@ struct MosaicSettingsView: View {
                         .background(Color.white.opacity(0.14), in: Circle())
                 }
                 .buttonStyle(.plain)
+                .disabled(saveState == .saving)
                 .accessibilityLabel("Close")
+                .accessibilityIdentifier("settings.close")
+                .alert("Save your changes?", isPresented: $confirmsClose) {
+                    Button("Save") {
+                        Task { await saveAll() }
+                    }
+                    Button("Discard", role: .destructive) {
+                        dismiss()
+                    }
+                    Button("Keep editing", role: .cancel) {}
+                } message: {
+                    Text("You have changes that haven’t been saved.")
+                }
                 Spacer()
                 saveButton
             }
@@ -722,11 +772,6 @@ struct MosaicSettingsView: View {
                 displayName = String(typed.prefix(MosaicSettingsList.displayNameLimit))
             }
         }
-        .onChange(of: focused) { previous, _ in
-            if let previous {
-                Task { await commit(previous) }
-            }
-        }
         .onChange(of: avatarItem) { _, item in
             guard let item else { return }
             Task { await pickAvatar(from: item) }
@@ -736,7 +781,8 @@ struct MosaicSettingsView: View {
                 avatarCrop = nil
             } onSave: { jpeg in
                 avatarCrop = nil
-                Task { await saveAvatar(jpeg) }
+                avatarImage = UIImage(data: jpeg)
+                pendingAvatar = jpeg
             }
         }
     }
@@ -752,9 +798,6 @@ struct MosaicSettingsView: View {
                 case .saving:
                     ProgressView()
                         .tint(MosaicBrand.inkBlack)
-                case .saved:
-                    Image(systemName: "checkmark")
-                        .accessibilityLabel("Saved")
                 }
             }
             .font(.subheadline.weight(.semibold))
@@ -902,7 +945,7 @@ struct MosaicSettingsView: View {
     private func mosaicRow(_ row: MosaicVisibilityRow) -> some View {
         Toggle(isOn: Binding(
             get: { row.level == .public },
-            set: { isPublic in Task { await setMosaicLevel(isPublic ? .public : .private) } }
+            set: { isPublic in mosaic?.level = isPublic ? .public : .private }
         )) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
@@ -933,7 +976,11 @@ struct MosaicSettingsView: View {
             }
             Picker("Who can see \(row.title)", selection: Binding(
                 get: { row.level },
-                set: { level in Task { await setPursuitLevel(row.id, level: level) } }
+                set: { level in
+                    if let index = pursuits.firstIndex(where: { $0.id == row.id }) {
+                        pursuits[index].level = level
+                    }
+                }
             )) {
                 ForEach(MosaicVisibilityLevel.allCases) { level in
                     Text(level.title).tag(level)
@@ -949,45 +996,32 @@ struct MosaicSettingsView: View {
         .accessibilityLabel("Pursuit \(row.title)")
     }
 
-    /// Saves typed names, pushes the boards now instead of after the usual pause,
-    /// and rereads privacy so new Pursuits can be set.
+    /// Saves names, the picture, and privacy, pushes the boards now instead of after the usual pause,
+    /// then closes. Anything that fails keeps the page open with its message.
     private func saveAll() async {
+        guard saveState != .saving else { return }
         saveState = .saving
+        defer { saveState = .idle }
+        focused = nil
         status = ""
         usernameMessage = ""
         await commit(.username)
         await commit(.displayName)
-        focused = nil
         let namesSaved = MosaicSettingsList.username(from: username) == savedUsername
             && MosaicSettingsList.displayName(from: displayName) == savedDisplayName
+        let avatarSaved = await uploadPendingAvatar()
+        let levelsSaved = await applyChangedLevels()
         var synced = true
         if let remoteSync {
             synced = await remoteSync.syncNow(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
         }
-        await reloadVisibility()
         if !namesSaved, status.isEmpty, usernameMessage.isEmpty {
             status = "Fix your username to save it."
-        } else if !synced {
+        } else if !synced, status.isEmpty {
             status = "Your Mosaic couldn’t sync. Check your connection and try again."
         }
-        guard namesSaved, synced else {
-            saveState = .idle
-            return
-        }
-        saveState = .saved
-        try? await Task.sleep(for: .seconds(1.5))
-        if saveState == .saved { saveState = .idle }
-    }
-
-    private func reloadVisibility() async {
-        guard let config = SupabaseSyncConfig.current(),
-              let userID = account.session?.userID,
-              let token = await account.accessToken(),
-              let remote = try? await MosaicSettingsClient(config: config).loadBoards(userID: userID, accessToken: token)
-        else { return }
-        let listed = MosaicSettingsList.rows(snapshot: store.snapshot, remote: remote)
-        mosaic = listed.mosaic
-        pursuits = listed.pursuits
+        guard namesSaved, avatarSaved, levelsSaved, synced else { return }
+        dismiss()
     }
 
     private func commit(_ which: EditField) async {
@@ -1089,6 +1123,7 @@ struct MosaicSettingsView: View {
             let listed = MosaicSettingsList.rows(snapshot: store.snapshot, remote: remote)
             mosaic = listed.mosaic
             pursuits = listed.pursuits
+            savedLevels = MosaicSettingsList.savedLevels(visibilityRows)
         } catch {
             status = "Settings could not be loaded."
         }
@@ -1105,26 +1140,29 @@ struct MosaicSettingsView: View {
         avatarCrop = AvatarCrop(image: picked)
     }
 
-    private func saveAvatar(_ jpeg: Data) async {
+    private func uploadPendingAvatar() async -> Bool {
+        guard let jpeg = pendingAvatar else { return true }
         guard let config = SupabaseSyncConfig.current(),
               let userID = account.session?.userID,
               let token = await account.accessToken()
-        else { return }
-        let previous = avatarImage
-        avatarImage = UIImage(data: jpeg)
+        else {
+            status = "The profile picture could not be saved."
+            return false
+        }
         savingAvatar = true
         defer { savingAvatar = false }
         do {
             let path = try await MosaicSettingsClient(config: config)
                 .saveAvatar(jpeg, replacing: avatarPath, userID: userID, accessToken: token)
             avatarPath = path
-            if let saved = avatarImage {
+            if let saved = UIImage(data: jpeg) {
                 MosaicAvatarCache.store(saved, for: path)
             }
-            status = ""
+            pendingAvatar = nil
+            return true
         } catch {
-            avatarImage = previous
             status = "The profile picture could not be saved."
+            return false
         }
     }
 
@@ -1147,41 +1185,30 @@ struct MosaicSettingsView: View {
         }
     }
 
-    private func setMosaicLevel(_ level: MosaicVisibilityLevel) async {
-        guard var mosaic else { return }
-        let previous = mosaic.level
-        mosaic.level = level
-        self.mosaic = mosaic
-        guard await applyVisibility(id: mosaic.id, level: level) else {
-            mosaic.level = previous
-            self.mosaic = mosaic
-            return
-        }
-    }
-
-    private func setPursuitLevel(_ id: UUID, level: MosaicVisibilityLevel) async {
-        guard let index = pursuits.firstIndex(where: { $0.id == id }) else { return }
-        let previous = pursuits[index].level
-        pursuits[index].level = level
-        guard await applyVisibility(id: id, level: level) else {
-            if let again = pursuits.firstIndex(where: { $0.id == id }) {
-                pursuits[again].level = previous
-            }
-            return
-        }
-    }
-
-    private func applyVisibility(id: UUID, level: MosaicVisibilityLevel) async -> Bool {
+    /// Choices that fail stay unsaved, so a second Save tries them again.
+    private func applyChangedLevels() async -> Bool {
+        let changed = MosaicSettingsList.changedLevels(visibilityRows, saved: savedLevels)
+        guard !changed.isEmpty else { return true }
         guard let config = SupabaseSyncConfig.current(),
               let token = await account.accessToken()
-        else { return false }
-        do {
-            try await MosaicSettingsClient(config: config).setVisibility(id: id, level: level, accessToken: token)
-            status = ""
-            return true
-        } catch {
-            status = "That privacy setting could not be saved."
+        else {
+            status = "Your privacy settings could not be saved."
             return false
         }
+        let client = MosaicSettingsClient(config: config)
+        var allSaved = true
+        for row in changed {
+            do {
+                try await client.setVisibility(id: row.id, level: row.level, accessToken: token)
+                savedLevels[row.id] = row.level
+                pursuitPrivacy?.set(row.level, for: row.id)
+            } catch {
+                allSaved = false
+            }
+        }
+        if !allSaved {
+            status = "Some privacy settings could not be saved."
+        }
+        return allSaved
     }
 }

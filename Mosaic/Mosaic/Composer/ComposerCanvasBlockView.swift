@@ -34,7 +34,8 @@ struct ComposerChromePlacement: Equatable {
         } else {
             x = max(visibleWidth - iconDiameter - gap, 0)
         }
-        return ComposerChromePlacement(x: x, cropBelow: itemFrame.minY < 56)
+        // Crop and Replace stack above the menu icon, which needs about 96 points of room.
+        return ComposerChromePlacement(x: x, cropBelow: itemFrame.minY < 96)
     }
 }
 
@@ -75,6 +76,8 @@ struct ComposerBlockActions {
     var onEditMemberCarousel: (ComposerBlockID) -> Void
     var onEditMemberSocial: (ComposerBlockID) -> Void
     var onOpenMemberSocial: (ComposerBlock) -> Void
+    var onReplaceMedia: (() -> Void)? = nil
+    var onReplaceMemberMedia: ((ComposerBlockID) -> Void)? = nil
 }
 
 struct ComposerCanvasBlockView: View {
@@ -105,6 +108,7 @@ struct ComposerCanvasBlockView: View {
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
+    @Environment(\.mosaicPrivacyDisplay) private var privacyDisplay
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
@@ -223,6 +227,7 @@ struct ComposerCanvasBlockView: View {
                     onOpenFolder: actions.onOpenFolder,
                     onOpenMediaMenu: actions.onOpenMemberMediaMenu,
                     onCropMedia: actions.onCropMemberMedia,
+                    onReplaceMedia: actions.onReplaceMemberMedia,
                     onEditPursuit: actions.onEditMemberPursuit,
                     onEditCarousel: actions.onEditMemberCarousel,
                     onEditSocial: actions.onEditMemberSocial,
@@ -259,7 +264,8 @@ struct ComposerCanvasBlockView: View {
                     showsMenu: showsMediaMenu,
                     onOpenMenu: actions.onOpenMediaMenu,
                     onCrop: actions.onCropMedia,
-                    onBodyTap: actions.onBodyTap
+                    onBodyTap: actions.onBodyTap,
+                    onReplace: actions.onReplaceMedia
                 )
             case .scrapbook:
                 ComposerScrapbookCover(
@@ -316,8 +322,20 @@ struct ComposerCanvasBlockView: View {
                         .offset(x: 8, y: -8)
                         .allowsHitTesting(false)
                         .accessibilityIdentifier("visit.lock.\(id.uuidString.lowercased())")
+                } else if privacyDisplay.look(of: block) == .locked {
+                    MosaicVisitLockBadge(access: .locked)
+                        .offset(x: 8, y: -8)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("mosaic.previewLock.\(block.id.rawValue)")
+                } else if !isSelected, let level = privacyDisplay.badge(for: block) {
+                    MosaicPrivacyBadge(level: level)
+                        .offset(x: 8, y: -8)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("mosaic.privacyBadge.\(block.id.rawValue)")
                 }
             }
+            .opacity(privacyDisplay.look(of: block) == .removed ? 0 : 1)
+            .allowsHitTesting(privacyDisplay.look(of: block) != .removed)
             .overlay(alignment: .bottomTrailing) {
                 if showsPursuitPencil, !pencilCoveredByChrome, !isEditing, !isLifted, !isRelocating {
                     pursuitPencil

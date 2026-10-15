@@ -76,6 +76,32 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
+    func testScrollBubbleMovesTheBoardInEditModeOnly() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        // The screen's identifier covers its children's, so the bubble is found by its label.
+        let bubble = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Scroll board'")).firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 3))
+        XCTAssertEqual(bubble.value as? String, "0 percent")
+        attachScreenshot(app, named: "Scroll bubble at the top")
+
+        let frame = bubble.frame
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: frame.midX, dy: frame.midY))
+        let end = origin.withOffset(CGVector(dx: frame.midX, dy: app.frame.height - 120))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        attachScreenshot(app, named: "Scroll bubble dragged to the bottom")
+        XCTAssertEqual(bubble.value as? String, "100 percent")
+
+        app.buttons["View Mosaic"].tap()
+        XCTAssertTrue(bubble.waitForNonExistence(timeout: 2))
+        attachScreenshot(app, named: "No scroll bubble in view mode")
+    }
+
+    @MainActor
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

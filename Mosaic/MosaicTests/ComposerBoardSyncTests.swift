@@ -294,6 +294,145 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func viewAsUserShowsPursuitsTheWayAVisitorSeesThem() {
+        let open = UUID(), locked = UUID(), hidden = UUID(), unsynced = UUID()
+        func widget(_ id: UUID) -> ComposerBlock {
+            var block = ComposerBlock.make(kind: .pursuit, position: BlockPosition(x: 0, y: 0))
+            block.pursuitID = ComposerDocumentID(rawValue: id.uuidString)
+            return block
+        }
+        let levels = MosaicPursuitPrivacy.levels(from: [
+            MosaicRemoteBoard(id: UUID(), role: "mosaic", title: "Mosaic", level: .private),
+            MosaicRemoteBoard(id: open, role: "pursuit", title: "Golf", level: .public),
+            MosaicRemoteBoard(id: locked, role: "pursuit", title: "Family", level: .private),
+            MosaicRemoteBoard(id: hidden, role: "pursuit", title: "Journal", level: .hidden)
+        ])
+        #expect(levels.count == 3)
+        let widgets = [open, locked, hidden, unsynced].map(widget)
+        let text = ComposerBlock.make(kind: .text, position: BlockPosition(x: 0, y: 0))
+
+        let visitor = MosaicPrivacyDisplay(mode: .visitor, levels: levels)
+        #expect(widgets.map(visitor.look(of:)) == [.shown, .locked, .removed, .removed])
+        #expect(visitor.look(of: text) == .shown)
+        #expect(widgets.map(visitor.badge(for:)) == [nil, nil, nil, nil])
+
+        let editing = MosaicPrivacyDisplay(mode: .badges, levels: levels)
+        #expect(widgets.map(editing.badge(for:)) == [nil, .private, .hidden, .hidden])
+        #expect(widgets.map(editing.look(of:)) == [.shown, .shown, .shown, .shown])
+
+        let me = MosaicPrivacyDisplay(mode: .off, levels: levels)
+        #expect(widgets.map(me.look(of:)) == [.shown, .shown, .shown, .shown])
+        #expect(widgets.map(me.badge(for:)) == [nil, nil, nil, nil])
+    }
+
+    @Test
+    func scrollBubbleTracksAndSetsTheBoardOffset() {
+        let metrics = ComposerScrollBubbleMetrics(offset: 150, minOffset: -50, maxOffset: 350)
+        #expect(metrics.isScrollable)
+        #expect(metrics.progress == 0.5)
+        #expect(metrics.offset(forProgress: 0) == -50)
+        #expect(metrics.offset(forProgress: 1) == 350)
+        #expect(metrics.offset(forProgress: 1.4) == 350)
+        #expect(metrics.offset(forProgress: -0.2) == -50)
+        #expect(ComposerScrollBubbleMetrics(offset: 900, minOffset: 0, maxOffset: 400).progress == 1)
+
+        let fits = ComposerScrollBubbleMetrics(offset: 0, minOffset: 0, maxOffset: 0)
+        #expect(!fits.isScrollable)
+        #expect(fits.progress == 0)
+
+        #expect(ComposerScrollBubbleMetrics.bubbleTop(progress: 0, track: 500, bubble: 44) == 0)
+        #expect(ComposerScrollBubbleMetrics.bubbleTop(progress: 1, track: 500, bubble: 44) == 456)
+        #expect(ComposerScrollBubbleMetrics.bubbleTop(progress: 0.5, track: 30, bubble: 44) == 0)
+    }
+
+    @Test
+    func missingMediaLoadsOnlyWhileACopyIsComing() {
+        let none = ComposerMediaWaiting()
+        #expect(!none.includes("A.jpg"))
+        #expect(!none.includes(nil as URL?))
+
+        let downloading = ComposerMediaWaiting(files: ["A.jpg"])
+        #expect(downloading.includes("A.jpg"))
+        #expect(downloading.includes(URL(fileURLWithPath: "/tmp/Media/A.jpg")))
+        #expect(!downloading.includes("B.jpg"))
+
+        #expect(ComposerMediaWaiting(all: true).includes("B.jpg"))
+    }
+
+    @Test
+    func replacingMediaKeepsTheShapeButNotTheOldZoom() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let mediaID = store.addBlock(.media, to: nil)
+        var media = try #require(store.block(with: mediaID, in: nil))
+        media.mediaFileName = "old.jpg"
+        media.mediaShape = .circle
+        media.mediaZoom = 2.5
+        media.mediaPanX = 0.2
+        media.mediaPanY = -0.1
+        store.updateBlock(media, in: nil)
+
+        store.setMedia("trimmed.jpg", for: mediaID, in: nil)
+        media = try #require(store.block(with: mediaID, in: nil))
+        #expect(media.mediaFileName == "trimmed.jpg")
+        #expect(media.mediaZoom == 2.5)
+
+        store.setMedia("new.jpg", for: mediaID, in: nil, resetsFraming: true)
+        media = try #require(store.block(with: mediaID, in: nil))
+        #expect(media.mediaFileName == "new.jpg")
+        #expect(media.mediaShape == .circle)
+        #expect(media.mediaZoom == 1)
+        #expect(media.mediaPanX == 0)
+        #expect(media.mediaPanY == 0)
+    }
+
+    @Test
+    func missingMediaComesBackFromAnOlderCopyOnThePhone() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: "/tmp/mosaic-recovery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        let accounts = root.appendingPathComponent("Accounts", isDirectory: true)
+        let location = ComposerStorageLocation(root: accounts.appendingPathComponent("owner", isDirectory: true))
+        let backup = ComposerStorageLocation(
+            root: accounts.appendingPathComponent(ComposerAccountRestore.backupPrefix + "1", isDirectory: true)
+        )
+        let shared = ComposerStorageLocation(root: root)
+        let other = ComposerStorageLocation(root: accounts.appendingPathComponent("someone-else", isDirectory: true))
+        for folder in [location.mediaDirectory, backup.mediaDirectory, shared.mediaDirectory, other.mediaDirectory] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        try Data("backup".utf8).write(to: backup.mediaDirectory.appendingPathComponent("A.jpg"))
+        try Data("shared".utf8).write(to: shared.mediaDirectory.appendingPathComponent("B.jpg"))
+        try Data("other".utf8).write(to: other.mediaDirectory.appendingPathComponent("C.jpg"))
+        try Data("here".utf8).write(to: location.mediaDirectory.appendingPathComponent("D.jpg"))
+        try Data("old".utf8).write(to: backup.mediaDirectory.appendingPathComponent("D.jpg"))
+
+        let folders = ComposerBackgroundRestore.recoveryFolders(for: location, shared: shared)
+        #expect(folders.map(\.standardizedFileURL) == [backup.mediaDirectory, shared.mediaDirectory].map(\.standardizedFileURL))
+
+        let recovered = ComposerBackgroundRestore.recover(
+            ["A.jpg", "B.jpg", "C.jpg", "D.jpg", "../escape.jpg"], into: location, from: folders
+        )
+        #expect(recovered == ["A.jpg", "B.jpg"])
+        #expect(try Data(contentsOf: location.mediaDirectory.appendingPathComponent("A.jpg")) == Data("backup".utf8))
+        #expect(try Data(contentsOf: location.mediaDirectory.appendingPathComponent("D.jpg")) == Data("here".utf8))
+        #expect(!fm.fileExists(atPath: location.mediaDirectory.appendingPathComponent("C.jpg").path))
+        #expect(fm.fileExists(atPath: backup.mediaDirectory.appendingPathComponent("A.jpg").path))
+    }
+
+    @Test @MainActor
+    func viewModeStartsAsAUserEveryTime() {
+        let chrome = MosaicChrome()
+        chrome.isViewing = true
+        #expect(chrome.viewAs == .user)
+        chrome.viewAs = .me
+        chrome.isViewing = true
+        #expect(chrome.viewAs == .me)
+        chrome.isViewing = false
+        chrome.isViewing = true
+        #expect(chrome.viewAs == .user)
+    }
+
+    @Test
     func followerRowsShowOneInstagramStyleButton() throws {
         let fan = UUID(), friend = UUID(), stranger = UUID(), shy = UUID(), noMosaic = UUID()
         func id(_ value: UUID) -> String { value.uuidString.lowercased() }
@@ -715,6 +854,18 @@ struct ComposerBoardSyncTests {
         #expect(listed.pursuits.map(\.title) == ["Golf", "Pursuit"])
         #expect(listed.pursuits.map(\.canChange) == [true, false])
         #expect(MosaicSettingsList.displayName(from: "  Ada Lovelace  ") == "Ada Lovelace")
+
+        let rows = [listed.mosaic].compactMap { $0 } + listed.pursuits
+        let saved = MosaicSettingsList.savedLevels(rows)
+        #expect(saved == [mosaicID: .public, synced: .private])
+        #expect(MosaicSettingsList.changedLevels(rows, saved: saved).isEmpty)
+
+        var edited = rows
+        edited[1].level = .public
+        edited[2].level = .private
+        #expect(MosaicSettingsList.changedLevels(edited, saved: saved).map(\.id) == [synced])
+        edited[1].level = .private
+        #expect(MosaicSettingsList.changedLevels(edited, saved: saved).isEmpty)
     }
 
     @Test

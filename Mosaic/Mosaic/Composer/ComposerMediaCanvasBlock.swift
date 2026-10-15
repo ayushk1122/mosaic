@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct ComposerMediaCanvasBlock: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
 
     @Binding var block: ComposerBlock
     let mediaURL: URL?
@@ -19,12 +20,16 @@ struct ComposerMediaCanvasBlock: View {
     var onOpenMenu: () -> Void
     var onCrop: () -> Void
     var onBodyTap: (() -> Void)? = nil
+    var onReplace: (() -> Void)? = nil
 
     @State private var preview: UIImage?
+    @State private var loadFailed = false
     @State private var videoAspect: CGFloat = 16.0 / 9.0
     @State private var itemFrame: CGRect = .zero
     @State private var menuFrame: CGRect = .zero
     @State private var cropFrame: CGRect = .zero
+    @State private var replaceFrame: CGRect = .zero
+    @State private var menuReplaceFrame: CGRect = .zero
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
@@ -35,6 +40,8 @@ struct ComposerMediaCanvasBlock: View {
 
     private var showsLift: Bool { isLifted }
     private var isVideo: Bool { Self.isVideo(mediaURL) }
+    private var isUnavailable: Bool { loadFailed && !mediaWaiting.includes(mediaURL) }
+    private var showsReplace: Bool { isSelected && isUnavailable && onReplace != nil && !isLifted && !isRelocating }
 
     private var displayWidth: CGFloat {
         max(72, 200 * scale * livePinchScale)
@@ -52,6 +59,7 @@ struct ComposerMediaCanvasBlock: View {
             .animation(.easeOut(duration: 0.16), value: showsLift)
             .contentShape(MediaIconHitShape(
                 menuOpen: showsMenu,
+                showsReplace: showsMenuReplace,
                 iconX: iconPlacement.x,
                 cropBelow: iconPlacement.cropBelow
             ))
@@ -65,12 +73,14 @@ struct ComposerMediaCanvasBlock: View {
                 value: [
                     block.id: ComposerMediaChromeFrames(
                         menu: isSelected ? menuFrame : .zero,
-                        crop: isSelected && showsMenu ? cropFrame : .zero
+                        crop: isSelected && showsMenu ? cropFrame : .zero,
+                        replace: isSelected && showsMenuReplace ? menuReplaceFrame : showsReplace ? replaceFrame : .zero
                     )
                 ]
             )
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
             if isVideo, let mediaURL {
+                loadFailed = !FileManager.default.fileExists(atPath: mediaURL.path)
                 let loaded = await Self.videoAspect(at: mediaURL)
                 guard !Task.isCancelled else { return }
                 videoAspect = loaded
@@ -78,6 +88,7 @@ struct ComposerMediaCanvasBlock: View {
                 let loaded = await Self.loadPreview(at: mediaURL)
                 guard !Task.isCancelled else { return }
                 preview = loaded
+                loadFailed = loaded == nil && mediaURL != nil
             }
         }
     }
@@ -100,13 +111,19 @@ struct ComposerMediaCanvasBlock: View {
 
     @ViewBuilder
     private var framedMedia: some View {
-        if isVideo, let mediaURL {
+        if isVideo, let mediaURL, !loadFailed {
             framed(
                 ComposerInlineVideo(url: mediaURL, isPaused: isPaused, fillsFrame: false)
                     .allowsHitTesting(false)
             )
         } else if let preview {
             framed(ComposerPicture(image: preview))
+        } else if isUnavailable {
+            framed(ComposerMediaUnavailable(
+                isVideo: isVideo,
+                onReplace: showsReplace ? onReplace : nil,
+                onReplaceFrame: { replaceFrame = $0 }
+            ))
         } else {
             ProgressView()
                 .tint(.white)
@@ -127,11 +144,17 @@ struct ComposerMediaCanvasBlock: View {
         return preview.size.width / preview.size.height
     }
 
+    private var showsMenuReplace: Bool { showsMenu && onReplace != nil }
+
     private var mediaChrome: some View {
         ZStack(alignment: .topLeading) {
             if showsMenu {
                 cropIconButton
                     .offset(x: iconPlacement.x, y: iconPlacement.cropBelow ? 36 : -46)
+            }
+            if showsMenuReplace {
+                replaceIconButton
+                    .offset(x: iconPlacement.x, y: iconPlacement.cropBelow ? 76 : -86)
             }
             mediaIconButton
                 .offset(x: iconPlacement.x, y: -2)
@@ -156,6 +179,25 @@ struct ComposerMediaCanvasBlock: View {
             .highPriorityGesture(TapGesture().onEnded { onCrop() })
             .accessibilityLabel("Crop")
             .accessibilityAddTraits(.isButton)
+    }
+
+    private var replaceIconButton: some View {
+        Image(systemName: "arrow.left.arrow.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(width: 32, height: 32)
+            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .contentShape(Circle())
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(composerSpace))
+            } action: { frame in
+                menuReplaceFrame = frame
+            }
+            .highPriorityGesture(TapGesture().onEnded { onReplace?() })
+            .accessibilityLabel("Replace media")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("composer.media.replace")
     }
 
     private var mediaIconButton: some View {
@@ -274,9 +316,14 @@ struct MediaTriangle: Shape {
 struct ComposerMediaChromeFrames: Equatable {
     var menu = CGRect.zero
     var crop = CGRect.zero
+    var replace = CGRect.zero
 
     func hitsMenu(_ point: CGPoint) -> Bool {
         menu.width > 1 && menu.insetBy(dx: -10, dy: -10).contains(point)
+    }
+
+    func hitsReplace(_ point: CGPoint) -> Bool {
+        replace.width > 1 && replace.insetBy(dx: -8, dy: -8).contains(point)
     }
 
     func hitsCrop(_ point: CGPoint) -> Bool {
@@ -297,6 +344,7 @@ struct ComposerMediaChromeFrameKey: PreferenceKey {
 
 private struct MediaIconHitShape: Shape {
     var menuOpen: Bool
+    var showsReplace: Bool
     var iconX: CGFloat
     var cropBelow: Bool
 
@@ -306,6 +354,10 @@ private struct MediaIconHitShape: Shape {
         if menuOpen {
             let cropY = cropBelow ? rect.minY + 28 : rect.minY - 54
             path.addEllipse(in: CGRect(x: rect.minX + iconX - 4, y: cropY, width: 44, height: 44))
+        }
+        if showsReplace {
+            let replaceY = cropBelow ? rect.minY + 68 : rect.minY - 94
+            path.addEllipse(in: CGRect(x: rect.minX + iconX - 4, y: replaceY, width: 44, height: 44))
         }
         return path
     }
@@ -533,6 +585,7 @@ private struct MediaBodyTapModifier: ViewModifier {
 
 struct ComposerMediaLightbox: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
 
     let url: URL
     /// A media block's crop, shown as on the board. Carousel items have none.
@@ -541,6 +594,7 @@ struct ComposerMediaLightbox: View {
 
     @State private var image: UIImage?
     @State private var videoAspect: CGFloat?
+    @State private var loadFailed = false
 
     private var isVideo: Bool { ComposerMediaStill.isVideo(url) }
 
@@ -556,7 +610,12 @@ struct ComposerMediaLightbox: View {
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onClose)
-            if let crop, let contentAspect {
+            if loadFailed, !mediaWaiting.includes(url) {
+                ComposerMediaUnavailable(isVideo: isVideo)
+                    .frame(width: 220, height: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .allowsHitTesting(false)
+            } else if let crop, let contentAspect {
                 GeometryReader { proxy in
                     let width = min(
                         max(proxy.size.width - 32, 1),
@@ -583,6 +642,7 @@ struct ComposerMediaLightbox: View {
         }
         .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
             if isVideo {
+                loadFailed = !FileManager.default.fileExists(atPath: url.path)
                 guard crop != nil else { return }
                 let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
                 guard !Task.isCancelled else { return }
@@ -591,6 +651,7 @@ struct ComposerMediaLightbox: View {
                 let loaded = await ComposerMediaStill.image(at: url)
                 guard !Task.isCancelled else { return }
                 image = loaded
+                loadFailed = loaded == nil
             }
         }
         .accessibilityElement(children: .ignore)

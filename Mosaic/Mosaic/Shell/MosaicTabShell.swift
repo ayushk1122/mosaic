@@ -59,8 +59,11 @@ final class MosaicChrome {
     var isViewing = false {
         didSet {
             if isVisiting, !isViewing { isViewing = true }
+            if isViewing, !oldValue { viewAs = .user }
         }
     }
+    /// Each time the owner enters view mode it starts as a visitor would see the board.
+    var viewAs: MosaicViewAs = .user
 
     init(isVisiting: Bool = false) {
         self.isVisiting = isVisiting
@@ -73,10 +76,11 @@ struct MosaicTabShell: View {
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
     @Environment(\.scenePhase) private var scenePhase
-    @State private var downloads = ComposerBackgroundRestore()
+    @State private var downloads: ComposerBackgroundRestore
     @State private var downloadAttempt = 0
     @State private var remoteSync: ComposerRemoteSync
     @State private var pageBackgrounds: MosaicPageBackgrounds
+    @State private var pursuitPrivacy = MosaicPursuitPrivacy()
     var account: MosaicAccount?
     /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
     var linkedUsername: Binding<String?>
@@ -92,6 +96,9 @@ struct MosaicTabShell: View {
         let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
         _store = State(initialValue: store)
+        let downloads = ComposerBackgroundRestore()
+        if account?.session != nil { downloads.noteExpectedFiles(store: store) }
+        _downloads = State(initialValue: downloads)
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
         _pageBackgrounds = State(initialValue: MosaicPageBackgrounds(location: location, persistToDisk: persistToDisk))
     }
@@ -130,6 +137,9 @@ struct MosaicTabShell: View {
                 try Task.checkCancellation()
                 try await downloads.run(store: store, client: SupabaseDocumentSync(config: config),
                                         ownerID: owner, accessToken: token)
+                if !downloads.recoveredFiles.isEmpty {
+                    remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 downloads.failure = "Some content couldn’t load. Your edits are saved on this device."
@@ -139,17 +149,13 @@ struct MosaicTabShell: View {
             if phase == .active, !downloads.isLoading { downloadAttempt += 1 }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if downloads.isLoading || downloads.failure != nil || store.isRestoringDocuments {
+            if let failure = downloads.failure, !downloads.isLoading {
                 HStack(spacing: 10) {
-                    if downloads.isLoading || downloads.failure == nil { ProgressView().tint(.white) }
-                    Text(downloads.failure ?? (store.isRestoringDocuments ? "Loading Pursuits…" : "Downloading media · \(downloads.remainingMedia) left"))
+                    Text(failure)
                         .font(.caption)
                     Spacer(minLength: 0)
-                    if downloads.failure != nil {
-                        Button("Retry") { downloadAttempt += 1 }
-                            .font(.caption.bold())
-                            .disabled(downloads.isLoading)
-                    }
+                    Button("Retry") { downloadAttempt += 1 }
+                        .font(.caption.bold())
                 }
                 .foregroundStyle(.white)
                 .padding(.horizontal, 16)
@@ -159,6 +165,7 @@ struct MosaicTabShell: View {
             }
         }
         .environment(\.composerMediaVersions, store.mediaVersions)
+        .environment(\.composerMediaWaiting, mediaWaiting)
         .onChange(of: linkedUsername.wrappedValue, initial: true) { _, name in
             if name != nil { selection = .search }
         }
@@ -166,8 +173,15 @@ struct MosaicTabShell: View {
         .environment(chrome)
         .environment(remoteSync)
         .environment(pageBackgrounds)
+        .environment(pursuitPrivacy)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
+    }
+
+    /// After downloads fail, nothing is coming until Retry, so missing media shows as unavailable.
+    private var mediaWaiting: ComposerMediaWaiting {
+        if downloads.failure != nil, !downloads.isLoading { return ComposerMediaWaiting() }
+        return ComposerMediaWaiting(all: store.isRestoringDocuments, files: downloads.expectedFiles)
     }
 
     @ViewBuilder

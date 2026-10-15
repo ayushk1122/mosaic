@@ -203,6 +203,8 @@ final class ComposerRemoteSync {
     ) async -> [String: String] {
         var assets = assets
         let media = SupabaseMediaSync(config: client.config, session: client.session)
+        // A file that can't be read or uploaded stays without an asset, so the next sync tries again,
+        // and the board shows it as unavailable if it is gone from this phone.
         for reference in references where assets[reference.fileName] == nil {
             let url = mediaFile(reference.fileName)
             guard let prepared = await ComposerMediaPreparer.prepare(fileAt: url) else { continue }
