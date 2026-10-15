@@ -108,6 +108,29 @@ struct ComposerContentTests {
         #expect(ComposerInstagramCover.imageURL(inEmbedHTML: "<html>Log in</html>") == nil)
     }
 
+    @Test func twitchPreviewReadsTheBotMetadata() {
+        let vod = """
+        <head><meta property='og:site_name' content='Twitch'><meta content="Let&#39;s Chat &amp; Talk | Ep 13 - twitch on Twitch" \
+        property="og:title"/><meta property="og:image" content="https://static-cdn.jtvnw.net/cf_vods/abc/thumb/custom-640x360.png"/></head>
+        """
+        let tags = ComposerTwitchPreview.metaTags(inHTML: vod)
+        #expect(ComposerTwitchPreview.title(in: tags) == "Let's Chat & Talk | Ep 13")
+        #expect(ComposerTwitchPreview.imageURL(in: tags)?.absoluteString == "https://static-cdn.jtvnw.net/cf_vods/abc/thumb/custom-640x360.png")
+
+        let generic = """
+        <meta property='og:title' content='Twitch'><meta property='og:image' content='https://static-cdn.jtvnw.net/ttv-static-metadata/twitch_logo3.jpg'>
+        """
+        let genericTags = ComposerTwitchPreview.metaTags(inHTML: generic)
+        #expect(ComposerTwitchPreview.title(in: genericTags) == nil)
+        #expect(ComposerTwitchPreview.imageURL(in: genericTags) == nil)
+        #expect(ComposerTwitchPreview.title(in: ["og:title": "VOD - Twitch"]) == nil)
+
+        let foreign = ComposerTwitchPreview.metaTags(inHTML: #"<meta property="og:image" content="https://evil.test/x.jpg">"#)
+        #expect(ComposerTwitchPreview.imageURL(in: foreign) == nil)
+        let clip = ComposerTwitchPreview.metaTags(inHTML: #"<meta name="twitter:image" content="https://static-cdn.jtvnw.net/twitch-video-assets/x/thumb-1920x1080.jpg"/>"#)
+        #expect(ComposerTwitchPreview.imageURL(in: clip) != nil)
+    }
+
     @Test func contentIsAvailableOnMosaicsAndPursuits() {
         #expect(BlockMenuOption.menuOptions(matching: "content").contains(.content))
         #expect(BlockMenuOption.menuOptions(matching: "content", includingPursuit: false).contains(.content))

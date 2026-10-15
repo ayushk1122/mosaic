@@ -529,10 +529,22 @@ final class ComposerStore {
         persist()
     }
 
-    func setMedia(_ fileName: String, for blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+    /// A different photo or video doesn't fit the old zoom and pan, so `resetsFraming` clears them; the frame shape stays.
+    func setMedia(
+        _ fileName: String,
+        for blockID: ComposerBlockID,
+        in documentID: ComposerDocumentID?,
+        resetsFraming: Bool = false
+    ) {
         captureUndo(in: documentID, coalesce: blockID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
+                if resetsFraming {
+                    block.mediaZoom = 1
+                    block.mediaPanX = 0
+                    block.mediaPanY = 0
+                    block.mediaWarp = nil
+                }
                 block.mediaFileName = fileName
             }
         }

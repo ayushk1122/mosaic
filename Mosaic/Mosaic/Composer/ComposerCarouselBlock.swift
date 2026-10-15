@@ -78,6 +78,7 @@ struct ComposerCarouselItemFace: View {
     let item: CarouselMediaItem
     let poster: UIImage?
     var compact = false
+    var isUnavailable = false
 
     /// Width divided by height, matching the item's block on a board: a photo or video's own
     /// shape, a content card's shape, and a square logo for a social.
@@ -100,6 +101,8 @@ struct ComposerCarouselItemFace: View {
             case .media:
                 if let poster {
                     ComposerPicture(image: poster)
+                } else if isUnavailable {
+                    ComposerMediaUnavailable(isVideo: ComposerMediaStill.isVideo(URL(fileURLWithPath: item.fileName)), compact: compact)
                 } else {
                     Color.white.opacity(0.08)
                     ProgressView()
@@ -204,6 +207,8 @@ struct ComposerCarouselCanvasBlock: View {
     @State private var playing = false
     @State private var posters: [String: UIImage] = [:]
     @State private var loadingPosters: Set<String> = []
+    @State private var failedPosters: Set<String> = []
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
 
@@ -278,52 +283,42 @@ struct ComposerCarouselCanvasBlock: View {
 
     private var carousel: some View {
         ZStack {
-            ForEach(Array(block.carouselItems.enumerated()), id: \.element.id) { index, item in
-                let delta = CGFloat(CarouselMotion.shortestOffset(item: index, center: centerIndex, count: count)) + pan / layout.step
-                card(item, delta: delta)
+            ForEach(cardSlots) { slot in
+                card(slot.item, delta: CGFloat(slot.offset) + pan / layout.step)
             }
         }
         .frame(width: layout.width, height: layout.height)
         .clipped()
         .contentShape(Rectangle())
         .modifier(CarouselScrollModifier(
-            isEnabled: allowsDirectControl && !isLifted && !isRelocating,
+            isEnabled: allowsDirectControl && count > 1 && !isLifted && !isRelocating,
             gesture: scrollGesture
         ))
     }
 
-    private var placeholder: some View {
-        HStack(spacing: 10) {
-            ForEach(0..<CarouselMotion.minimumCount, id: \.self) { slot in
-                placeholderSlot(slot)
-            }
+    private var cardSlots: [CarouselCardSlot] {
+        block.carouselItems.enumerated().flatMap { index, item in
+            CarouselMotion.offsets(item: index, center: centerIndex, count: count)
+                .map { CarouselCardSlot(item: item, offset: $0) }
         }
-        .padding(.horizontal, 8)
-        .frame(width: layout.width, height: layout.height)
     }
 
-    private func placeholderSlot(_ slot: Int) -> some View {
-        let item = slot < count ? block.carouselItems[slot] : nil
+    private var placeholder: some View {
+        let size = layout.cardSize(aspect: 4.0 / 5.0)
         return ZStack {
-            if let item {
-                ComposerCarouselItemFace(item: item, poster: posters[item.fileName], compact: true)
-            } else {
-                Color.white.opacity(0.06)
-                Image(systemName: "plus")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-            }
+            Color.white.opacity(0.06)
+            Image(systemName: "plus")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.72))
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: layout.cardHeight * 0.82)
+        .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    Color.white.opacity(item == nil ? 0.28 : 0.1),
-                    style: StrokeStyle(lineWidth: 1, dash: item == nil ? [5, 4] : [CGFloat]())
-                )
+                .stroke(Color.white.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
         }
+        .frame(width: layout.width, height: layout.height)
+        .allowsHitTesting(false)
     }
 
     private func card(_ item: CarouselMediaItem, delta: CGFloat) -> some View {
@@ -340,7 +335,11 @@ struct ComposerCarouselCanvasBlock: View {
             if isCenter, isVideo, playing, let url {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: true)
             } else {
-                ComposerCarouselItemFace(item: item, poster: poster)
+                ComposerCarouselItemFace(
+                    item: item,
+                    poster: poster,
+                    isUnavailable: failedPosters.contains(item.fileName) && !mediaWaiting.includes(item.fileName)
+                )
             }
             if isCenter, isVideo, !playing {
                 Image(systemName: "play.fill")
@@ -373,20 +372,23 @@ struct ComposerCarouselCanvasBlock: View {
         .allowsHitTesting(isCenter && allowsDirectControl && !isLifted)
         .onTapGesture {
             guard isCenter else { return }
-            if item.kind != .media {
-                if opensLinks || onPresentMedia != nil, let link = item.linkURL {
-                    openURL(link)
-                }
-                return
-            }
-            guard let url else { return }
-            if let onPresentMedia {
-                onPresentMedia(url, nil)
-                return
-            }
+            if present(item) || item.kind != .media { return }
             guard isVideo else { return }
             playing.toggle()
         }
+    }
+
+    /// Opens a social or content card's link, or shows media full screen. False when nothing opened.
+    @discardableResult
+    private func present(_ item: CarouselMediaItem) -> Bool {
+        if item.kind != .media {
+            guard opensLinks || onPresentMedia != nil, let link = item.linkURL else { return false }
+            openURL(link)
+            return true
+        }
+        guard let onPresentMedia, !item.fileName.isEmpty else { return false }
+        onPresentMedia(store.mediaURL(for: item.fileName), nil)
+        return true
     }
 
     private var scrollGesture: some Gesture {
@@ -456,6 +458,9 @@ struct ComposerCarouselCanvasBlock: View {
         } finish: { name, image in
             if let image {
                 posters[name] = image
+                failedPosters.remove(name)
+            } else {
+                failedPosters.insert(name)
             }
             loadingPosters.remove(name)
         }
@@ -484,6 +489,12 @@ private func loadCarouselPosters(
             finish(name, image)
         }
     }
+}
+
+private struct CarouselCardSlot: Identifiable {
+    let item: CarouselMediaItem
+    let offset: Int
+    var id: String { "\(item.id)@\(offset)" }
 }
 
 /// Photos, videos, and content get a rounded card. A social stays a bare logo, like on the board.
@@ -539,6 +550,8 @@ struct ComposerCarouselEditor: View {
 
     @State private var posters: [String: UIImage] = [:]
     @State private var loadingPosters: Set<String> = []
+    @State private var failedPosters: Set<String> = []
+    @Environment(\.composerMediaWaiting) private var mediaWaiting
     @State private var showPicker = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var replacingID: String?
@@ -571,7 +584,7 @@ struct ComposerCarouselEditor: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
-                Text("At least \(CarouselMotion.minimumCount) items: photos, videos, socials, or content. Mix them in any order. The center one is larger, and a video there can play.")
+                Text("Photos, videos, socials, or content. Mix them in any order. The center one is larger, and a video there can play.")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
@@ -704,7 +717,12 @@ struct ComposerCarouselEditor: View {
 
     private func thumbnail(_ item: CarouselMediaItem) -> some View {
         ZStack {
-            ComposerCarouselItemFace(item: item, poster: posters[item.fileName], compact: true)
+            ComposerCarouselItemFace(
+                item: item,
+                poster: posters[item.fileName],
+                compact: true,
+                isUnavailable: failedPosters.contains(item.fileName) && !mediaWaiting.includes(item.fileName)
+            )
             if item.kind == .media, ComposerMediaStill.isVideo(store.mediaURL(for: item.fileName)) {
                 Image(systemName: "play.fill")
                     .font(.caption.weight(.semibold))
@@ -832,6 +850,9 @@ struct ComposerCarouselEditor: View {
         } finish: { name, image in
             if let image {
                 posters[name] = image
+                failedPosters.remove(name)
+            } else {
+                failedPosters.insert(name)
             }
             loadingPosters.remove(name)
         }

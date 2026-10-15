@@ -367,7 +367,9 @@ struct PursuitWidgetEditor: View {
                 }
             }
         }
-        .onChange(of: panel) { previous, _ in
+        .onChange(of: panel) { previous, current in
+            if current != .name { nameTyping = false }
+            if current != .text(typingTextID ?? "") { typingTextID = nil }
             guard case .text(let id) = previous else { return }
             guard let item = texts.first(where: { $0.id == id }) else { return }
             guard item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -538,6 +540,7 @@ struct PursuitWidgetEditor: View {
         .opacity(0.02)
         .contentShape(Rectangle())
         .highPriorityGesture(itemDrag(id: id, travel: fitted, originX: x, originY: y))
+        .allowsHitTesting(!isTyping(id))
         .alignmentGuide(.leading) { _ in -CGFloat(x) * fitted.width }
         .alignmentGuide(.top) { _ in -CGFloat(y) * fitted.height }
         .accessibilityLabel(id == PursuitTextDrag.nameID ? "Move name" : "Move text")
@@ -546,6 +549,11 @@ struct PursuitWidgetEditor: View {
     private var nameIsSelected: Bool {
         if case .name = panel { return true }
         return false
+    }
+
+    /// The text being typed takes taps itself, so they move the cursor.
+    private func isTyping(_ id: String) -> Bool {
+        id == PursuitTextDrag.nameID ? nameTyping : typingTextID == id
     }
 
     private var selectedTextID: String? {
@@ -833,17 +841,13 @@ struct PursuitWidgetEditor: View {
                     }
                 } else if distance < 12, elapsed < 0.32 {
                     if id == PursuitTextDrag.nameID {
-                        if nameIsSelected, !nameTyping {
-                            nameTyping = true
-                        } else {
-                            nameTyping = false
-                            panel = .name
-                        }
-                    } else if case .text(let current) = panel, current == id, typingTextID != id {
-                        typingTextID = id
-                    } else {
                         typingTextID = nil
+                        panel = .name
+                        nameTyping = true
+                    } else {
+                        nameTyping = false
                         panel = .text(id)
+                        typingTextID = id
                     }
                 }
             }

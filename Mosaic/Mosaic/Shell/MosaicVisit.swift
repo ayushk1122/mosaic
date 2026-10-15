@@ -241,12 +241,6 @@ final class MosaicVisit {
         self.client = client
     }
 
-    var publicPursuits: [MosaicVisitPursuit] {
-        pursuits.values
-            .filter { $0.level == .public && $0.isOpen }
-            .sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
-    }
-
     /// A Pursuit the server didn't list for this visitor stays locked.
     func access(_ id: UUID) -> MosaicVisitAccess {
         Self.access(pursuits[id])
@@ -549,15 +543,27 @@ struct MosaicVisitView: View {
     @State private var phase = Phase.loading
     @State private var profile: MosaicVisitProfile?
     @State private var requesting = false
-    @State private var showsFollowSheet = false
     @State private var following = false
     /// The first appearance follows a fresh load, so only later returns refresh access.
     @State private var visitAppeared = false
+    @State private var showsAvatar = false
 
     private let muted = Color.white.opacity(0.55)
 
     var body: some View {
         content
+            .overlay {
+                if showsAvatar {
+                    MosaicAvatarPreview(
+                        path: avatarPath,
+                        name: profile?.name ?? person.username,
+                        username: person.username
+                    ) {
+                        withAnimation(.easeOut(duration: 0.2)) { showsAvatar = false }
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+                }
+            }
             .background(MosaicBrand.inkBlack.ignoresSafeArea())
             .environment(\.colorScheme, .dark)
             .toolbar(.hidden, for: .navigationBar)
@@ -591,6 +597,21 @@ struct MosaicVisitView: View {
         }
     }
 
+    private var avatarPath: String? { profile?.avatarPath ?? person.avatarPath }
+
+    /// The owner's picture. Tapping it shows it larger, with a button to copy their Mosaic link.
+    private func ownerAvatar(size: CGFloat) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { showsAvatar = true }
+        } label: {
+            MosaicAvatarView(path: avatarPath, name: profile?.name ?? person.username, size: size)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("@\(person.username)")
+        .accessibilityHint("Shows the profile picture larger")
+        .accessibilityIdentifier("visit.ownerAvatar")
+    }
+
     private var backChevron: some View {
         Button {
             dismiss()
@@ -622,7 +643,7 @@ struct MosaicVisitView: View {
         return ZStack {
             blurredBoard
             VStack(spacing: 14) {
-                MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: 88)
+                ownerAvatar(size: 88)
                     .overlay(Circle().stroke(.white, lineWidth: 2))
                 VStack(spacing: 2) {
                     Text(profile?.name ?? person.username)
@@ -691,10 +712,9 @@ struct MosaicVisitView: View {
             .overlay(alignment: .bottomTrailing) {
                 if start == nil {
                     HStack(spacing: 12) {
-                        MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: ComposerAddMenuMetrics.button)
+                        ownerAvatar(size: ComposerAddMenuMetrics.button)
                             .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
                             .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
-                            .accessibilityLabel("@\(person.username)")
                         followButton(visit: visit)
                     }
                     .padding(.trailing, 20)
@@ -745,11 +765,6 @@ struct MosaicVisitView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { Task { await visit.refresh() } }
             }
-            .sheet(isPresented: $showsFollowSheet) {
-                followSheet(visit: visit)
-                    .presentationDetents([.medium, .large])
-                    .presentationBackground(MosaicBrand.inkBlack)
-            }
     }
 
     @ViewBuilder
@@ -758,8 +773,11 @@ struct MosaicVisitView: View {
         Group {
             if isFollowing {
                 Menu {
-                    Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
+                    Button(role: .destructive) {
                         Task { await unfollow(visit: visit) }
+                    } label: {
+                        Label("Unfollow", systemImage: "person.badge.minus")
+                        Text("Also unfollows their Pursuits")
                     }
                 } label: {
                     followGlyph("person.fill.checkmark")
@@ -767,7 +785,7 @@ struct MosaicVisitView: View {
                 .menuStyle(.button)
             } else {
                 Button {
-                    showsFollowSheet = true
+                    Task { await followMosaic(visit: visit) }
                 } label: {
                     followGlyph("person.fill.badge.plus")
                 }
@@ -786,61 +804,6 @@ struct MosaicVisitView: View {
             .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
             .background(MosaicBrand.inkBlack, in: Circle())
             .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
-    }
-
-    private func followSheet(visit: MosaicVisit) -> some View {
-        let pursuits = visit.publicPursuits
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                MosaicAvatarView(path: profile?.avatarPath ?? person.avatarPath, name: profile?.name ?? person.username, size: 40)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Follow @\(person.username)")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    if !pursuits.isEmpty {
-                        Text("You’ll also follow")
-                            .font(.caption)
-                            .foregroundStyle(muted)
-                    }
-                }
-            }
-            if !pursuits.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(pursuits) { pursuit in
-                            HStack(spacing: 10) {
-                                Image(systemName: pursuit.following ? "checkmark.circle.fill" : "circle.grid.2x2")
-                                    .font(.subheadline)
-                                    .foregroundStyle(muted)
-                                    .frame(width: 22)
-                                Text(pursuit.displayTitle)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.vertical, 8)
-                        }
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-            Button {
-                Task { await followMosaic(visit: visit) }
-            } label: {
-                Text("Follow")
-                    .font(.headline)
-                    .foregroundStyle(MosaicBrand.inkBlack)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(.white, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(following)
-            .accessibilityIdentifier("visit.confirmFollow")
-        }
-        .padding(20)
-        .environment(\.colorScheme, .dark)
     }
 
     // MARK: Loading and actions
@@ -932,7 +895,6 @@ struct MosaicVisitView: View {
         do {
             try await link.client.followMosaic(ownerID: ownerID, accessToken: link.token)
             profile?.followsMosaic = true
-            showsFollowSheet = false
             await visit.refresh()
         } catch {
             visit.problem = "This Mosaic could not be followed."

@@ -99,6 +99,7 @@ struct ComposerGroupCanvasBlock: View {
     var onOpenFolder: (ComposerBlock) -> Void
     var onOpenMediaMenu: (ComposerBlockID) -> Void
     var onCropMedia: (ComposerBlockID) -> Void
+    var onReplaceMedia: ((ComposerBlockID) -> Void)?
     var onEditPursuit: (ComposerBlockID) -> Void
     var onEditCarousel: (ComposerBlockID) -> Void
     var onEditSocial: (ComposerBlockID) -> Void
@@ -216,7 +217,8 @@ struct ComposerGroupCanvasBlock: View {
                 onEditMemberPursuit: { _ in },
                 onEditMemberCarousel: { _ in },
                 onEditMemberSocial: { _ in },
-                onOpenMemberSocial: { _ in }
+                onOpenMemberSocial: { _ in },
+                onReplaceMedia: onReplaceMedia.map { replace in { replace(id) } }
             ),
             showsMediaMenu: mediaMenuBlockID == id,
             showsPursuitPencil: memberActive && (member.kind == .pursuit || member.kind == .node),

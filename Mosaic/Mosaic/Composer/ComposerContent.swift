@@ -415,12 +415,17 @@ struct ComposerContentEditor: View {
             provider = fetcher
             let postURL = target.url
             async let fullInstagramCover = target.platform == .instagram ? ComposerInstagramCover.fetch(for: postURL) : nil
+            async let twitchPreview = target.platform == .twitch ? ComposerTwitchPreview.fetch(for: postURL) : nil
             var fetched = false
+            var fetchedTitle: String?
             do {
                 let metadata = try await fetcher.startFetchingMetadata(for: target.url)
                 guard !Task.isCancelled, link == original else { return }
                 fetched = true
-                if title.isEmpty { title = metadata.title ?? "" }
+                if title.isEmpty {
+                    title = metadata.title ?? ""
+                    fetchedTitle = title
+                }
                 if let imageProvider = metadata.imageProvider, imageProvider.canLoadObject(ofClass: UIImage.self) {
                     let image: UIImage? = await withCheckedContinuation { continuation in
                         _ = imageProvider.loadObject(ofClass: UIImage.self) { object, _ in
@@ -439,6 +444,15 @@ struct ComposerContentEditor: View {
             if let fullCover {
                 cover = fullCover
                 framing = ComposerContentFraming()
+            }
+            if let twitch = await twitchPreview {
+                guard !Task.isCancelled, link == original else { return }
+                fetched = true
+                if let twitchTitle = twitch.title, title.isEmpty || title == fetchedTitle { title = twitchTitle }
+                if let image = twitch.image {
+                    cover = image
+                    framing = ComposerContentFraming()
+                }
             }
             if cover == nil {
                 message = fetched ? "No preview image was available. You can choose a cover photo."

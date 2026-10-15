@@ -10,6 +10,8 @@ struct MosaicComposerView: View {
     @Environment(ComposerStore.self) private var store
     @Environment(MosaicChrome.self) private var chrome
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
+    @Environment(\.composerMediaWaiting) private var ownerMediaWaiting
+    @Environment(MosaicPursuitPrivacy.self) private var pursuitPrivacy: MosaicPursuitPrivacy?
     @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @Environment(\.dismiss) private var dismiss
@@ -57,6 +59,7 @@ struct MosaicComposerView: View {
     @State private var dragScrollRelay = ComposerDragScrollRelay()
     @State private var composerSpace = UUID().uuidString
     @State private var canvasScrollPosition = ScrollPosition()
+    @State private var scrollBubbleRail = ComposerScrollBubbleRail()
     @State private var clipboardMenuBlockID: ComposerBlockID?
     @State private var pasteAnchor: CGPoint?
     @State private var clipboardPressTask: Task<Void, Never>?
@@ -74,19 +77,37 @@ struct MosaicComposerView: View {
     }
 
     private var scrollingBlocks: [ComposerBlock] {
-        visibleBlocks.filter { $0.kind != .banner }
+        let display = privacyDisplay
+        return visibleBlocks.filter { $0.kind != .banner && display.look(of: $0) != .removed }
+    }
+
+    /// Only the owner's own boards show privacy, once the levels have loaded.
+    private var privacyDisplay: MosaicPrivacyDisplay {
+        guard !chrome.isVisiting, account != nil, let pursuitPrivacy, pursuitPrivacy.isLoaded else {
+            return MosaicPrivacyDisplay()
+        }
+        let mode: MosaicPrivacyDisplay.Mode = !chrome.isViewing ? .badges : (chrome.viewAs == .user ? .visitor : .off)
+        return MosaicPrivacyDisplay(mode: mode, levels: pursuitPrivacy.levels)
+    }
+
+    private var showsViewAs: Bool {
+        chrome.isViewing && !chrome.isVisiting && documentID == nil && account != nil
     }
 
     private var backButton: some View {
         Button {
             dismiss()
         } label: {
+            // Sits over the board's content, so it is frosted glass rather than solid.
             Image(systemName: "chevron.left")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
-                .background(MosaicBrand.inkBlack, in: Circle())
-                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                .frame(width: ComposerAddMenuMetrics.topControl, height: ComposerAddMenuMetrics.topControl)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                .environment(\.colorScheme, .dark)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Back")
@@ -220,8 +241,14 @@ struct MosaicComposerView: View {
                 }
             }
             .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
+            .environment(\.mosaicPrivacyDisplay, privacyDisplay)
+            .task(id: chrome.isViewing) {
+                guard documentID == nil, !chrome.isVisiting, let account, let pursuitPrivacy else { return }
+                await pursuitPrivacy.refresh(account: account)
+            }
             .environment(\.composerPaperPage, isBookPage)
             .environment(\.composerMediaVersions, store.mediaVersions)
+            .environment(\.composerMediaWaiting, visit?.media?.waiting(for: documentID) ?? ownerMediaWaiting)
             .task(id: documentID) {
                 visit?.recordVisit(to: documentID.flatMap(ComposerBoardSync.uuid))
             }
@@ -236,15 +263,7 @@ struct MosaicComposerView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let media = visit?.media {
                     let id = media.boardID(documentID)
-                    if media.loading.contains(id) {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("Loading media…").font(.caption)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity)
-                        .background(.ultraThinMaterial)
-                    } else if media.failed.contains(id) {
+                    if !media.loading.contains(id), media.failed.contains(id) {
                         HStack {
                             Text("Some media couldn’t load.").font(.caption)
                             Button("Retry") { visitMediaAttempt += 1 }
@@ -380,9 +399,6 @@ struct MosaicComposerView: View {
             .overlay(alignment: .bottomLeading) {
                 if !isBookPage, focusedMedia == nil, openScrapbookID == nil {
                     HStack(alignment: .bottom, spacing: 12) {
-                        if documentID != nil || chrome.isVisiting {
-                            backButton
-                        }
                         if account != nil, !chrome.isViewing, !isGrouping {
                             settingsButton
                         }
@@ -392,6 +408,14 @@ struct MosaicComposerView: View {
                     }
                     .padding(.leading, 20)
                     .padding(.bottom, 20)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if documentID != nil || chrome.isVisiting, !isBookPage, focusedMedia == nil, openScrapbookID == nil {
+                    // The 44pt tap area centers the circle 12pt down, level with the scroll bubble's top.
+                    backButton
+                        .padding(.leading, 8)
+                        .padding(.top, 6)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -448,6 +472,16 @@ struct MosaicComposerView: View {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
                 .allowsHitTesting(false)
+                ComposerScrollBubbleFinder(rail: scrollBubbleRail)
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+                if showsScrollBubble {
+                    ComposerScrollBubble(rail: scrollBubbleRail)
+                        .padding(.top, 12)
+                        .padding(.trailing, 4)
+                        .padding(.bottom, 20 + ComposerAddMenuMetrics.button + 16)
+                        .transition(.opacity)
+                }
                 if isGrouping {
                     groupingBar
                         .frame(maxWidth: .infinity)
@@ -467,10 +501,18 @@ struct MosaicComposerView: View {
                         .padding(.trailing, eyeTrailingPadding)
                         .padding(.bottom, 20)
                     if chrome.isViewing, documentID == nil {
-                        MosaicOwnProfileButton(size: ComposerAddMenuMetrics.button, refresh: profileRefresh)
-                            .padding(.trailing, eyeTrailingPadding + ComposerAddMenuMetrics.button + 12)
-                            .padding(.bottom, 20)
-                            .transition(.opacity)
+                        HStack(alignment: .bottom, spacing: 12) {
+                            MosaicOwnProfileButton(size: ComposerAddMenuMetrics.button, refresh: profileRefresh)
+                            if showsViewAs {
+                                MosaicViewAsToggle(
+                                    viewAs: Bindable(chrome).viewAs,
+                                    isChecking: pursuitPrivacy?.isLoaded != true
+                                )
+                            }
+                        }
+                        .padding(.trailing, eyeTrailingPadding + ComposerAddMenuMetrics.button + 12)
+                        .padding(.bottom, 20)
+                        .transition(.opacity)
                     }
                 }
             }
@@ -481,6 +523,11 @@ struct MosaicComposerView: View {
                 dragScrollRelay.viewportHeight = frame.height
             }
         }
+    }
+
+    /// Edit mode only; visitors and view mode scroll the usual way.
+    private var showsScrollBubble: Bool {
+        !chrome.isViewing && !chrome.isVisiting && !isBookPage && !isGrouping && !textDragVisual.isMoving
     }
 
     private var showsSelectionTrash: Bool {
@@ -567,6 +614,11 @@ struct MosaicComposerView: View {
         .scrollIndicators(.hidden, axes: .vertical)
         .scrollDismissesKeyboard(.interactively)
         .scrollPosition($canvasScrollPosition)
+        .onScrollGeometryChange(for: ComposerScrollBubbleMetrics.self) { geometry in
+            ComposerScrollBubbleMetrics(geometry)
+        } action: { _, metrics in
+            scrollBubbleRail.metrics = metrics
+        }
     }
 
     private var canvasPage: some View {
@@ -669,13 +721,11 @@ struct MosaicComposerView: View {
             pencil: pursuitBoardPencil(block)
         ))
         .zIndex(clipboardMenuBlockID == block.id || styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
-        .background {
-            DragFollowMarker(
-                relay: dragScrollRelay,
-                enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
-            )
-        }
         .offset(liveOffset(for: block))
+        .modifier(DragFollowOffset(
+            relay: dragScrollRelay,
+            enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
+        ))
         .opacity(blockOpacity(for: block))
     }
 
@@ -784,7 +834,9 @@ struct MosaicComposerView: View {
             onEditMemberPursuit: { beginPursuitEdit($0) },
             onEditMemberCarousel: { beginCarouselEdit($0) },
             onEditMemberSocial: { beginSocialEdit($0) },
-            onOpenMemberSocial: { openSocialLink($0) }
+            onOpenMemberSocial: { openSocialLink($0) },
+            onReplaceMedia: chrome.isViewing || chrome.isVisiting ? nil : { replaceMedia(block.id) },
+            onReplaceMemberMedia: chrome.isViewing || chrome.isVisiting ? nil : { replaceMedia($0) }
         )
     }
 
@@ -900,8 +952,9 @@ struct MosaicComposerView: View {
 
     private func importMedia(_ item: PhotosPickerItem, into blockID: ComposerBlockID) async {
         if let fileName = await ComposerMediaImport.save(item, to: store) {
-            store.setMedia(fileName, for: blockID, in: documentID)
-        } else if store.block(with: blockID, in: documentID)?.kind != .banner {
+            store.setMedia(fileName, for: blockID, in: documentID, resetsFraming: true)
+        } else if let block = store.block(with: blockID, in: documentID),
+                  block.kind != .banner, block.mediaFileName == nil {
             store.deleteBlock(blockID, in: documentID)
         }
     }
@@ -1115,7 +1168,8 @@ struct MosaicComposerView: View {
             visual = .inactive
             return
         }
-        if touchHitsMediaCrop(block.id, at: value.startLocation) || touchHitsMediaMenu(block.id, at: value.startLocation) {
+        if touchHitsMediaCrop(block.id, at: value.startLocation) || touchHitsMediaMenu(block.id, at: value.startLocation)
+            || touchHitsMediaReplace(block.id, at: value.startLocation) {
             session.didHandleMediaIconTap = true
             session.blockID = block.id
             visual = .inactive
@@ -1241,6 +1295,12 @@ struct MosaicComposerView: View {
         }
         if tapDistance < 14, touchHitsMediaMenu(block.id, at: value.startLocation) {
             handleMediaIconTap(block.id)
+            textDragSession.reset()
+            stopDragFollow()
+            return
+        }
+        if tapDistance < 14, touchHitsMediaReplace(block.id, at: value.startLocation) {
+            replaceMedia(block.id)
             textDragSession.reset()
             stopDragFollow()
             return
@@ -1655,6 +1715,18 @@ struct MosaicComposerView: View {
         mediaChromeFrames[blockID]?.hitsCrop(point) ?? false
     }
 
+    private func touchHitsMediaReplace(_ blockID: ComposerBlockID, at point: CGPoint) -> Bool {
+        mediaChromeFrames[blockID]?.hitsReplace(point) ?? false
+    }
+
+    private func replaceMedia(_ blockID: ComposerBlockID) {
+        guard textDragSession.claimMediaChromeTap(blockID, action: "replace") else { return }
+        textDragSession.didHandleMediaIconTap = true
+        styleMenuBlockID = nil
+        selectPageBlock(blockID)
+        presentMediaLibrary(for: blockID, origin: nil, limit: 1)
+    }
+
     private func beginVideoTrim(_ blockID: ComposerBlockID) {
         guard let fileName = store.block(with: blockID, in: documentID)?.mediaFileName else { return }
         let sourceURL = store.mediaURL(for: fileName)
@@ -1950,7 +2022,7 @@ struct MosaicComposerView: View {
             Image(systemName: "arrow.uturn.backward")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
+                .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
                 .background(MosaicBrand.inkBlack, in: Circle())
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
                 .opacity(enabled ? 1 : 0.35)

@@ -301,6 +301,13 @@ struct ComposerStoreTests {
         #expect(CarouselMotion.indexAfterRemoval(index: 1, removedAt: 1, countAfter: 3) == 1)
         #expect(CarouselMotion.indexAfterRemoval(index: 2, removedAt: 0, countAfter: 3) == 1)
         #expect(CarouselMotion.indexAfterRemoval(index: 2, removedAt: 2, countAfter: 2) == 1)
+
+        #expect(CarouselMotion.minimumCount == 1)
+        #expect(CarouselMotion.offsets(item: 0, center: 0, count: 1) == [0])
+        #expect(CarouselMotion.offsets(item: 1, center: 0, count: 2) == [-1, 1])
+        #expect(CarouselMotion.offsets(item: 0, center: 0, count: 2) == [-2, 0, 2])
+        #expect(CarouselMotion.offsets(item: 2, center: 0, count: 3) == [-1, 2])
+        #expect(CarouselMotion.offsets(item: 0, center: 0, count: 3) == [0])
     }
 
     @Test

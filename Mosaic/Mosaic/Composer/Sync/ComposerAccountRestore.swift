@@ -47,6 +47,8 @@ struct ComposerAccountRestore {
     var client: SupabaseDocumentSync
     var fileManager: FileManager = .default
 
+    static let backupPrefix = ".before-restore-"
+
     static func hasLocalAccount(at location: ComposerStorageLocation) -> Bool {
         guard let snapshot = try? Data(contentsOf: location.snapshotURL),
               (try? JSONDecoder().decode(ComposerSnapshot.self, from: snapshot)) != nil,
@@ -79,7 +81,7 @@ struct ComposerAccountRestore {
         try JSONEncoder().encode(state).write(to: stage.syncStateURL, options: .atomic)
         try Task.checkCancellation()
         // Retain any previous local folder as a recovery copy. The landing board and pending-download marker are installed together.
-        let backup = parent.appendingPathComponent(".before-restore-\(UUID().uuidString)", isDirectory: true)
+        let backup = parent.appendingPathComponent(Self.backupPrefix + UUID().uuidString, isDirectory: true)
         let hadLocal = fileManager.fileExists(atPath: location.root.path)
         if hadLocal { try fileManager.moveItem(at: location.root, to: backup) }
         do {

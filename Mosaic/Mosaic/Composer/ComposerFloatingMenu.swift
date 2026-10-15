@@ -2,6 +2,8 @@ import SwiftUI
 
 enum ComposerAddMenuMetrics {
     static let button: CGFloat = 48
+    /// The back button and the scroll bubble sit in line at the top of a board, so they share a height.
+    static let topControl: CGFloat = 32
     static let rowWidth: CGFloat = 156
     static let rowHeight: CGFloat = 36
     static let visibleRows = 4
@@ -57,6 +59,9 @@ struct ComposerFloatingMenu: View {
     var includesTabs: Bool = true
     var includesBanner: Bool = true
     var includesTable: Bool = true
+    /// Pages outside the composer offer just these, without the search field.
+    var onlyOptions: [BlockMenuOption]? = nil
+    var addLabel = "Add to Mosaic"
     var onSelect: (BlockMenuOption) -> Void
 
     @State private var searchText = ""
@@ -71,7 +76,8 @@ struct ComposerFloatingMenu: View {
     }
 
     private var filteredOptions: [BlockMenuOption] {
-        BlockMenuOption.menuOptions(
+        if let onlyOptions { return onlyOptions }
+        return BlockMenuOption.menuOptions(
             matching: searchText,
             includingPursuit: includesPursuit,
             includingCalendar: includesCalendar,
@@ -87,34 +93,33 @@ struct ComposerFloatingMenu: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
             if isExpanded, !showsTrashDropZone {
-                integratedSearchField
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                if onlyOptions == nil {
+                    integratedSearchField
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .trailing, spacing: 6) {
-                        if filteredOptions.isEmpty {
-                            Text("No results")
-                                .font(.caption)
-                                .foregroundStyle(ComposerAddMenuColors.secondaryIcon)
-                                .frame(width: rowWidth, alignment: .leading)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                        } else {
-                            ForEach(filteredOptions) { option in
-                                Button {
-                                    onSelect(option)
-                                } label: {
-                                    ComposerMenuOptionRow(option: option, width: rowWidth)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("composer.add.\(option.rawValue)")
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(alignment: .trailing, spacing: 6) {
+                            if filteredOptions.isEmpty {
+                                Text("No results")
+                                    .font(.caption)
+                                    .foregroundStyle(ComposerAddMenuColors.secondaryIcon)
+                                    .frame(width: rowWidth, alignment: .leading)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 6)
+                            } else {
+                                optionRows
                             }
                         }
                     }
+                    .frame(width: rowWidth, alignment: .trailing)
+                    .frame(maxHeight: listMaxHeight, alignment: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        optionRows
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .frame(width: rowWidth, alignment: .trailing)
-                .frame(maxHeight: listMaxHeight, alignment: .bottom)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             trashOrPlusButton
@@ -126,6 +131,18 @@ struct ComposerFloatingMenu: View {
             if !expanded {
                 searchText = ""
             }
+        }
+    }
+
+    private var optionRows: some View {
+        ForEach(filteredOptions) { option in
+            Button {
+                onSelect(option)
+            } label: {
+                ComposerMenuOptionRow(option: option, width: rowWidth)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("composer.add.\(option.rawValue)")
         }
     }
 
@@ -175,7 +192,7 @@ struct ComposerFloatingMenu: View {
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
         }
         .accessibilityIdentifier("composer.addButton")
-        .accessibilityLabel(isExpanded ? "Close add menu" : "Add to Mosaic")
+        .accessibilityLabel(isExpanded ? "Close add menu" : addLabel)
     }
 
     private var trashButton: some View {
