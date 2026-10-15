@@ -770,7 +770,7 @@ struct CarouselMediaItem: Codable, Equatable, Identifiable, Sendable {
 
 /// How a carousel turns. One swipe moves a single step, and the strip wraps.
 enum CarouselMotion {
-    static let minimumCount = 3
+    static let minimumCount = 1
 
     static func wrapped(_ index: Int, count: Int) -> Int {
         guard count > 0 else { return 0 }
@@ -780,7 +780,7 @@ enum CarouselMotion {
 
     /// Shortest signed steps from the centered item to `item`.
     static func shortestOffset(item: Int, center: Int, count: Int) -> Int {
-        guard count > 0 else { return 0 }
+        guard count > 1 else { return 0 }
         var delta = item - center
         delta %= count
         if delta > count / 2 {
@@ -789,6 +789,15 @@ enum CarouselMotion {
             delta += count
         }
         return delta
+    }
+
+    /// Every place, in steps from the center, where `item` may show while the strip turns. A
+    /// swipe moves at most one step and cards fade out before two, so only offsets within two
+    /// matter. Two items wrap onto both sides of the center; a lone item stays centered.
+    static func offsets(item: Int, center: Int, count: Int) -> [Int] {
+        let offset = shortestOffset(item: item, center: center, count: count)
+        guard count > 1 else { return [offset] }
+        return [offset - count, offset, offset + count].filter { abs($0) <= 2 }
     }
 
     /// Finger moving right (`drag` > 0) reveals the previous item.

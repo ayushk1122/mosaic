@@ -182,7 +182,8 @@ struct MosaicDiscoverView: View {
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
-            MosaicBrand.inkBlack
+            Color.clear
+                .contentShape(Rectangle())
                 .ignoresSafeArea()
                 .onTapGesture {
                     focused = false
@@ -201,6 +202,7 @@ struct MosaicDiscoverView: View {
             MosaicVisitView(target: target)
         }
         .accessibilityIdentifier(MosaicTab.search.screenAccessibilityIdentifier)
+        .mosaicPageBackground(.discover)
     }
 
     // MARK: Following

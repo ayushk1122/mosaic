@@ -307,6 +307,7 @@ private struct CalendarDaySheet: View {
     @State private var carousel: ComposerBlock
     @State private var showsCarouselEditor = false
     @State private var notesOpen: Bool
+    @State private var focusedMedia: CalendarFocusedMedia?
     @FocusState private var noteFocused: Bool
 
     init(day: CalendarMonthModel.Day, isViewing: Bool, entry: CalendarDayEntry?, onSave: @escaping (CalendarDayEntry) -> Void) {
@@ -369,6 +370,13 @@ private struct CalendarDaySheet: View {
         .sheet(isPresented: $showsCarouselEditor) {
             ComposerCarouselEditor(items: $carousel.carouselItems, index: $carousel.carouselIndex)
         }
+        // A sheet sits above the board's own viewer, so the day presents its own, without the slide-up.
+        .fullScreenCover(item: $focusedMedia) { focused in
+            ComposerMediaLightbox(url: focused.url) {
+                withoutPresentationAnimation { focusedMedia = nil }
+            }
+            .presentationBackground(.clear)
+        }
         .onDisappear {
             commit()
         }
@@ -392,6 +400,9 @@ private struct CalendarDaySheet: View {
                     isRelocating: false,
                     allowsDirectControl: carouselReady,
                     onEdit: {},
+                    onPresentMedia: { url, _ in
+                        withoutPresentationAnimation { focusedMedia = CalendarFocusedMedia(url: url) }
+                    },
                     opensLinks: true
                 )
                 if !isViewing, !carouselReady {
@@ -463,4 +474,15 @@ private struct CalendarDaySheet: View {
             mediaIndex: media.isEmpty ? 0 : CarouselMotion.wrapped(carousel.carouselIndex, count: media.count)
         ))
     }
+
+    private func withoutPresentationAnimation(_ change: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, change)
+    }
+}
+
+private struct CalendarFocusedMedia: Identifiable {
+    let url: URL
+    var id: URL { url }
 }

@@ -17,82 +17,16 @@ final class ComposerDragScrollRelay {
     var itemMaxY: CGFloat = 0
     var dragDeltaY: CGFloat = 0
     var dragDeltaTime = Date.distantPast
-    /// The piece being dragged. Its layer moves with the page in the same frame.
-    weak var followView: UIView?
 }
 
-/// Marks the dragged piece so the page can slide it with the canvas without a SwiftUI rebuild.
-struct DragFollowMarker: UIViewRepresentable {
+/// Slides the dragged piece by however far the page has followed it. Only this modifier reads
+/// `boost`, so each step redraws the piece's position and nothing else on the board.
+struct DragFollowOffset: ViewModifier {
     var relay: ComposerDragScrollRelay
     var enabled: Bool
 
-    func makeUIView(context: Context) -> DragFollowMarkerView {
-        let view = DragFollowMarkerView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ uiView: DragFollowMarkerView, context: Context) {
-        uiView.relay = relay
-        uiView.enabled = enabled
-        uiView.claimHost()
-        uiView.apply()
-    }
-}
-
-final class DragFollowMarkerView: UIView {
-    weak var relay: ComposerDragScrollRelay?
-    var enabled = false
-
-    override func didMoveToSuperview() {
-        super.didMoveToSuperview()
-        claimHost()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        apply()
-    }
-
-    func claimHost() {
-        guard enabled, let host = blockHost() else { return }
-        relay?.followView = host
-    }
-
-    func apply() {
-        guard let host = blockHost() else { return }
-        let boost = enabled ? (relay?.boost ?? 0) : 0
-        var transform = host.transform
-        let upright = abs(transform.a - 1) < 0.001 && abs(transform.b) < 0.001
-            && abs(transform.c) < 0.001 && abs(transform.d - 1) < 0.001
-        guard upright, abs(transform.tx) < 0.01 else { return }
-        guard abs(transform.ty - boost) > 0.01 else { return }
-        transform.ty = boost
-        host.transform = transform
-    }
-
-    /// The background sits inside the block container, which is what should travel with the finger.
-    private func blockHost() -> UIView? {
-        let markerHeight = bounds.height
-        var current = superview
-        var fallback: UIView?
-        while let view = current, !(view is UIScrollView) {
-            guard view.bounds.width > 8, view.bounds.height > 8 else {
-                current = view.superview
-                continue
-            }
-            fallback = view
-            let aboutTheBlock = markerHeight < 8 || view.bounds.height < markerHeight + 80
-            if view.subviews.count > 1, aboutTheBlock {
-                return view
-            }
-            if markerHeight > 8, view.bounds.height > markerHeight + 120 {
-                return fallback
-            }
-            current = view.superview
-        }
-        return fallback
+    func body(content: Content) -> some View {
+        content.offset(y: enabled ? relay.boost : 0)
     }
 }
 
@@ -223,7 +157,6 @@ final class ComposerDragScrollDriverView: UIView {
         relay.intendedOffset = next
         relay.boost += applied
         assignOffset(next, to: scroll)
-        applyFollowShift()
     }
 
     /// Moves the scroll view without telling SwiftUI, so the page does not rebuild on each step.
@@ -239,17 +172,6 @@ final class ComposerDragScrollDriverView: UIView {
         applyingOffset = false
     }
 
-    private func applyFollowShift() {
-        guard let relay, let host = relay.followView else { return }
-        var transform = host.transform
-        let upright = abs(transform.a - 1) < 0.001 && abs(transform.b) < 0.001
-            && abs(transform.c) < 0.001 && abs(transform.d - 1) < 0.001
-        guard upright, abs(transform.tx) < 0.01 else { return }
-        guard abs(transform.ty - relay.boost) > 0.01 else { return }
-        transform.ty = relay.boost
-        host.transform = transform
-    }
-
     private func watch(_ scroll: UIScrollView) {
         guard watchedScroll !== scroll else { return }
         watchedScroll = scroll
@@ -257,7 +179,6 @@ final class ComposerDragScrollDriverView: UIView {
             guard let self, !self.applyingOffset, self.relay?.active == true, let intended = self.intendedOffset else { return }
             guard abs(scroll.contentOffset.y - intended) > 0.5 else { return }
             self.assignOffset(intended, to: scroll)
-            self.applyFollowShift()
         }
     }
 

@@ -47,6 +47,43 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
+    func testCircleAndDiscoverOfferOnlyABackground() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 5))
+        for title in ["Discover", "Circle"] {
+            tabBar.buttons[title].tap()
+            let plus = app.buttons["composer.addButton"]
+            XCTAssertTrue(plus.waitForExistence(timeout: 2))
+            plus.tap()
+            let background = app.buttons["composer.add.background"]
+            XCTAssertTrue(background.waitForExistence(timeout: 2))
+            XCTAssertFalse(app.textFields["composer.add.search"].exists)
+            XCTAssertFalse(app.buttons["composer.add.text"].exists)
+            attachScreenshot(app, named: "\(title) menu")
+            background.tap()
+            XCTAssertTrue(app.navigationBars["Background"].waitForExistence(timeout: 2))
+            if title == "Discover" {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.53)).tap()
+            }
+            attachScreenshot(app, named: "\(title) editor")
+            app.navigationBars["Background"].buttons["Done"].tap()
+            attachScreenshot(app, named: "\(title) page")
+        }
+    }
+
+    @MainActor
+    private func attachScreenshot(_ app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

@@ -669,13 +669,11 @@ struct MosaicComposerView: View {
             pencil: pursuitBoardPencil(block)
         ))
         .zIndex(clipboardMenuBlockID == block.id || styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
-        .background {
-            DragFollowMarker(
-                relay: dragScrollRelay,
-                enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
-            )
-        }
         .offset(liveOffset(for: block))
+        .modifier(DragFollowOffset(
+            relay: dragScrollRelay,
+            enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
+        ))
         .opacity(blockOpacity(for: block))
     }
 

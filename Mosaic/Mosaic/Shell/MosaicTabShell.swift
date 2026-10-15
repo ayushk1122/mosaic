@@ -76,6 +76,7 @@ struct MosaicTabShell: View {
     @State private var downloads = ComposerBackgroundRestore()
     @State private var downloadAttempt = 0
     @State private var remoteSync: ComposerRemoteSync
+    @State private var pageBackgrounds: MosaicPageBackgrounds
     var account: MosaicAccount?
     /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
     var linkedUsername: Binding<String?>
@@ -92,6 +93,7 @@ struct MosaicTabShell: View {
         store.placeMosaicTitleIfNeeded()
         _store = State(initialValue: store)
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
+        _pageBackgrounds = State(initialValue: MosaicPageBackgrounds(location: location, persistToDisk: persistToDisk))
     }
 
     var body: some View {
@@ -163,6 +165,7 @@ struct MosaicTabShell: View {
         .environment(store)
         .environment(chrome)
         .environment(remoteSync)
+        .environment(pageBackgrounds)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }

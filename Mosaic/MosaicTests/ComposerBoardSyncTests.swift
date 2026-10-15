@@ -290,6 +290,28 @@ struct ComposerBoardSyncTests {
         #expect(people.first?.name == "ayush2")
         #expect(people.last?.name == "Ayush Two")
         #expect(people.first?.id != people.last?.id)
+        #expect(people.first?.followButton == nil)
+    }
+
+    @Test
+    func followerRowsShowOneInstagramStyleButton() throws {
+        let fan = UUID(), friend = UUID(), stranger = UUID(), shy = UUID(), noMosaic = UUID()
+        func id(_ value: UUID) -> String { value.uuidString.lowercased() }
+        let people = try MosaicCircleClient.people(from: Data("""
+        [{"kind":"follower","person_id":"\(id(fan))","username":"fan","display_name":"","follows_me":true,"i_follow":false,"i_requested":false,"has_mosaic":true,"can_follow":true},
+         {"kind":"follower","person_id":"\(id(friend))","username":"friend","display_name":"","follows_me":true,"i_follow":true,"i_requested":false,"has_mosaic":true,"can_follow":true},
+         {"kind":"follower","person_id":"\(id(stranger))","username":"stranger","display_name":"","follows_me":false,"i_follow":false,"i_requested":false,"has_mosaic":true,"can_follow":false},
+         {"kind":"follower","person_id":"\(id(shy))","username":"shy","display_name":"","follows_me":true,"i_follow":false,"i_requested":true,"has_mosaic":true,"can_follow":false},
+         {"kind":"follower","person_id":"\(id(noMosaic))","username":"new","display_name":"","follows_me":true,"i_follow":false,"i_requested":false,"has_mosaic":false,"can_follow":false}]
+        """.utf8))
+        #expect(people.map(\.followButton) == [.followBack, .following, .follow, .requested, nil])
+        #expect(people.map { $0.followButton?.title } == ["Follow back", "Following", "Follow", "Requested", nil])
+        #expect(people[0].canFollow)
+        #expect(!people[2].canFollow)
+
+        let followed = MosaicCirclePerson.updating(fan, in: people) { $0.iFollow = true }
+        #expect(followed.map(\.followButton) == [.following, .following, .follow, .requested, nil])
+        #expect(Array(followed.dropFirst()) == Array(people.dropFirst()))
     }
 
     @Test
@@ -479,6 +501,37 @@ struct ComposerBoardSyncTests {
         #expect(counts == [mosaic: 3, golf: 1])
         #expect(try MosaicCircleClient.visitCounts(from: Data("[]".utf8)).isEmpty)
         #expect(throws: (any Error).self) { try MosaicCircleClient.visitCounts(from: Data("{}".utf8)) }
+    }
+
+    @Test
+    func circleAndDiscoverKeepTheirOwnBackgroundsOnThePhone() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let location = ComposerStorageLocation(root: root)
+        let photo = ComposerBoardBackground(
+            kind: .media,
+            color: ComposerRGBColor(red: 0, green: 0, blue: 0),
+            secondaryColor: ComposerRGBColor(red: 0, green: 0, blue: 0),
+            mediaFileName: "sky.jpg"
+        )
+        let teal = ComposerBoardBackground.solid(ComposerRGBColor(red: 0.1, green: 0.5, blue: 0.5))
+
+        let saved = MosaicPageBackgrounds(location: location)
+        saved.set(photo, for: .circle)
+        saved.set(teal, for: .discover)
+        saved.set(nil, for: .discover)
+        saved.set(teal, for: .discover)
+
+        let reopened = MosaicPageBackgrounds(location: location)
+        #expect(reopened.background(for: .circle) == photo)
+        #expect(reopened.background(for: .discover) == teal)
+
+        reopened.set(nil, for: .circle)
+        #expect(MosaicPageBackgrounds(location: location).background(for: .circle) == nil)
+
+        let newer = #"{"discover": {"kind": "solid", "color": {"red": 1, "green": 1, "blue": 1, "opacity": 1}, "secondaryColor": {"red": 1, "green": 1, "blue": 1, "opacity": 1}}, "feed": {}}"#
+        #expect(MosaicPageBackgrounds.decode(Data(newer.utf8)).keys.sorted { $0.rawValue < $1.rawValue } == [.discover])
+        #expect(MosaicPageBackgrounds.decode(Data("not json".utf8)).isEmpty)
     }
 
     @Test
