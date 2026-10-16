@@ -9,7 +9,12 @@
 The product that helps a person document work within long-running Pursuits and see a meaningful visual story of progress.
 
 **Pursuit**
-A long-running, intentional area of life and growth. It is broader and longer-lived than a goal, habit, project, post, or collection. It may contain goals, milestones, activities or sessions, media, notes, and metrics.
+A long-running, intentional area of life and growth. It is broader and longer-lived than a goal, habit, project, post, or collection. It may contain goals, milestones, activities or sessions, media, notes, and metrics. On the composer, a folder widget on the Mosaic is a Pursuit.
+
+**Node**
+A folder widget nested inside a Pursuit (or another Node). It uses the same board behavior as a Pursuit; its role is defined by placement rather than by a different product type. Nodes are not top-level library Pursuits.
+
+**Decision:** A folder’s role follows its location: on the Mosaic it is a Pursuit; inside a Pursuit it is a Node. Copy creates a new folder with the destination role; cut moves the same identity and updates its role.
 
 **Golf Pursuit**
 The first concrete Pursuit and Iteration 0 proving ground. Golf owns its domain language, records, rules, and presentation rather than inheriting a universal dashboard.

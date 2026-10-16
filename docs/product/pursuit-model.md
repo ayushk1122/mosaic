@@ -11,6 +11,8 @@
 
 **Decision:** People will eventually be able to create and customize Pursuits. That authoring experience is outside Iteration 0.
 
+**Decision:** In the composer, folder widgets share one board model. Placement sets role: a folder on the Mosaic is a Pursuit; a folder inside a Pursuit is a Node. Copy pastes a new folder with the destination role; cut relocates the same document and updates its role. Nested folders inside a moved board keep their roles. Journal and scrapbook pages do not host folder widgets.
+
 **Open question:** Which lifecycle states should become shared semantics?
 
 ## Pursuit-owned behavior
