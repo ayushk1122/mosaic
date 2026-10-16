@@ -44,6 +44,17 @@ struct MosaicVisibilityRow: Identifiable, Equatable, Sendable {
 enum MosaicSettingsList {
     static let displayNameLimit = 40
 
+    /// Fixed `MMM d, yyyy` (e.g. Oct 16, 2001) so birthday never mixes locale formats.
+    static func birthdayLabel(_ date: Date) -> String {
+        date.formatted(
+            Date.FormatStyle()
+                .month(.abbreviated)
+                .day()
+                .year()
+                .locale(Locale(identifier: "en_US_POSIX"))
+        )
+    }
+
     static func displayName(from raw: String) -> String {
         String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(displayNameLimit))
     }
@@ -542,6 +553,9 @@ struct MosaicSettingsView: View {
     @State private var availability = Availability.unknown
     @State private var displayName = ""
     @State private var savedDisplayName = ""
+    @State private var birthday = Calendar.current.date(byAdding: .year, value: -25, to: .now) ?? .now
+    @State private var savedBirthday: Date?
+    @State private var birthdayLoaded = false
     @Environment(MosaicPursuitPrivacy.self) private var pursuitPrivacy: MosaicPursuitPrivacy?
     @State private var mosaic: MosaicVisibilityRow?
     @State private var pursuits: [MosaicVisibilityRow] = []
@@ -602,8 +616,15 @@ struct MosaicSettingsView: View {
         guard profileLoaded else { return false }
         return MosaicSettingsList.username(from: username) != savedUsername
             || MosaicSettingsList.displayName(from: displayName) != savedDisplayName
+            || birthdayChanged
             || pendingAvatar != nil
             || !MosaicSettingsList.changedLevels(visibilityRows, saved: savedLevels).isEmpty
+    }
+
+    private var birthdayChanged: Bool {
+        guard birthdayLoaded else { return false }
+        guard let savedBirthday else { return true }
+        return !Calendar.current.isDate(savedBirthday, inSameDayAs: birthday)
     }
 
     var body: some View {
@@ -689,6 +710,19 @@ struct MosaicSettingsView: View {
                             prefix: nil,
                             mark: displayNameMark
                         )
+                    }
+
+                    if birthdayLoaded {
+                        VStack(alignment: .leading, spacing: 10) {
+                            sectionTitle("Birthday")
+                            MosaicBirthdayPicker(
+                                date: $birthday,
+                                labelColor: .white,
+                                fieldBackground: Color.white.opacity(0.08),
+                                accessibilityIdentifier: "settings.birthday"
+                            )
+                            .colorScheme(.dark)
+                        }
                     }
 
                     if let mosaic {
@@ -1010,6 +1044,7 @@ struct MosaicSettingsView: View {
         let namesSaved = MosaicSettingsList.username(from: username) == savedUsername
             && MosaicSettingsList.displayName(from: displayName) == savedDisplayName
         let avatarSaved = await uploadPendingAvatar()
+        let birthdaySaved = await saveBirthdayIfNeeded()
         let levelsSaved = await applyChangedLevels()
         var synced = true
         if let remoteSync {
@@ -1025,8 +1060,26 @@ struct MosaicSettingsView: View {
         } else if !synced, status.isEmpty {
             status = "Your Mosaic couldn’t sync. Check your connection and try again."
         }
-        guard namesSaved, avatarSaved, levelsSaved, synced else { return }
+        guard namesSaved, avatarSaved, birthdaySaved, levelsSaved, synced else { return }
         dismiss()
+    }
+
+    private func saveBirthdayIfNeeded() async -> Bool {
+        guard birthdayLoaded, birthdayChanged else { return true }
+        guard let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken()
+        else {
+            status = "Your birthday could not be saved."
+            return false
+        }
+        do {
+            try await MosaicOnboardingClient(config: config).updateBirthday(birthday, accessToken: token)
+            savedBirthday = birthday
+            return true
+        } catch {
+            status = "Your birthday could not be saved."
+            return false
+        }
     }
 
     private func commit(_ which: EditField) async {
@@ -1129,6 +1182,15 @@ struct MosaicSettingsView: View {
             mosaic = listed.mosaic
             pursuits = listed.pursuits
             savedLevels = MosaicSettingsList.savedLevels(visibilityRows)
+            if let onboarding = try? await MosaicOnboardingClient(config: config).status(accessToken: token) {
+                birthdayLoaded = true
+                if let existing = onboarding.birthday {
+                    birthday = existing
+                    savedBirthday = existing
+                } else {
+                    savedBirthday = nil
+                }
+            }
         } catch {
             status = "Settings could not be loaded."
         }

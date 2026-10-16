@@ -35,8 +35,36 @@ enum MosaicPKCE {
     }
 }
 
-private final class MosaicAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
+private final class MosaicAppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate {
+    var onCredential: ((ASAuthorizationAppleIDCredential) -> Void)?
+    var onFailure: ((Error?) -> Void)?
+
+    func authorizationController(
+        controller: ASAuthorizationController,
+        didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            onFailure?(nil)
+            return
+        }
+        onCredential?(credential)
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        onFailure?(error)
+    }
+}
+
+private final class MosaicAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding, ASAuthorizationControllerPresentationContextProviding {
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let window = scenes.flatMap(\.windows).first { $0.isKeyWindow }
+            return window ?? ASPresentationAnchor(frame: .zero)
+        }
+    }
+
+    nonisolated func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             let window = scenes.flatMap(\.windows).first { $0.isKeyWindow }
@@ -69,6 +97,12 @@ enum MosaicAuthResponse {
 enum MosaicAuthFailure: Error, Equatable {
     case transport
     case permanent
+}
+
+/// OTP send failed because the identifier is not registered (sign-in only).
+enum MosaicOTPError: Error, Equatable {
+    case notRegistered
+    case requestFailed
 }
 
 enum MosaicAuthErrorClassification {
@@ -149,6 +183,8 @@ final class MosaicAccount {
     private var config: SupabaseSyncConfig?
     private var webSession: ASWebAuthenticationSession?
     private var codeVerifier: String?
+    private var appleNonce: String?
+    private var appleSignInDelegate: MosaicAppleSignInDelegate?
     private let presenter = MosaicAuthPresenter()
 
     init(config: SupabaseSyncConfig? = SupabaseSyncConfig.current()) {
@@ -159,6 +195,274 @@ final class MosaicAccount {
         guard config != nil, let stored = MosaicSessionKeychain.load() else { return }
         // A cached account opens immediately. Network operations refresh the token lazily.
         session = stored
+    }
+
+    func signInWithPassword(identifier: String, password: String) async -> Bool {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return false
+        }
+        guard !password.isEmpty else {
+            lastError = "Enter your password."
+            return false
+        }
+        do {
+            guard let email = try await MosaicLoginClient(config: config).emailForLogin(identifier: identifier) else {
+                lastError = "Account not found. Check your email or username."
+                return false
+            }
+            let data = try await post(
+                config: config,
+                path: "auth/v1/token",
+                query: "grant_type=password",
+                body: ["email": email, "password": password],
+                accessToken: nil
+            )
+            let signedIn = try MosaicAuthResponse.session(from: data)
+            store(session: signedIn)
+            return true
+        } catch {
+            lastError = passwordMessage(for: error)
+            return false
+        }
+    }
+
+    func signUpWithPassword(email: String, password: String) async -> Bool {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return false
+        }
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
+            lastError = "Enter a valid email address."
+            return false
+        }
+        guard password.count >= 6 else {
+            lastError = "Use a password with at least 6 characters."
+            return false
+        }
+        do {
+            let data = try await postSignup(
+                config: config,
+                email: trimmedEmail,
+                password: password
+            )
+            if let signedIn = try? MosaicAuthResponse.session(from: data) {
+                store(session: signedIn)
+                return true
+            }
+            lastError = "Check your email to confirm your account, then sign in."
+            return false
+        } catch {
+            lastError = passwordMessage(for: error)
+            return false
+        }
+    }
+
+    /// Attaches a password to the signed-in auth user (OAuth / OTP) so username login works later.
+    func setPassword(_ password: String) async -> Bool {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return false
+        }
+        guard password.count >= 6 else {
+            lastError = "Use a password with at least 6 characters."
+            return false
+        }
+        guard let token = await accessToken() else {
+            lastError = "Your session expired. Sign in again."
+            return false
+        }
+        do {
+            try await putUser(
+                config: config,
+                body: ["password": password],
+                accessToken: token
+            )
+            return true
+        } catch {
+            lastError = "Couldn’t save your password. Try again."
+            return false
+        }
+    }
+
+    func signInWithApple() {
+        lastError = nil
+        guard config != nil else {
+            lastError = "Mosaic is not connected to a project yet."
+            return
+        }
+        let nonce = MosaicAppleNonce.random()
+        appleNonce = nonce
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = MosaicAppleNonce.sha256(nonce)
+        let delegate = MosaicAppleSignInDelegate()
+        delegate.onCredential = { [weak self] credential in
+            Task { @MainActor in
+                await self?.completeApple(credential: credential)
+            }
+        }
+        delegate.onFailure = { [weak self] error in
+            Task { @MainActor in
+                self?.appleSignInDelegate = nil
+                if let error = error as? ASAuthorizationError, error.code == .canceled {
+                    self?.present("Apple sign-in was cancelled.")
+                } else {
+                    self?.lastError = "Apple sign-in did not finish. Turn on the Apple provider in Supabase."
+                }
+            }
+        }
+        appleSignInDelegate = delegate
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = delegate
+        controller.presentationContextProvider = presenter
+        controller.performRequests()
+    }
+
+    private func completeApple(credential: ASAuthorizationAppleIDCredential) async {
+        defer { appleSignInDelegate = nil }
+        guard let config,
+              let tokenData = credential.identityToken,
+              let idToken = String(data: tokenData, encoding: .utf8),
+              let nonce = appleNonce
+        else {
+            lastError = "Apple sign-in did not return a token."
+            return
+        }
+        do {
+            let data = try await post(
+                config: config,
+                path: "auth/v1/token",
+                query: "grant_type=id_token",
+                body: [
+                    "provider": "apple",
+                    "id_token": idToken,
+                    "nonce": nonce
+                ],
+                accessToken: nil
+            )
+            let signedIn = try MosaicAuthResponse.session(from: data)
+            store(session: signedIn)
+        } catch {
+            lastError = "Apple sign-in was rejected. Turn on the Apple provider in Supabase."
+        }
+    }
+
+    private func store(session signedIn: MosaicSession) {
+        session = signedIn
+        MosaicSessionKeychain.save(signedIn)
+    }
+
+    func sendEmailCode(_ email: String, createUser: Bool) async {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return
+        }
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.contains("@"), trimmed.contains(".") else {
+            lastError = "Enter a valid email address."
+            return
+        }
+        do {
+            _ = try await postOTP(
+                config: config,
+                path: "auth/v1/otp",
+                body: MosaicPhoneNumber.sendEmailOTPBody(email: trimmed, createUser: createUser),
+                createUser: createUser
+            )
+        } catch MosaicOTPError.notRegistered {
+            lastError = "No Mosaic account uses that email. Try Sign up instead."
+        } catch {
+            lastError = otpMessage(for: error)
+        }
+    }
+
+    func verifyEmailCode(email: String, code: String) async -> Bool {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return false
+        }
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let token = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count >= 6 else {
+            lastError = "Enter the 6-digit code."
+            return false
+        }
+        do {
+            let data = try await postOTP(
+                config: config,
+                path: "auth/v1/verify",
+                body: MosaicPhoneNumber.verifyEmailOTPBody(email: trimmedEmail, token: token),
+                createUser: true
+            )
+            let signedIn = try MosaicAuthResponse.session(from: data)
+            store(session: signedIn)
+            return true
+        } catch {
+            lastError = otpMessage(for: error)
+            return false
+        }
+    }
+
+    func sendPhoneCode(_ rawPhone: String, createUser: Bool) async {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return
+        }
+        guard let phone = MosaicPhoneNumber.normalized(rawPhone) else {
+            lastError = "Enter a valid phone number."
+            return
+        }
+        do {
+            _ = try await postOTP(
+                config: config,
+                path: "auth/v1/otp",
+                body: MosaicPhoneNumber.sendOTPBody(phone: phone, createUser: createUser),
+                createUser: createUser
+            )
+        } catch MosaicOTPError.notRegistered {
+            lastError = "No Mosaic account uses that number. Try Sign up instead."
+        } catch {
+            lastError = otpMessage(for: error)
+        }
+    }
+
+    func verifyPhoneCode(rawPhone: String, code: String) async -> Bool {
+        lastError = nil
+        guard let config else {
+            lastError = "Mosaic is not connected to a project yet."
+            return false
+        }
+        guard let phone = MosaicPhoneNumber.normalized(rawPhone) else {
+            lastError = "Enter a valid phone number."
+            return false
+        }
+        let token = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count >= 6 else {
+            lastError = "Enter the 6-digit code."
+            return false
+        }
+        do {
+            let data = try await postOTP(
+                config: config,
+                path: "auth/v1/verify",
+                body: MosaicPhoneNumber.verifySMSBody(phone: phone, token: token),
+                createUser: true
+            )
+            let signedIn = try MosaicAuthResponse.session(from: data)
+            store(session: signedIn)
+            return true
+        } catch {
+            lastError = otpMessage(for: error)
+            return false
+        }
     }
 
     func signInWithGoogle() {
@@ -207,8 +511,7 @@ final class MosaicAccount {
         Task {
             do {
                 let signedIn = try await exchangePKCE(code: code, verifier: verifier, config: config)
-                session = signedIn
-                MosaicSessionKeychain.save(signedIn)
+                store(session: signedIn)
             } catch is MosaicAuthFailure {
                 lastError = message(for: .requestFailed)
             } catch let error as SupabaseDocumentSyncError {
@@ -232,6 +535,10 @@ final class MosaicAccount {
 
     func present(_ message: String) {
         lastError = message
+    }
+
+    func clearLastError() {
+        lastError = nil
     }
 
     /// Ends the session on this phone. The boards stay on the device.
@@ -323,6 +630,94 @@ final class MosaicAccount {
             accessToken: nil
         )
         return try MosaicAuthResponse.session(from: data)
+    }
+
+    private func postOTP(
+        config: SupabaseSyncConfig,
+        path: String,
+        body: [String: Any],
+        createUser: Bool
+    ) async throws -> Data {
+        var request = URLRequest(url: config.url.appending(path: path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw MosaicOTPError.requestFailed
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if !createUser, Self.looksLikeUnknownAccount(status: http.statusCode, body: data) {
+                throw MosaicOTPError.notRegistered
+            }
+            throw MosaicOTPError.requestFailed
+        }
+        return data
+    }
+
+    nonisolated static func looksLikeUnknownAccount(status: Int, body: Data) -> Bool {
+        let message = String(data: body, encoding: .utf8)?.lowercased() ?? ""
+        if status == 422 || status == 400 {
+            return message.contains("user not found")
+                || message.contains("signup is disabled")
+                || message.contains("signups not allowed for otp")
+                || message.contains("otp disabled")
+        }
+        return false
+    }
+
+    private func otpMessage(for error: Error) -> String {
+        if error is MosaicOTPError || error is SupabaseDocumentSyncError {
+            return "That code didn’t work. Try again or request a new one."
+        }
+        return "Sign-in didn’t finish. Check your connection and try again."
+    }
+
+    private func passwordMessage(for error: Error) -> String {
+        "Email, username, or password didn’t match. Try again or reset your password in Supabase."
+    }
+
+    private func postSignup(config: SupabaseSyncConfig, email: String, password: String) async throws -> Data {
+        var request = URLRequest(url: config.url.appending(path: "auth/v1/signup"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "email": email,
+            "password": password
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw SupabaseDocumentSyncError.requestFailed
+        }
+        return data
+    }
+
+    private func putUser(
+        config: SupabaseSyncConfig,
+        body: [String: String],
+        accessToken: String
+    ) async throws {
+        var request = URLRequest(url: config.url.appending(path: "auth/v1/user"))
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw MosaicAuthFailure.transport
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if MosaicAuthErrorClassification.isPermanentFailure(status: http.statusCode, body: data) {
+                throw MosaicAuthFailure.permanent
+            }
+            throw MosaicAuthFailure.transport
+        }
     }
 
     private func post(

@@ -28,6 +28,8 @@ private struct MosaicRootView: View {
     @State private var account = MosaicAccount()
     @State private var restoredSession = false
     @State private var preparedUserID: UUID?
+    /// Profile setup finished; account preparation can run next.
+    @State private var onboardingPassedUserID: UUID?
     /// Kept through sign-in, so a link tapped before the shell exists still opens.
     @State private var linkedUsername: String?
 
@@ -62,6 +64,7 @@ private struct MosaicRootView: View {
         .onChange(of: account.session?.userID) { _, userID in
             if userID == nil {
                 preparedUserID = nil
+                onboardingPassedUserID = nil
             }
         }
     }
@@ -76,15 +79,111 @@ private struct MosaicRootView: View {
             if preparedUserID == userID {
                 ContentView(account: account, linkedUsername: $linkedUsername)
                     .id(userID)
-            } else {
+            } else if onboardingPassedUserID == userID {
                 MosaicAccountPreparationView(account: account, userID: userID) {
                     preparedUserID = userID
+                }
+                .id(userID)
+            } else {
+                MosaicOnboardingGateView(account: account, userID: userID) {
+                    onboardingPassedUserID = userID
                 }
                 .id(userID)
             }
         } else {
             MosaicSignInView(account: account)
         }
+    }
+}
+
+/// Resolves onboarding before the first Mosaic download on this device.
+private struct MosaicOnboardingGateView: View {
+    var account: MosaicAccount
+    var userID: UUID
+    var onReady: () -> Void
+
+    @State private var route = MosaicOnboardingRoute.loading
+    @State private var attempt = 0
+
+    var body: some View {
+        Group {
+            switch route {
+            case .loading:
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .tint(MosaicBrand.inkBlack)
+                    Text("Loading your account…")
+                        .foregroundStyle(MosaicBrand.inkBlack)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MosaicBrand.cream.ignoresSafeArea())
+                .environment(\.colorScheme, .light)
+            case .retry:
+                VStack(spacing: 16) {
+                    Text("Couldn’t reach Mosaic")
+                        .font(.title3.bold())
+                        .foregroundStyle(MosaicBrand.inkBlack)
+                    Text("Check your connection to finish setting up this account.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(MosaicBrand.inkBlack.opacity(0.72))
+                    Button("Try again") { attempt += 1 }
+                        .buttonStyle(.borderedProminent)
+                        .tint(MosaicBrand.inkBlack)
+                    Button("Sign out") {
+                        Task { await account.signOut() }
+                    }
+                    .foregroundStyle(MosaicBrand.inkBlack.opacity(0.55))
+                }
+                .padding(32)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MosaicBrand.cream.ignoresSafeArea())
+                .environment(\.colorScheme, .light)
+            case .needsSetup:
+                MosaicOnboardingView(account: account, userID: userID) {
+                    MosaicOnboardingCache.markComplete(userID)
+                    route = .readyForPreparation
+                }
+            case .readyForPreparation:
+                Color.clear
+                    .onAppear { onReady() }
+            }
+        }
+        .task(id: attempt) {
+            await resolveRoute()
+        }
+    }
+
+    private func resolveRoute() async {
+        route = .loading
+        let location = ComposerStorageLocation.account(userID)
+        let hasLocalAccount = ComposerAccountRestore.hasLocalAccount(at: location)
+        let cachedComplete = MosaicOnboardingCache.isComplete(userID)
+        if cachedComplete {
+            route = .readyForPreparation
+            return
+        }
+        guard let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken(),
+              account.session?.userID == userID
+        else {
+            route = MosaicOnboardingRouter.route(
+                cachedComplete: false,
+                hasLocalAccount: hasLocalAccount,
+                status: nil
+            )
+            return
+        }
+        let status = try? await MosaicOnboardingClient(config: config).status(accessToken: token)
+        guard account.session?.userID == userID else { return }
+        if status?.isOnboarded == true {
+            MosaicOnboardingCache.markComplete(userID)
+        }
+        let next = MosaicOnboardingRouter.route(
+            cachedComplete: cachedComplete,
+            hasLocalAccount: hasLocalAccount,
+            status: status
+        )
+        route = next
     }
 }
 
