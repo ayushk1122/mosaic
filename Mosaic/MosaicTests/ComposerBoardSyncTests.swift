@@ -73,6 +73,14 @@ struct ComposerBoardSyncTests {
             mosaicID: mosaicID
         )
         #expect(dead == [deadUUID])
+        #expect(
+            ComposerBoardSync.deadIDs(
+                live: [mosaicID, liveUUID],
+                remote: [mosaicID, liveUUID, deadUUID],
+                mosaicID: mosaicID,
+                protecting: [deadUUID]
+            ).isEmpty
+        )
 
         let base = URL(string: "https://example.supabase.co")!
         let owner = UUID(uuidString: "00000000-0000-0000-0000-00000000000a")!

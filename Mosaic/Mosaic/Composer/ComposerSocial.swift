@@ -7,6 +7,9 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
     case twitter
     case youtube
     case twitch
+    case spotify
+    case appleMusic
+    case soundcloud
 
     var id: String { rawValue }
 
@@ -17,6 +20,9 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
         case .twitter: "Twitter"
         case .youtube: "YouTube"
         case .twitch: "Twitch"
+        case .spotify: "Spotify"
+        case .appleMusic: "Apple Music"
+        case .soundcloud: "SoundCloud"
         }
     }
 
@@ -27,21 +33,40 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
         case .twitter: "SocialTwitter"
         case .youtube: "SocialYouTube"
         case .twitch: "SocialTwitch"
+        case .spotify: "SocialSpotify"
+        case .appleMusic: "SocialAppleMusic"
+        case .soundcloud: "SocialSoundCloud"
+        }
+    }
+
+    /// Platforms whose pasted profile links are validated (artists / tracks belong in Content).
+    private var validatesProfileLinks: Bool {
+        switch self {
+        case .spotify, .appleMusic, .soundcloud: true
+        default: false
         }
     }
 
     /// A pasted https link is kept. A bare username becomes that platform’s profile URL.
+    /// Spotify / Apple Music / SoundCloud only accept user profiles; artists and tracks belong in Content.
     func profileURL(from raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let direct = URL(string: trimmed),
            let scheme = direct.scheme?.lowercased(),
            scheme == "http" || scheme == "https" {
+            if validatesProfileLinks {
+                return validatedProfileURL(from: direct)
+            }
             return direct
         }
         if trimmed.contains("."), !trimmed.contains(" "), !trimmed.hasPrefix("@") {
             let candidate = trimmed.hasPrefix("//") ? "https:\(trimmed)" : "https://\(trimmed)"
-            return URL(string: candidate)
+            guard let url = URL(string: candidate) else { return nil }
+            if validatesProfileLinks {
+                return validatedProfileURL(from: url)
+            }
+            return url
         }
         var handle = trimmed
         if handle.hasPrefix("@") {
@@ -61,15 +86,153 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
             return URL(string: "https://www.youtube.com/@\(encoded)")
         case .twitch:
             return URL(string: "https://www.twitch.tv/\(encoded)")
+        case .spotify:
+            return URL(string: "https://open.spotify.com/user/\(encoded)")
+        case .appleMusic:
+            return URL(string: "https://music.apple.com/profile/\(encoded)")
+        case .soundcloud:
+            guard Self.isSoundCloudUsername(handle) else { return nil }
+            return URL(string: "https://soundcloud.com/\(encoded)")
         }
     }
 
     /// "@name" from a username or profile link, or the platform's name.
+    /// Spotify / Apple Music ids are opaque, so those labels stay the platform name.
     func handle(from raw: String) -> String {
-        guard let url = profileURL(from: raw) else { return title }
-        let last = url.pathComponents.last { $0 != "/" } ?? ""
-        let name = last.hasPrefix("@") ? String(last.dropFirst()) : last
-        return name.isEmpty ? title : "@\(name)"
+        switch self {
+        case .spotify, .appleMusic:
+            return title
+        case .soundcloud:
+            guard let url = profileURL(from: raw) else { return title }
+            // Mobile share short links are opaque codes, not usernames.
+            if url.host?.lowercased() == "on.soundcloud.com" { return title }
+            let last = url.pathComponents.last { $0 != "/" } ?? ""
+            return last.isEmpty ? title : "@\(last)"
+        default:
+            guard let url = profileURL(from: raw) else { return title }
+            let last = url.pathComponents.last { $0 != "/" } ?? ""
+            let name = last.hasPrefix("@") ? String(last.dropFirst()) : last
+            return name.isEmpty ? title : "@\(name)"
+        }
+    }
+
+    private func validatedProfileURL(from url: URL) -> URL? {
+        switch self {
+        case .spotify: return Self.spotifyUserProfileURL(from: url)
+        case .appleMusic: return Self.appleMusicProfileURL(from: url)
+        case .soundcloud: return Self.soundcloudProfileURL(from: url)
+        default: return url
+        }
+    }
+
+    /// `open.spotify.com/user/<id>` only — artist pages are Content, not Social.
+    private static func spotifyUserProfileURL(from url: URL) -> URL? {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https" || parts.scheme?.lowercased() == "http",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let rawHost = parts.host?.lowercased() else { return nil }
+        let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+        guard host == "open.spotify.com" else { return nil }
+        var path = parts.path.split(separator: "/").map(String.init)
+        if path.first?.hasPrefix("intl-") == true { path.removeFirst() }
+        guard path.count == 2, path[0] == "user", !path[1].isEmpty else { return nil }
+        parts.scheme = "https"
+        parts.host = "open.spotify.com"
+        parts.path = "/user/\(path[1])"
+        parts.query = nil
+        parts.fragment = nil
+        return parts.url
+    }
+
+    /// `music.apple.com/profile/<id>` or `music.apple.com/<storefront>/profile/<id>`.
+    private static func appleMusicProfileURL(from url: URL) -> URL? {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https" || parts.scheme?.lowercased() == "http",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let rawHost = parts.host?.lowercased() else { return nil }
+        let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+        guard host == "music.apple.com" else { return nil }
+        let path = parts.path.split(separator: "/").map(String.init)
+        let profileID: String
+        if path.count == 2, path[0] == "profile", !path[1].isEmpty {
+            profileID = path[1]
+            parts.path = "/profile/\(profileID)"
+        } else if path.count == 3, path[0].count == 2, path[1] == "profile", !path[2].isEmpty {
+            profileID = path[2]
+            parts.path = "/\(path[0])/profile/\(profileID)"
+        } else {
+            return nil
+        }
+        parts.scheme = "https"
+        parts.host = "music.apple.com"
+        parts.query = nil
+        parts.fragment = nil
+        return parts.url
+    }
+
+    /// Profile URLs, mobile hosts, profile tabs, or `on.soundcloud.com` share links from the app.
+    /// Tracks and playlists on soundcloud.com stay Content.
+    private static func soundcloudProfileURL(from url: URL) -> URL? {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https" || parts.scheme?.lowercased() == "http",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let rawHost = parts.host?.lowercased() else { return nil }
+        let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+        let path = parts.path.split(separator: "/").map(String.init)
+
+        // Mobile copy/paste uses opaque share links that redirect to the profile.
+        if host == "on.soundcloud.com" {
+            guard path.count == 1, isSoundCloudShareCode(path[0]) else { return nil }
+            parts.scheme = "https"
+            parts.host = "on.soundcloud.com"
+            parts.path = "/\(path[0])"
+            parts.query = nil
+            parts.fragment = nil
+            return parts.url
+        }
+
+        guard host == "soundcloud.com" || host == "m.soundcloud.com" else { return nil }
+        guard let user = path.first, isSoundCloudUsername(user) else { return nil }
+        if path.count == 2 {
+            // Profile tab URLs (`/user/tracks`, `/user/sets`, …) — not a track or playlist.
+            guard soundCloudProfileTabs.contains(path[1].lowercased()) else { return nil }
+        } else if path.count != 1 {
+            return nil
+        }
+        parts.scheme = "https"
+        parts.host = "soundcloud.com"
+        parts.path = "/\(user)"
+        parts.query = nil
+        parts.fragment = nil
+        return parts.url
+    }
+
+    private static func isSoundCloudShareCode(_ value: String) -> Bool {
+        let code = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (6...64).contains(code.count) else { return false }
+        return code.range(of: "^[A-Za-z0-9]+$", options: .regularExpression) != nil
+    }
+
+    private static let soundCloudReserved = Set([
+        "discover", "stream", "upload", "you", "search", "pages", "charts", "popular",
+        "settings", "messages", "notifications", "terms-of-use", "mobile",
+        "android", "ios", "jobs", "pro", "premium", "signin", "signup", "login", "logout"
+    ])
+
+    /// Second path segment that still means “this user’s profile”, not a track/playlist.
+    private static let soundCloudProfileTabs = Set([
+        "tracks", "popular-tracks", "albums", "sets", "reposts", "likes",
+        "comments", "followers", "following"
+    ])
+
+    static func isSoundCloudUsername(_ value: String) -> Bool {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              name.count <= 50,
+              !soundCloudReserved.contains(name.lowercased()),
+              name.range(of: "^[A-Za-z0-9][A-Za-z0-9_-]*$", options: .regularExpression) != nil
+        else { return false }
+        return true
     }
 }
 

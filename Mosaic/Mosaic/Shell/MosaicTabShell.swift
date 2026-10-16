@@ -124,9 +124,19 @@ struct MosaicTabShell: View {
             guard let account else { return }
             store.onPersisted = { [weak store] in
                 guard let store else { return }
-                remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+                remoteSync.schedule(
+                    snapshot: store.snapshot,
+                    account: account,
+                    mediaFile: store.mediaURL(for:),
+                    protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+                )
             }
-            remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+            remoteSync.schedule(
+                snapshot: store.snapshot,
+                account: account,
+                mediaFile: store.mediaURL(for:),
+                protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+            )
         }
         .task(id: downloadAttempt) {
             guard let account, let owner = account.session?.userID,
@@ -138,7 +148,12 @@ struct MosaicTabShell: View {
                 try await downloads.run(store: store, client: SupabaseDocumentSync(config: config),
                                         ownerID: owner, accessToken: token)
                 if !downloads.recoveredFiles.isEmpty {
-                    remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+                    remoteSync.schedule(
+                        snapshot: store.snapshot,
+                        account: account,
+                        mediaFile: store.mediaURL(for:),
+                        protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+                    )
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -150,7 +165,12 @@ struct MosaicTabShell: View {
                 if !downloads.isLoading { downloadAttempt += 1 }
                 // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
                 if let account, remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
-                    remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+                    remoteSync.schedule(
+                        snapshot: store.snapshot,
+                        account: account,
+                        mediaFile: store.mediaURL(for:),
+                        protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+                    )
                 }
             }
         }

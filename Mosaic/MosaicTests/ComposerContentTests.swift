@@ -15,18 +15,43 @@ struct ComposerContentTests {
             ("https://vm.tiktok.com/abc123/", .tiktok),
             ("https://www.twitch.tv/creator/clip/Example", .twitch),
             ("https://clips.twitch.tv/Example", .twitch),
-            ("https://twitch.tv/videos/12345", .twitch)
+            ("https://twitch.tv/videos/12345", .twitch),
+            ("https://open.spotify.com/track/abc123?si=xyz", .spotify),
+            ("https://open.spotify.com/intl-en/playlist/37i9dQZF1DXcBWIGoYBM5M", .spotify),
+            ("https://open.spotify.com/album/abc123", .spotify),
+            ("https://open.spotify.com/artist/abc123", .spotify),
+            ("https://open.spotify.com/episode/abc123", .spotify),
+            ("https://open.spotify.com/show/abc123", .spotify),
+            ("https://open.spotify.com/audiobook/abc123", .spotify),
+            ("https://music.apple.com/us/song/anti-hero/1650847617", .appleMusic),
+            ("https://music.apple.com/us/album/midnights/1650847615", .appleMusic),
+            ("https://music.apple.com/us/artist/taylor-swift/159260351", .appleMusic),
+            ("https://music.apple.com/us/playlist/todays-hits/pl.abc123", .appleMusic),
+            ("https://music.apple.com/us/album/midnights/1650847615?i=1650847617", .appleMusic),
+            ("https://soundcloud.com/artist/track-name", .soundcloud),
+            ("https://soundcloud.com/artist/sets/my-playlist", .soundcloud),
+            ("https://m.soundcloud.com/artist/track-name", .soundcloud)
         ]
         for (url, platform) in examples {
             #expect(ComposerContentPlatform.parse(url)?.platform == platform)
         }
+        let cleaned = ComposerContentPlatform.parse("https://open.spotify.com/intl-en/track/abc123?si=xyz")
+        #expect(cleaned?.url.absoluteString == "https://open.spotify.com/track/abc123")
+        let appleSong = ComposerContentPlatform.parse("https://music.apple.com/us/album/midnights/1650847615?i=1650847617&l=en")
+        #expect(appleSong?.url.absoluteString == "https://music.apple.com/us/album/midnights/1650847615?i=1650847617")
+        #expect(ComposerContentPlatform.parse("https://soundcloud.com/artist/sets/my-playlist")?.url.absoluteString
+                == "https://soundcloud.com/artist/sets/my-playlist")
     }
 
     @Test func rejectsUnsafeAndNonContentLinks() {
         for value in ["javascript:alert(1)", "http://youtube.com/watch?v=123", "https://youtube.com.evil.test/watch?v=123",
                       "https://youtube.com@evil.test/watch?v=123", "https://user@youtube.com/watch?v=123",
                       "https://youtube.com:8080/watch?v=123", "https://instagram.com/person/", "https://youtube.com/watch",
-                      "https://tiktok.com/", "https://twitch.tv/directory", "file:///tmp/movie.mp4"] {
+                      "https://tiktok.com/", "https://twitch.tv/directory", "file:///tmp/movie.mp4",
+                      "https://open.spotify.com/user/abc123", "https://spotify.link/abc",
+                      "https://open.spotify.com/track/", "http://open.spotify.com/track/abc",
+                      "https://music.apple.com/profile/someone", "https://music.apple.com/us/profile/someone",
+                      "https://soundcloud.com/someuser", "https://soundcloud.com/discover"] {
             #expect(ComposerContentPlatform.parse(value) == nil)
         }
     }
@@ -68,6 +93,10 @@ struct ComposerContentTests {
         #expect(size(.instagram, CGSize(width: 1080, height: 1350)) == [1024, 1280])
         #expect(size(.instagram, wide) == [1040, 585])
         #expect(size(.tiktok, CGSize(width: 100, height: 1000)) == [720, 1280])
+        #expect(size(.spotify, nil) == [1040, 1040])
+        #expect(size(.spotify, tall) == [1040, 1040])
+        #expect(size(.appleMusic, nil) == [1040, 1040])
+        #expect(size(.soundcloud, wide) == [1040, 1040])
     }
 
     @Test func movingTheCoverStopsAtItsEdges() {
@@ -129,6 +158,54 @@ struct ComposerContentTests {
         #expect(ComposerTwitchPreview.imageURL(in: foreign) == nil)
         let clip = ComposerTwitchPreview.metaTags(inHTML: #"<meta name="twitter:image" content="https://static-cdn.jtvnw.net/twitch-video-assets/x/thumb-1920x1080.jpg"/>"#)
         #expect(ComposerTwitchPreview.imageURL(in: clip) != nil)
+    }
+
+    @Test func spotifyPreviewReadsOEmbedJSON() throws {
+        let track = try #require(URL(string: "https://open.spotify.com/track/abc123"))
+        #expect(
+            ComposerSpotifyPreview.oEmbedURL(for: track)?.absoluteString
+            == "https://open.spotify.com/oembed?url=https://open.spotify.com/track/abc123"
+        )
+        let json = Data("""
+        {"title":"Song Name","thumbnail_url":"https://i.scdn.co/image/ab67616d0000b273abc","provider_name":"Spotify"}
+        """.utf8)
+        let parsed = try #require(ComposerSpotifyPreview.preview(fromJSON: json))
+        #expect(parsed.title == "Song Name")
+        #expect(parsed.imageURL?.absoluteString == "https://i.scdn.co/image/ab67616d0000b273abc")
+        #expect(ComposerSpotifyPreview.isTrustedImageHost("i.scdn.co"))
+        #expect(ComposerSpotifyPreview.isTrustedImageHost("image-cdn-ak.spotifycdn.com"))
+        #expect(!ComposerSpotifyPreview.isTrustedImageHost("evil.test"))
+        let foreign = Data(#"{"title":"X","thumbnail_url":"https://evil.test/x.jpg"}"#.utf8)
+        #expect(ComposerSpotifyPreview.preview(fromJSON: foreign)?.imageURL == nil)
+        #expect(ComposerSpotifyPreview.preview(fromJSON: foreign)?.title == "X")
+    }
+
+    @Test func soundcloudPreviewReadsOEmbedJSON() throws {
+        let track = try #require(URL(string: "https://soundcloud.com/artist/track"))
+        #expect(
+            ComposerSoundCloudPreview.oEmbedURL(for: track)?.absoluteString
+            == "https://soundcloud.com/oembed?format=json&url=https://soundcloud.com/artist/track"
+        )
+        let json = Data("""
+        {"title":"Cloud Track","thumbnail_url":"https://i1.sndcdn.com/artworks-abc-t500x500.jpg"}
+        """.utf8)
+        let parsed = try #require(ComposerSoundCloudPreview.preview(fromJSON: json))
+        #expect(parsed.title == "Cloud Track")
+        #expect(parsed.imageURL?.host == "i1.sndcdn.com")
+        #expect(!ComposerSoundCloudPreview.isTrustedImageHost("evil.test"))
+    }
+
+    @Test func appleMusicPreviewReadsOpenGraphTags() {
+        let html = """
+        <head><meta property="og:title" content="Anti-Hero"><meta property="og:image" \
+        content="https://is1-ssl.mzstatic.com/image/thumb/Music/abc/1000x1000.jpg"/></head>
+        """
+        let tags = ComposerAppleMusicPreview.metaTags(inHTML: html)
+        #expect(ComposerAppleMusicPreview.title(in: tags) == "Anti-Hero")
+        #expect(ComposerAppleMusicPreview.imageURL(in: tags)?.host == "is1-ssl.mzstatic.com")
+        #expect(ComposerAppleMusicPreview.title(in: ["og:title": "Apple Music"]) == nil)
+        let foreign = ComposerAppleMusicPreview.metaTags(inHTML: #"<meta property="og:image" content="https://evil.test/x.jpg">"#)
+        #expect(ComposerAppleMusicPreview.imageURL(in: foreign) == nil)
     }
 
     @Test func contentIsAvailableOnMosaicsAndPursuits() {

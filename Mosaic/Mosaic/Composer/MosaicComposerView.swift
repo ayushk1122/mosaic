@@ -1170,8 +1170,7 @@ struct MosaicComposerView: View {
                 clipboardMenuBlockID = nil
             }
             clipboardMenuButton("Cut") {
-                store.copyBlock(blockID, in: documentID)
-                deleteBlock(blockID)
+                store.cutBlock(blockID, in: documentID)
                 clipboardMenuBlockID = nil
             }
         }
@@ -1936,7 +1935,9 @@ struct MosaicComposerView: View {
                     return
                 }
                 current.socialPlatform = platform.rawValue
-                current.linkURL = link
+                // Persist the resolved profile URL when we can, so mobile hosts / tabs still open.
+                current.linkURL = platform.profileURL(from: link)?.absoluteString
+                    ?? link.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.updateBlock(current, in: documentID)
                 socialEditRequest = nil
             }

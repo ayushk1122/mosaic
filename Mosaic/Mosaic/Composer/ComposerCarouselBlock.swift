@@ -645,10 +645,12 @@ struct ComposerCarouselEditor: View {
                 onSave: { platform, link in
                     var next = draft
                     next.platform = platform.rawValue
-                    next.link = link.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if platform.profileURL(from: next.link) != nil {
-                        put(next)
+                    guard let url = platform.profileURL(from: link) else {
+                        socialDraft = nil
+                        return
                     }
+                    next.link = url.absoluteString
+                    put(next)
                     socialDraft = nil
                 }
             )

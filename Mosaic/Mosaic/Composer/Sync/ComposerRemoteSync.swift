@@ -50,6 +50,8 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
 @Observable
 final class ComposerRemoteSync {
     private var latest: ComposerSnapshot?
+    /// Document ids held by a cut clipboard; must not be deleted as dead during sync.
+    private var latestProtecting: Set<UUID> = []
     private var wait: Task<Void, Never>?
     private var active = false
     private var again = false
@@ -80,11 +82,13 @@ final class ComposerRemoteSync {
     func schedule(
         snapshot: ComposerSnapshot,
         account: MosaicAccount,
-        mediaFile: @escaping @MainActor (String) -> URL
+        mediaFile: @escaping @MainActor (String) -> URL,
+        protectingDocumentIDs: Set<UUID> = []
     ) {
         guard canUpload else { return }
         self.mediaFile = mediaFile
         latest = snapshot
+        latestProtecting = protectingDocumentIDs
         mediaRetryBudget = 3
         wait?.cancel()
         wait = Task { [weak self] in
@@ -99,11 +103,13 @@ final class ComposerRemoteSync {
     func syncNow(
         snapshot: ComposerSnapshot,
         account: MosaicAccount,
-        mediaFile: @escaping @MainActor (String) -> URL
+        mediaFile: @escaping @MainActor (String) -> URL,
+        protectingDocumentIDs: Set<UUID> = []
     ) async -> Bool {
         guard canUpload else { return false }
         self.mediaFile = mediaFile
         latest = snapshot
+        latestProtecting = protectingDocumentIDs
         mediaRetryBudget = 3
         wait?.cancel()
         await run(account: account)
@@ -125,8 +131,10 @@ final class ComposerRemoteSync {
         active = true
         defer { active = false }
         guard let snapshot = latest else { return }
+        let protecting = latestProtecting
         latest = nil
-        lastPushSucceeded = await push(snapshot, account: account)
+        latestProtecting = []
+        lastPushSucceeded = await push(snapshot, account: account, protecting: protecting)
         if again {
             again = false
             await run(account: account)
@@ -134,21 +142,30 @@ final class ComposerRemoteSync {
         }
         if lastPushLeftMediaPending, mediaRetryBudget > 0, latest == nil {
             mediaRetryBudget -= 1
-            scheduleMediaRetry(snapshot: snapshot, account: account)
+            scheduleMediaRetry(snapshot: snapshot, account: account, protecting: protecting)
         }
     }
 
-    private func scheduleMediaRetry(snapshot: ComposerSnapshot, account: MosaicAccount) {
+    private func scheduleMediaRetry(
+        snapshot: ComposerSnapshot,
+        account: MosaicAccount,
+        protecting: Set<UUID>
+    ) {
         wait?.cancel()
         wait = Task { [weak self] in
             try? await Task.sleep(for: .seconds(12))
             guard !Task.isCancelled, let self, self.latest == nil else { return }
             self.latest = snapshot
+            self.latestProtecting = protecting
             await self.run(account: account)
         }
     }
 
-    private func push(_ snapshot: ComposerSnapshot, account: MosaicAccount) async -> Bool {
+    private func push(
+        _ snapshot: ComposerSnapshot,
+        account: MosaicAccount,
+        protecting: Set<UUID>
+    ) async -> Bool {
         lastPushLeftMediaPending = false
         guard let config = SupabaseSyncConfig.current(),
               let accessToken = await account.accessToken()
@@ -184,7 +201,12 @@ final class ComposerRemoteSync {
             guard let userID = account.session?.userID else { return true }
             let liveIDs = documents.map(\.id)
             if let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
-                let dead = ComposerBoardSync.deadIDs(live: liveIDs, remote: remoteIDs, mosaicID: mosaicID)
+                let dead = ComposerBoardSync.deadIDs(
+                    live: liveIDs,
+                    remote: remoteIDs,
+                    mosaicID: mosaicID,
+                    protecting: protecting
+                )
                 if !dead.isEmpty {
                     try? await client.deleteMedia(forDocumentIDs: dead, accessToken: accessToken)
                     try? await client.deleteDocuments(ids: dead, accessToken: accessToken)
