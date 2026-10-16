@@ -384,8 +384,15 @@ final class MosaicVisit {
 
     func refresh() async {
         let started = changes
-        guard let token = await account.accessToken(),
-              let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token),
+        guard let token = await account.accessToken() else { return }
+        // Revalidate the Mosaic gate itself; Pursuit-only diffs miss revocation with zero open Pursuits.
+        if let profile = try? await client.profile(userID: ownerID, accessToken: token),
+           changes == started,
+           !profile.canView {
+            onAccessChanged?()
+            return
+        }
+        guard let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token),
               changes == started
         else { return }
         apply(fresh)

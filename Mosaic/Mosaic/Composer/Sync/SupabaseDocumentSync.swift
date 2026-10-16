@@ -139,16 +139,11 @@ struct SupabaseDocumentSync: Sendable {
     /// Removes dead boards. Child rows cascade when their parent is deleted.
     func deleteDocuments(ids: [UUID], accessToken: String) async throws {
         guard !ids.isEmpty else { return }
-        let url = Self.deleteDocumentsURL(base: config.url, ids: ids)
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw SupabaseDocumentSyncError.requestFailed
-        }
+        _ = try await rpc(
+            name: "delete_documents",
+            body: ["p_ids": ids.map { $0.uuidString.lowercased() }],
+            accessToken: accessToken
+        )
     }
 
     /// Drops media rows that pointed at boards about to be deleted.
@@ -175,13 +170,8 @@ struct SupabaseDocumentSync: Sendable {
         return components?.url ?? base
     }
 
-    static func deleteDocumentsURL(base: URL, ids: [UUID]) -> URL {
-        var components = URLComponents(url: base.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)
-        let list = ids.map { $0.uuidString.lowercased() }.joined(separator: ",")
-        components?.queryItems = [
-            URLQueryItem(name: "id", value: "in.(\(list))")
-        ]
-        return components?.url ?? base
+    static func deleteDocumentsBody(ids: [UUID]) -> [String: Any] {
+        ["p_ids": ids.map { $0.uuidString.lowercased() }]
     }
 
     static func deleteMediaURL(base: URL, documentIDs: [UUID]) -> URL {

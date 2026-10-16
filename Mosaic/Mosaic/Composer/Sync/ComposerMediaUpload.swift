@@ -255,9 +255,8 @@ struct SupabaseMediaSync: Sendable {
             try await put(data: thumb, path: path, contentType: "image/jpeg", accessToken: accessToken)
             thumbPath = path
         }
-        try await insert(
+        try await finalize(
             prepared: prepared,
-            ownerID: ownerID,
             assetID: assetID,
             documentID: documentID,
             originalPath: originalPath,
@@ -267,9 +266,9 @@ struct SupabaseMediaSync: Sendable {
         )
     }
 
-    static func insertBody(
+    /// RPC body for `finalize_media_asset`. Paths must match owner/asset/{original|display|thumb}.
+    static func finalizeBody(
         prepared: ComposerMediaUploadPayload,
-        ownerID: UUID,
         assetID: UUID,
         documentID: UUID,
         originalPath: String,
@@ -277,20 +276,18 @@ struct SupabaseMediaSync: Sendable {
         thumbPath: String?
     ) -> [String: Any] {
         var body: [String: Any] = [
-            "id": assetID.uuidString.lowercased(),
-            "owner_id": ownerID.uuidString.lowercased(),
-            "document_id": documentID.uuidString.lowercased(),
-            "kind": prepared.kind,
-            "status": prepared.status,
-            "original_path": originalPath,
-            "byte_size": prepared.original.count,
-            "content_type": prepared.contentType
+            "p_id": assetID.uuidString.lowercased(),
+            "p_document_id": documentID.uuidString.lowercased(),
+            "p_kind": prepared.kind,
+            "p_original_path": originalPath,
+            "p_byte_size": prepared.original.count,
+            "p_content_type": prepared.contentType
         ]
-        if let displayPath { body["display_path"] = displayPath }
-        if let thumbPath { body["thumb_path"] = thumbPath }
-        if let width = prepared.width { body["width"] = width }
-        if let height = prepared.height { body["height"] = height }
-        if let duration = prepared.durationMilliseconds { body["duration_ms"] = duration }
+        if let displayPath { body["p_display_path"] = displayPath }
+        if let thumbPath { body["p_thumb_path"] = thumbPath }
+        if let width = prepared.width { body["p_width"] = width }
+        if let height = prepared.height { body["p_height"] = height }
+        if let duration = prepared.durationMilliseconds { body["p_duration_ms"] = duration }
         return body
     }
 
@@ -313,9 +310,8 @@ struct SupabaseMediaSync: Sendable {
         }
     }
 
-    private func insert(
+    private func finalize(
         prepared: ComposerMediaUploadPayload,
-        ownerID: UUID,
         assetID: UUID,
         documentID: UUID,
         originalPath: String,
@@ -326,16 +322,15 @@ struct SupabaseMediaSync: Sendable {
         let endpoint = config.url
             .appendingPathComponent("rest")
             .appendingPathComponent("v1")
-            .appendingPathComponent("media_assets")
+            .appendingPathComponent("rpc")
+            .appendingPathComponent("finalize_media_asset")
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: Self.insertBody(
+        request.httpBody = try JSONSerialization.data(withJSONObject: Self.finalizeBody(
             prepared: prepared,
-            ownerID: ownerID,
             assetID: assetID,
             documentID: documentID,
             originalPath: originalPath,

@@ -86,8 +86,8 @@ struct ComposerBoardSyncTests {
         let owner = UUID(uuidString: "00000000-0000-0000-0000-00000000000a")!
         let listed = SupabaseDocumentSync.ownDocumentsURL(base: base, ownerID: owner)
         #expect(listed.absoluteString.contains("owner_id=eq.00000000-0000-0000-0000-00000000000a"))
-        let deleteURL = SupabaseDocumentSync.deleteDocumentsURL(base: base, ids: [deadUUID])
-        #expect(deleteURL.absoluteString.contains("id=in.(\(deadUUID.uuidString.lowercased()))"))
+        let deleteBody = SupabaseDocumentSync.deleteDocumentsBody(ids: [deadUUID])
+        #expect(deleteBody["p_ids"] as? [String] == [deadUUID.uuidString.lowercased()])
     }
 
     @Test
@@ -779,6 +779,12 @@ struct ComposerBoardSyncTests {
         #expect(session.userID == userID)
         #expect(session.expiresAt == now.addingTimeInterval(3600))
         #expect(MosaicPKCE.challenge(for: "hello-verifier-hello-verifier-hello-verif") == "My6Ou2QRvR7J1v2W65mBNajT_v3bz6dH3B4oolrqrKQ")
+
+        let revoked = Data(#"{"error":"invalid_grant","error_description":"Invalid Refresh Token"}"#.utf8)
+        #expect(MosaicAuthErrorClassification.isPermanentFailure(status: 400, body: revoked))
+        #expect(MosaicAuthErrorClassification.isPermanentFailure(status: 401, body: Data()))
+        #expect(!MosaicAuthErrorClassification.isPermanentFailure(status: 503, body: Data("busy".utf8)))
+        #expect(!MosaicAuthErrorClassification.isPermanentFailure(status: 500, body: Data()))
     }
 
     @Test
@@ -829,6 +835,18 @@ struct ComposerBoardSyncTests {
         let asset = UUID()
         let path = ComposerMediaCatalog.objectPath(ownerID: owner, assetID: asset, name: "original")
         #expect(path == "\(owner.uuidString.lowercased())/\(asset.uuidString.lowercased())/original")
+        let finalize = SupabaseMediaSync.finalizeBody(
+            prepared: payloads[0],
+            assetID: asset,
+            documentID: mosaicID,
+            originalPath: path,
+            displayPath: nil,
+            thumbPath: nil
+        )
+        #expect(finalize["p_id"] as? String == asset.uuidString.lowercased())
+        #expect(finalize["p_document_id"] as? String == mosaicID.uuidString.lowercased())
+        #expect(finalize["p_original_path"] as? String == path)
+        #expect(finalize["p_kind"] as? String == "photo")
 
         let documents = ComposerBoardSync.split(snapshot: store.snapshot, mosaicID: mosaicID)
         let stamped = ComposerMediaCatalog.stamped(documents, assets: ["day.jpg": asset.uuidString, "other.png": UUID().uuidString])

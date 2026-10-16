@@ -65,6 +65,34 @@ enum MosaicAuthResponse {
     }
 }
 
+/// Distinguishes a revoked/invalid refresh token from a temporary network failure.
+enum MosaicAuthFailure: Error, Equatable {
+    case transport
+    case permanent
+}
+
+enum MosaicAuthErrorClassification {
+    /// Permanent when the refresh token itself is rejected; transport for offline/5xx/unknown.
+    static func isPermanentFailure(status: Int, body: Data) -> Bool {
+        if status == 401 || status == 403 { return true }
+        guard status == 400 else { return false }
+        if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            let error = (json["error"] as? String)?.lowercased() ?? ""
+            let description = (json["error_description"] as? String)?.lowercased() ?? ""
+            if error == "invalid_grant" { return true }
+            if description.contains("refresh token") { return true }
+            if description.contains("session") && (description.contains("not found") || description.contains("expired")) {
+                return true
+            }
+        }
+        let text = String(data: body, encoding: .utf8)?.lowercased() ?? ""
+        return text.contains("invalid_grant")
+            || text.contains("invalid refresh token")
+            || text.contains("refresh token not found")
+            || text.contains("refresh token already used")
+    }
+}
+
 enum MosaicSessionKeychain {
     private static let service = "com.ayushkrishnappa.Mosaic.session"
     private static let account = "supabase"
@@ -181,6 +209,8 @@ final class MosaicAccount {
                 let signedIn = try await exchangePKCE(code: code, verifier: verifier, config: config)
                 session = signedIn
                 MosaicSessionKeychain.save(signedIn)
+            } catch is MosaicAuthFailure {
+                lastError = message(for: .requestFailed)
             } catch let error as SupabaseDocumentSyncError {
                 lastError = message(for: error)
             } catch {
@@ -249,10 +279,24 @@ final class MosaicAccount {
             session = refreshed
             MosaicSessionKeychain.save(refreshed)
             return refreshed.accessToken
+        } catch MosaicAuthFailure.permanent {
+            // Boards stay on disk under Accounts/{userID}; only the dead session is cleared.
+            clearSessionForReauthentication()
+            return nil
         } catch {
             // A failed connection must not sign the user out of their cached boards.
             return nil
         }
+    }
+
+    /// Drops the cached session so the sign-in screen can recover. Local boards are untouched.
+    private func clearSessionForReauthentication() {
+        tokenRefresh?.cancel()
+        tokenRefresh = nil
+        tokenRefreshID = nil
+        session = nil
+        MosaicSessionKeychain.clear()
+        lastError = "Your session expired. Sign in again to keep syncing. Boards on this phone are still here."
     }
 
     private func exchangePKCE(code: String, verifier: String, config: SupabaseSyncConfig) async throws -> MosaicSession {
@@ -301,10 +345,13 @@ final class MosaicAccount {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw SupabaseDocumentSyncError.requestFailed
+            throw MosaicAuthFailure.transport
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw SupabaseDocumentSyncError.requestFailed
+            if MosaicAuthErrorClassification.isPermanentFailure(status: http.statusCode, body: data) {
+                throw MosaicAuthFailure.permanent
+            }
+            throw MosaicAuthFailure.transport
         }
         return data
     }
