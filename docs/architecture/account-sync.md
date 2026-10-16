@@ -5,8 +5,9 @@
 
 ## Current structure
 
-- `Mosaic/Mosaic/Account/MosaicAccount.swift`: Google OAuth with PKCE, token refresh, and Keychain sessions.
-- `Mosaic/Mosaic/MosaicApp.swift`: launch, login, and account preparation before the editor opens.
+- `Mosaic/Mosaic/Account/MosaicAccount.swift`: Google OAuth with PKCE, email and phone one-time codes, token refresh, and Keychain sessions.
+- `Mosaic/Mosaic/MosaicApp.swift`: launch, login, onboarding gate, and account preparation before the editor opens.
+- `Mosaic/Mosaic/Shell/MosaicOnboarding.swift` and `MosaicOnboardingView.swift`: profile setup (username, password, display name, birthday) before the first editor open on a device.
 - `Mosaic/Mosaic/Composer/ComposerStorageLocation.swift`: account-specific local folders and migration of pre-account data.
 - `Mosaic/Mosaic/Composer/ComposerStore.swift`: local editable snapshot and media files.
 - `Mosaic/Mosaic/Composer/Sync/ComposerAccountRestore.swift`: landing-board restoration and safe local installation.
@@ -17,6 +18,10 @@
 - `Mosaic/Mosaic/Shell/`: navigation, discovery, visits, circle, profile, and sharing UI.
 
 ## Login behavior
+
+**Current repository fact:** The default account screen is **Sign in** with email-or-username and password, plus social icons for Google, Apple, email OTP, and phone OTP. **Sign up** collects username, email, password, display name, and birthday on one form (password path calls `complete_onboarding` immediately), with the same social options below. Sign-in OTP uses `create_user: false`; sign-up OTP uses `create_user: true`. Password sign-in resolves `@username` through the `email_for_login` RPC before the Supabase password grant.
+
+**Current repository fact:** After sign-in, the app reads `onboarding_status` before downloading boards. Accounts with `onboarded_at` set (including existing users backfilled at migration time) proceed to account preparation. New accounts complete a one-time setup for username, password, display name, and birthday. Password sign-up already collects a password at registration; Google, Apple, and OTP sign-up attach a password during onboarding via `PUT /auth/v1/user` before `complete_onboarding`, so those users can later sign in with `@username` and password as well as their original provider. Birthday lives in owner-only `profile_private`, not in public `profiles`. **Open question:** minimum age / age-gate policy once product and legal requirements are settled. **Current repository fact:** Existing backfilled accounts that never set a password keep using their original provider until they set one.
 
 **Current repository fact:** The stored session is loaded from Keychain without waiting for a network refresh. Network operations share a lazy token refresh; a connection failure leaves the cached account available. The app checks for legacy local data belonging to the account. An account with a readable local snapshot and sync state opens that local copy immediately, including offline edits.
 
@@ -47,7 +52,7 @@ RLS remains enforced by Supabase. No service-role key is used. The repository do
 
 `pursuit_is_requestable`, `viewer_can_read_document`, `viewer_can_read_media`, and `viewer_passes_mosaic_gate` stay callable because policies run them as the signed-in user. They only report the caller's own access.
 
-**Current repository fact:** Mosaic signs in only with Google, and every existing account uses Google. The Email provider is turned off in Supabase Auth (a dashboard setting outside this repository), so password accounts can't be created. The leaked-password advisor still appears because it checks that setting independently; it doesn't apply while email sign-in is off.
+**Current repository fact:** Google remains enabled for existing users. Email and phone OTP must be enabled on the hosted Supabase project (see `supabase/README.md`). Local development uses Mailpit and `[auth.sms.test_otp]` in `config.toml`.
 
 ## Visiting another person's boards
 
@@ -74,7 +79,11 @@ Media caches are separated by viewer and owner. A manifest associates filenames 
 
 The app reports the visited Mosaic when it opens and each Pursuit page the visitor can open, once per visit. Reports run in the background and failures are ignored. A Circle bubble reads `circle_visits` with the device's time zone alongside its people list. Until the migration is applied, or when the read fails, Daily Visits shows a dash.
 
-**Reversible choice:** `supabase/migrations/` is the first versioned backend SQL in this repository. The live project's earlier migrations (`backend_skeleton` through `accept_request_follows`) are not in it yet.
+**Decision:** Multi-device document conflicts keep the server revision on screen and retain the device’s conflicting local document as a recoverable conflict copy (Keep this version / Discard). See [ADR 0003](../decisions/0003-sync-conflict-and-media-queue.md).
+
+**Decision:** The unused `media_jobs` processing queue is retired for the current client-prepared media path; bucket limits and finalize quotas replace it until a real worker is justified. See [ADR 0003](../decisions/0003-sync-conflict-and-media-queue.md).
+
+**Current repository fact:** `supabase/migrations/20261012180000_baseline.sql` is a squashed schema baseline captured from Mosaic-dev so `supabase db reset` can recreate the contract locally. Earlier partial files live in `supabase/migrations_archive/`. A hosted staging project remains deferred.
 
 **Decision:** Visit rows are kept for 90 days, so future visit analytics have history to draw on. Only today's count is read now. Each recorded visit deletes rows older than 90 days, so no scheduled job is needed.
 
