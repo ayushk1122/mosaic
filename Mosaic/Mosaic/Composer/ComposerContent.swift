@@ -162,6 +162,9 @@ struct ComposerContentCard: View {
     let isViewing: Bool
     let isSelected: Bool
     let liveScale: CGFloat
+    /// Set by the board on a true tap; drag-release must not open the editor.
+    var opensEditor: Bool = false
+    var onEditorPresented: () -> Void = {}
     let onCrop: () -> Void
     let onDelete: () -> Void
     @Environment(ComposerStore.self) private var store
@@ -181,56 +184,50 @@ struct ComposerContentCard: View {
 
     var body: some View {
         let size = (block.contentPlatform ?? .youtube).cardSize(cover: image?.size, cropAspect: block.mediaFrameAspect)
-        Button {
-            if isViewing {
-                if let target = ComposerContentPlatform.parse(block.linkURL ?? "") { openURL(target.url) }
-            } else { editing = true }
-        } label: {
-            ZStack {
-                Color(white: 0.18)
-                if let image {
-                    ComposerContentCover(image: image, frame: size, framing: ComposerContentFraming(block))
-                } else if let sourceLogo {
-                    ComposerSocialMark(platform: sourceLogo, side: 44)
-                } else {
-                    Image(systemName: "link").font(.largeTitle).foregroundStyle(.white.opacity(0.6))
-                }
+        ZStack {
+            Color(white: 0.18)
+            if let image {
+                ComposerContentCover(image: image, frame: size, framing: ComposerContentFraming(block))
+            } else if let sourceLogo {
+                ComposerSocialMark(platform: sourceLogo, side: 44)
+            } else {
+                Image(systemName: "link").font(.largeTitle).foregroundStyle(.white.opacity(0.6))
             }
-            .frame(width: size.width, height: size.height)
-            .clipped()
-            .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.8)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(height: 100)
-                .allowsHitTesting(false)
-            }
-            .overlay(alignment: .bottomLeading) {
-                HStack(alignment: .center, spacing: 8) {
-                    if let sourceLogo {
-                        ComposerSocialMark(platform: sourceLogo, side: 26)
-                            .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                            .accessibilityHidden(true)
-                    }
-                    Text(block.text.isEmpty ? "Content" : block.text)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
-                }
-                .padding(12)
-                .allowsHitTesting(false)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
         }
-        .buttonStyle(.plain)
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.8)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 100)
+            .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottomLeading) {
+            HStack(alignment: .center, spacing: 8) {
+                if let sourceLogo {
+                    ComposerSocialMark(platform: sourceLogo, side: 26)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                        .accessibilityHidden(true)
+                }
+                Text(block.text.isEmpty ? "Content" : block.text)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+            }
+            .padding(12)
+            .allowsHitTesting(false)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
         .scaleEffect(cardScale, anchor: .topLeading)
         .frame(width: size.width * cardScale, height: size.height * cardScale, alignment: .topLeading)
         .accessibilityLabel("\(block.contentPlatform?.title ?? "Content"): \(block.text)")
         .accessibilityHint(isViewing ? "Opens the original post" : "Edits this content link")
+        .accessibilityAddTraits(.isButton)
         .onGeometryChange(for: CGRect.self) { proxy in
             proxy.frame(in: .named(composerSpace))
         } action: { frame in
@@ -249,6 +246,11 @@ struct ComposerContentCard: View {
             image = loaded
         }
         .onAppear { if !isViewing && (block.linkURL ?? "").isEmpty { editing = true } }
+        .onChange(of: opensEditor) { _, open in
+            guard open else { return }
+            editing = true
+            onEditorPresented()
+        }
         .sheet(isPresented: $editing, onDismiss: {
             if (block.linkURL ?? "").isEmpty { onDelete() }
         }) {

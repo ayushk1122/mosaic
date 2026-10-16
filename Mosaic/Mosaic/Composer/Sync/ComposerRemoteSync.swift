@@ -53,6 +53,8 @@ final class ComposerRemoteSync {
     private var wait: Task<Void, Never>?
     private var active = false
     private var again = false
+    /// Background retries left for local files that still need a cloud asset.
+    private var mediaRetryBudget = 0
     private let location: ComposerStorageLocation
     private var mediaFile: (@MainActor (String) -> URL)?
 
@@ -62,6 +64,19 @@ final class ComposerRemoteSync {
 
     var canUpload: Bool { loadState()?.pendingRestore != true }
 
+    /// True when this phone still has files that visitors cannot download yet.
+    func hasUnmappedLocalMedia(
+        snapshot: ComposerSnapshot,
+        mediaFile: @escaping @MainActor (String) -> URL
+    ) -> Bool {
+        guard let state = loadState(), !state.pendingRestore else { return false }
+        let references = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: state.mosaicID)
+        return references.contains { reference in
+            guard state.mediaAssets[reference.fileName] == nil else { return false }
+            return FileManager.default.fileExists(atPath: mediaFile(reference.fileName).path)
+        }
+    }
+
     func schedule(
         snapshot: ComposerSnapshot,
         account: MosaicAccount,
@@ -70,6 +85,7 @@ final class ComposerRemoteSync {
         guard canUpload else { return }
         self.mediaFile = mediaFile
         latest = snapshot
+        mediaRetryBudget = 3
         wait?.cancel()
         wait = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
@@ -88,15 +104,18 @@ final class ComposerRemoteSync {
         guard canUpload else { return false }
         self.mediaFile = mediaFile
         latest = snapshot
+        mediaRetryBudget = 3
         wait?.cancel()
         await run(account: account)
-        while active || latest != nil {
+        // Only wait for this push to finish. Background media retries must not hold Save.
+        while active {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return lastPushSucceeded
     }
 
     @ObservationIgnored private var lastPushSucceeded = false
+    @ObservationIgnored private var lastPushLeftMediaPending = false
 
     private func run(account: MosaicAccount) async {
         if active {
@@ -111,10 +130,26 @@ final class ComposerRemoteSync {
         if again {
             again = false
             await run(account: account)
+            return
+        }
+        if lastPushLeftMediaPending, mediaRetryBudget > 0, latest == nil {
+            mediaRetryBudget -= 1
+            scheduleMediaRetry(snapshot: snapshot, account: account)
+        }
+    }
+
+    private func scheduleMediaRetry(snapshot: ComposerSnapshot, account: MosaicAccount) {
+        wait?.cancel()
+        wait = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled, let self, self.latest == nil else { return }
+            self.latest = snapshot
+            await self.run(account: account)
         }
     }
 
     private func push(_ snapshot: ComposerSnapshot, account: MosaicAccount) async -> Bool {
+        lastPushLeftMediaPending = false
         guard let config = SupabaseSyncConfig.current(),
               let accessToken = await account.accessToken()
         else { return false }
@@ -163,8 +198,9 @@ final class ComposerRemoteSync {
                 }
             }
             guard let mediaFile else { return true }
+            let references = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID)
             mediaAssets = await uploadMedia(
-                references: ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID),
+                references: references,
                 assets: mediaAssets,
                 ownerID: userID,
                 mosaicID: mosaicID,
@@ -185,7 +221,14 @@ final class ComposerRemoteSync {
                 revisions[key] = next
                 saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: mediaAssets))
             }
-            return true
+            // Readable local files without a cloud asset are not finished syncing yet.
+            let unfinished = references.contains { reference in
+                guard mediaAssets[reference.fileName] == nil else { return false }
+                let url = mediaFile(reference.fileName)
+                return FileManager.default.fileExists(atPath: url.path)
+            }
+            lastPushLeftMediaPending = unfinished
+            return !unfinished
         } catch {
             return false
         }
@@ -202,26 +245,40 @@ final class ComposerRemoteSync {
         mediaFile: @MainActor (String) -> URL
     ) async -> [String: String] {
         var assets = assets
-        let media = SupabaseMediaSync(config: client.config, session: client.session)
+        let media = SupabaseMediaSync(config: client.config)
         // A file that can't be read or uploaded stays without an asset, so the next sync tries again,
         // and the board shows it as unavailable if it is gone from this phone.
         for reference in references where assets[reference.fileName] == nil {
             let url = mediaFile(reference.fileName)
-            guard let prepared = await ComposerMediaPreparer.prepare(fileAt: url) else { continue }
-            let assetID = UUID()
-            do {
-                try await media.upload(
-                    prepared: prepared,
-                    ownerID: ownerID,
-                    assetID: assetID,
-                    documentID: reference.documentID,
-                    accessToken: accessToken
-                )
-                assets[reference.fileName] = assetID.uuidString.lowercased()
-                saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: assets))
-            } catch {
-                continue
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let data = try? Data(contentsOf: url), !data.isEmpty
+            else { continue }
+            let payloads: [ComposerMediaUploadPayload]
+            if ComposerMediaKind.isVideo(reference.fileName) {
+                payloads = await ComposerMediaPreparer.prepare(fileAt: url).map { [$0] } ?? []
+            } else {
+                payloads = ComposerMediaPreparer.photoPayloads(from: data)
             }
+            var uploaded = false
+            for prepared in payloads {
+                let assetID = UUID()
+                do {
+                    try await media.upload(
+                        prepared: prepared,
+                        ownerID: ownerID,
+                        assetID: assetID,
+                        documentID: reference.documentID,
+                        accessToken: accessToken
+                    )
+                    assets[reference.fileName] = assetID.uuidString.lowercased()
+                    saveState(ComposerSyncState(mosaicID: mosaicID, revisions: revisions, mediaAssets: assets))
+                    uploaded = true
+                    break
+                } catch {
+                    continue
+                }
+            }
+            _ = uploaded
         }
         return assets
     }

@@ -78,6 +78,9 @@ struct ComposerBlockActions {
     var onOpenMemberSocial: (ComposerBlock) -> Void
     var onReplaceMedia: (() -> Void)? = nil
     var onReplaceMemberMedia: ((ComposerBlockID) -> Void)? = nil
+    /// True for one frame when the board recognized a tap (not a drag-release).
+    var opensContentEditor: Bool = false
+    var onContentEditorPresented: () -> Void = {}
 }
 
 struct ComposerCanvasBlockView: View {
@@ -275,10 +278,17 @@ struct ComposerCanvasBlockView: View {
                 )
             case .link:
                 if block.isContent {
-                    ComposerContentCard(block: $block, mediaURL: mediaURL, isViewing: isViewing,
-                                        isSelected: isSelected && !isLifted && !isRelocating,
-                                        liveScale: livePinchScale, onCrop: actions.onCropMedia,
-                                        onDelete: actions.onDelete)
+                    ComposerContentCard(
+                        block: $block,
+                        mediaURL: mediaURL,
+                        isViewing: isViewing,
+                        isSelected: isSelected && !isLifted && !isRelocating,
+                        liveScale: livePinchScale,
+                        opensEditor: actions.opensContentEditor,
+                        onEditorPresented: actions.onContentEditorPresented,
+                        onCrop: actions.onCropMedia,
+                        onDelete: actions.onDelete
+                    )
                 } else {
                     linkEditor
                 }

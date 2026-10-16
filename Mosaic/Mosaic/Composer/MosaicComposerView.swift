@@ -55,6 +55,7 @@ struct MosaicComposerView: View {
     @State private var carouselEditRequest: CarouselEditRequest?
     @State private var editedCarouselID: ComposerBlockID?
     @State private var socialEditRequest: SocialEditRequest?
+    @State private var contentEditBlockID: ComposerBlockID?
     @State private var showsBackgroundEditor = false
     @State private var dragScrollRelay = ComposerDragScrollRelay()
     @State private var composerSpace = UUID().uuidString
@@ -722,7 +723,7 @@ struct MosaicComposerView: View {
                 )
                 .modifier(
                     ViewingMediaTapModifier(
-                        isEnabled: chrome.isViewing && (block.kind == .media || isFolder(block.kind) || block.kind == .social || block.kind == .scrapbook),
+                        isEnabled: chrome.isViewing && (block.kind == .media || isFolder(block.kind) || block.kind == .social || block.kind == .scrapbook || block.isContent),
                         onTap: { handleViewingTap(on: block) }
                     )
                 )
@@ -875,7 +876,13 @@ struct MosaicComposerView: View {
             onEditMemberSocial: { beginSocialEdit($0) },
             onOpenMemberSocial: { openSocialLink($0) },
             onReplaceMedia: chrome.isViewing || chrome.isVisiting ? nil : { replaceMedia(block.id) },
-            onReplaceMemberMedia: chrome.isViewing || chrome.isVisiting ? nil : { replaceMedia($0) }
+            onReplaceMemberMedia: chrome.isViewing || chrome.isVisiting ? nil : { replaceMedia($0) },
+            opensContentEditor: contentEditBlockID == block.id,
+            onContentEditorPresented: {
+                if contentEditBlockID == block.id {
+                    contentEditBlockID = nil
+                }
+            }
         )
     }
 
@@ -1467,6 +1474,7 @@ struct MosaicComposerView: View {
             selectedBlockID = block.id
             editingBlockID = nil
             focusedTextBlockID = nil
+            contentEditBlockID = block.id
         } else if isTap, block.kind == .carousel, !iconAlreadyHandled {
             selectedBlockID = block.id
             styleMenuBlockID = nil
@@ -1884,6 +1892,10 @@ struct MosaicComposerView: View {
             openPursuit(block)
         } else if block.kind == .social {
             openSocialLink(block)
+        } else if block.isContent {
+            if let target = ComposerContentPlatform.parse(block.linkURL ?? "") {
+                openURL(target.url)
+            }
         } else if block.kind == .scrapbook {
             openScrapbook(block)
         }

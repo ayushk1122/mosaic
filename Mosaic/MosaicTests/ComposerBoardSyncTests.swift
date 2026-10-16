@@ -791,6 +791,15 @@ struct ComposerBoardSyncTests {
         #expect(ComposerMediaScale.videoMilliseconds(seconds: 3.2) == 3200)
         #expect(ComposerMediaScale.videoMilliseconds(seconds: 15) == nil)
 
+        // Undecodable bytes still produce an upload payload so sync can publish the original.
+        let raw = Data("not-a-real-image".utf8)
+        #expect(ComposerMediaPreparer.photo(original: raw, contentType: "image/jpeg") == nil)
+        let payloads = ComposerMediaPreparer.photoPayloads(from: raw)
+        #expect(payloads.count == 1)
+        #expect(payloads[0].displayJPEG == nil)
+        #expect(payloads[0].original == raw)
+        #expect(ComposerMediaKind.contentType(forFileData: Data([0xFF, 0xD8, 0xFF, 0xE0])) == "image/jpeg")
+
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         let mediaID = store.addBlock(.media, to: nil)
         var media = try #require(store.block(with: mediaID, in: nil))

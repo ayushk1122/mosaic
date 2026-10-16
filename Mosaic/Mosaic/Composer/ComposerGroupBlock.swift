@@ -114,6 +114,7 @@ struct ComposerGroupCanvasBlock: View {
     @FocusState private var childFocus: ComposerBlockID?
     @State private var editingMemberID: ComposerBlockID?
     @State private var activeMemberID: ComposerBlockID?
+    @State private var contentEditMemberID: ComposerBlockID?
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
 
     private var baseWidth: CGFloat { max(CGFloat(block.groupWidth), 1) }
@@ -218,7 +219,13 @@ struct ComposerGroupCanvasBlock: View {
                 onEditMemberCarousel: { _ in },
                 onEditMemberSocial: { _ in },
                 onOpenMemberSocial: { _ in },
-                onReplaceMedia: onReplaceMedia.map { replace in { replace(id) } }
+                onReplaceMedia: onReplaceMedia.map { replace in { replace(id) } },
+                opensContentEditor: contentEditMemberID == id,
+                onContentEditorPresented: {
+                    if contentEditMemberID == id {
+                        contentEditMemberID = nil
+                    }
+                }
             ),
             showsMediaMenu: mediaMenuBlockID == id,
             showsPursuitPencil: memberActive && (member.kind == .pursuit || member.kind == .node),
@@ -261,6 +268,9 @@ struct ComposerGroupCanvasBlock: View {
         switch member.kind {
         case .text, .heading, .list, .link:
             activate(member.id)
+            if member.isContent, !isViewing, !isLifted {
+                contentEditMemberID = member.id
+            }
         case .pursuit, .node:
             onOpenFolder(member)
         case .scrapbook:

@@ -146,7 +146,13 @@ struct MosaicTabShell: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, !downloads.isLoading { downloadAttempt += 1 }
+            if phase == .active {
+                if !downloads.isLoading { downloadAttempt += 1 }
+                // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
+                if let account, remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
+                    remoteSync.schedule(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+                }
+            }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let failure = downloads.failure, !downloads.isLoading {

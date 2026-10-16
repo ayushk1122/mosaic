@@ -140,6 +140,8 @@ struct ScrapbookBookView: View {
                 .font(.system(.headline, design: .serif))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             TextField(
                 "Scrapbook",
@@ -155,7 +157,8 @@ struct ScrapbookBookView: View {
             .font(.system(.headline, design: .serif))
             .foregroundStyle(.white)
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Scrapbook title")
         }
     }
