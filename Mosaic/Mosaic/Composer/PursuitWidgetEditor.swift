@@ -437,6 +437,8 @@ struct PursuitWidgetEditor: View {
             selectedTextID: selectedTextID,
             onSelectText: { id in
                 panel = .text(id)
+                typingTextID = id
+                nameTyping = false
             },
             showsField: false,
             focusBlockID: $nameFocus,
@@ -454,6 +456,8 @@ struct PursuitWidgetEditor: View {
             editingTextID: typingTextID,
             onSelectName: {
                 panel = .name
+                nameTyping = true
+                typingTextID = nil
             },
             activeDrag: textDragVisual,
             textDrag: { id, travel, originX, originY in
@@ -840,14 +844,15 @@ struct PursuitWidgetEditor: View {
                         }
                     }
                 } else if distance < 12, elapsed < 0.32 {
+                    // First tap opens the style tools and the keyboard together.
                     if id == PursuitTextDrag.nameID {
-                        typingTextID = nil
                         panel = .name
                         nameTyping = true
+                        typingTextID = nil
                     } else {
-                        nameTyping = false
                         panel = .text(id)
                         typingTextID = id
+                        nameTyping = false
                     }
                 }
             }
