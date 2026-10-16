@@ -169,7 +169,8 @@ struct ComposerStoreTests {
     @Test
     func addMenuSearchFiltersOptions() {
         let all = BlockMenuOption.menuOptions(matching: "")
-        #expect(all.count == BlockMenuOption.allCases.count)
+        #expect(all.count == BlockMenuOption.allCases.count - 1)
+        #expect(!all.contains(.link))
 
         let mediaOnly = BlockMenuOption.menuOptions(matching: "media")
         #expect(mediaOnly == [.media])
@@ -178,8 +179,9 @@ struct ComposerStoreTests {
         #expect(none.isEmpty)
 
         let pursuitPage = BlockMenuOption.menuOptions(matching: "", includingPursuit: false)
-        #expect(pursuitPage.count == BlockMenuOption.allCases.count - 1)
+        #expect(pursuitPage.count == BlockMenuOption.allCases.count - 2)
         #expect(!pursuitPage.contains(.pursuit))
+        #expect(!pursuitPage.contains(.link))
         #expect(pursuitPage.contains(.carousel))
         #expect(pursuitPage.contains(.calendar))
 
@@ -194,6 +196,7 @@ struct ComposerStoreTests {
         #expect(!mosaicMenu.contains(.graph))
         #expect(!mosaicMenu.contains(.node))
         #expect(!mosaicMenu.contains(.table))
+        #expect(!mosaicMenu.contains(.link))
         #expect(mosaicMenu.contains(.pursuit))
         #expect(mosaicMenu.contains(.list))
         #expect(mosaicMenu.contains(.tabs))
@@ -228,6 +231,9 @@ struct ComposerStoreTests {
         let carousel = BlockMenuOption.menuOptions(matching: "carosoul")
         #expect(carousel == [.carousel])
 
+        let linkSearch = BlockMenuOption.menuOptions(matching: "link")
+        #expect(linkSearch.isEmpty)
+
         let grouped = BlockMenuOption.menuOptions(matching: "group")
         #expect(grouped == [.group])
         let social = BlockMenuOption.menuOptions(matching: "social")
@@ -236,6 +242,45 @@ struct ComposerStoreTests {
         #expect(instagram == [.social, .content])
         #expect(mosaicMenu.contains(.social))
         #expect(pursuitPage.contains(.social))
+
+        let journalMenu = BlockMenuOption.menuOptions(
+            matching: "",
+            includingPursuit: false,
+            includingGraph: false,
+            includingNode: false,
+            includingScrapbook: false,
+            includingTabs: false,
+            includingBanner: false,
+            includingTable: false,
+            includingCarousel: false,
+            includingBackground: false
+        )
+        #expect(Set(journalMenu) == [
+            .text, .media, .group, .social, .content, .list, .heading, .calendar
+        ])
+    }
+
+    @Test
+    func pageEdgeClampKeepsFramesInsideThePaper() {
+        let moved = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: 80, height: 200),
+            frameMinX: 40,
+            frameWidth: 200,
+            viewportWidth: 320,
+            frameMinY: 40,
+            frameHeight: 200,
+            viewportHeight: 400
+        )
+        #expect(moved.width == 76)
+        #expect(moved.height == 156)
+
+        let origin = ComposerTabEdge.clampedOrigin(
+            CGPoint(x: 280, y: 360),
+            size: CGSize(width: 200, height: 200),
+            viewportWidth: 320,
+            viewportHeight: 400
+        )
+        #expect(origin == CGPoint(x: 116, y: 196))
     }
 
     @Test
@@ -249,6 +294,45 @@ struct ComposerStoreTests {
         #expect(ComposerSocialPlatform.twitter.profileURL(from: "ada")?.absoluteString == "https://twitter.com/ada")
         #expect(ComposerSocialPlatform.youtube.profileURL(from: "ada")?.absoluteString == "https://www.youtube.com/@ada")
         #expect(ComposerSocialPlatform.twitch.profileURL(from: "ada")?.absoluteString == "https://www.twitch.tv/ada")
+        #expect(ComposerSocialPlatform.spotify.profileURL(from: "ada")?.absoluteString == "https://open.spotify.com/user/ada")
+        #expect(
+            ComposerSocialPlatform.spotify.profileURL(from: "https://open.spotify.com/user/abc123?si=xyz")?
+                .absoluteString == "https://open.spotify.com/user/abc123"
+        )
+        #expect(ComposerSocialPlatform.spotify.profileURL(from: "https://open.spotify.com/artist/abc123") == nil)
+        #expect(ComposerSocialPlatform.spotify.handle(from: "https://open.spotify.com/user/abc123") == "Spotify")
+        #expect(ComposerSocialPlatform.appleMusic.profileURL(from: "ada")?.absoluteString == "https://music.apple.com/profile/ada")
+        #expect(
+            ComposerSocialPlatform.appleMusic.profileURL(from: "https://music.apple.com/us/profile/ada")?
+                .absoluteString == "https://music.apple.com/us/profile/ada"
+        )
+        #expect(ComposerSocialPlatform.appleMusic.profileURL(from: "https://music.apple.com/us/artist/x/1") == nil)
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "dj-ada")?.absoluteString == "https://soundcloud.com/dj-ada")
+        #expect(
+            ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/dj-ada")?
+                .absoluteString == "https://soundcloud.com/dj-ada"
+        )
+        #expect(
+            ComposerSocialPlatform.soundcloud.profileURL(from: "https://m.soundcloud.com/dj-ada")?
+                .absoluteString == "https://soundcloud.com/dj-ada"
+        )
+        #expect(
+            ComposerSocialPlatform.soundcloud.profileURL(from: "https://on.soundcloud.com/WIad4iCKWBgkct046F")?
+                .absoluteString == "https://on.soundcloud.com/WIad4iCKWBgkct046F"
+        )
+        #expect(
+            ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/dj-ada/tracks")?
+                .absoluteString == "https://soundcloud.com/dj-ada"
+        )
+        #expect(
+            ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/dj-ada/sets")?
+                .absoluteString == "https://soundcloud.com/dj-ada"
+        )
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/dj-ada/track") == nil)
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/dj-ada/sets/mix") == nil)
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "discover") == nil)
+        #expect(ComposerSocialPlatform.soundcloud.handle(from: "dj-ada") == "@dj-ada")
+        #expect(ComposerSocialPlatform.soundcloud.handle(from: "https://on.soundcloud.com/WIad4iCKWBgkct046F") == "SoundCloud")
         #expect(ComposerSocialPlatform.instagram.profileURL(from: "https://instagram.com/ada/")?.absoluteString == "https://instagram.com/ada/")
         #expect(ComposerSocialPlatform.instagram.profileURL(from: "  ") == nil)
     }
@@ -260,11 +344,17 @@ struct ComposerStoreTests {
         let youtube = coloredPixelCount(UIImage(named: ComposerSocialPlatform.youtube.assetName) ?? UIImage())
         let twitch = coloredPixelCount(UIImage(named: ComposerSocialPlatform.twitch.assetName) ?? UIImage())
         let tiktok = coloredPixelCount(UIImage(named: ComposerSocialPlatform.tiktok.assetName) ?? UIImage())
+        let spotify = coloredPixelCount(UIImage(named: ComposerSocialPlatform.spotify.assetName) ?? UIImage())
+        let appleMusic = coloredPixelCount(UIImage(named: ComposerSocialPlatform.appleMusic.assetName) ?? UIImage())
+        let soundcloud = coloredPixelCount(UIImage(named: ComposerSocialPlatform.soundcloud.assetName) ?? UIImage())
         #expect(instagram > 20, "instagram \(instagram)")
         #expect(twitter > 20, "twitter \(twitter)")
         #expect(youtube > 20, "youtube \(youtube)")
         #expect(twitch > 20, "twitch \(twitch)")
         #expect(tiktok > 20, "tiktok \(tiktok)")
+        #expect(spotify > 20, "spotify \(spotify)")
+        #expect(appleMusic > 20, "appleMusic \(appleMusic)")
+        #expect(soundcloud > 20, "soundcloud \(soundcloud)")
     }
 
     @Test
@@ -558,6 +648,107 @@ struct ComposerStoreTests {
         store.deleteBlock(nodeBlockID, in: pursuitID)
         #expect(store.pursuit(for: documentID) == nil)
         #expect(store.blocks(for: pursuitID).isEmpty)
+    }
+
+    @Test
+    func copyPastesAFolderWithTheDestinationRole() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuitBlockID = store.addBlock(.pursuit, to: nil)
+        let pursuitID = try #require(store.block(with: pursuitBlockID, in: nil)?.pursuitID)
+        let nodeBlockID = store.addBlock(.node, to: pursuitID)
+        let nodeDocID = try #require(store.block(with: nodeBlockID, in: pursuitID)?.pursuitID)
+
+        store.copyBlock(nodeBlockID, in: pursuitID)
+        let ontoMosaic = try #require(store.pasteClipboard(at: BlockPosition(x: 0.4, y: 0.4), in: nil))
+        let promoted = try #require(store.block(with: ontoMosaic, in: nil))
+        #expect(promoted.kind == .pursuit)
+        #expect(promoted.pursuitID != nodeDocID)
+        #expect(store.pursuit(for: try #require(promoted.pursuitID))?.role == .pursuit)
+        #expect(store.block(with: nodeBlockID, in: pursuitID)?.kind == .node)
+
+        store.copyBlock(pursuitBlockID, in: nil)
+        let intoPursuit = try #require(store.pasteClipboard(at: BlockPosition(x: 0.5, y: 0.5), in: pursuitID))
+        let demoted = try #require(store.block(with: intoPursuit, in: pursuitID))
+        #expect(demoted.kind == .node)
+        #expect(demoted.pursuitID != pursuitID)
+        #expect(store.pursuit(for: try #require(demoted.pursuitID))?.role == .node)
+        #expect(store.block(with: pursuitBlockID, in: nil)?.kind == .pursuit)
+    }
+
+    @Test
+    func cutMovesAFolderAndKeepsItsIdentity() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let outerID = store.addBlock(.pursuit, to: nil)
+        let outerDoc = try #require(store.block(with: outerID, in: nil)?.pursuitID)
+        let nodeBlockID = store.addBlock(.node, to: outerDoc)
+        let nodeDoc = try #require(store.block(with: nodeBlockID, in: outerDoc)?.pursuitID)
+        _ = store.addBlock(.text, to: nodeDoc)
+
+        store.cutBlock(nodeBlockID, in: outerDoc)
+        #expect(store.blocks(for: outerDoc).isEmpty)
+        #expect(store.pursuit(for: nodeDoc) != nil)
+        #expect(store.detachedClipboardDocumentIDs.contains(nodeDoc))
+        #expect(store.clipboard?.isCut == true)
+
+        let pasted = try #require(store.pasteClipboard(at: BlockPosition(x: 0.3, y: 0.3), in: nil))
+        let moved = try #require(store.block(with: pasted, in: nil))
+        #expect(moved.id == nodeBlockID)
+        #expect(moved.kind == .pursuit)
+        #expect(moved.pursuitID == nodeDoc)
+        #expect(store.pursuit(for: nodeDoc)?.role == .pursuit)
+        #expect(store.blocks(for: nodeDoc).contains(where: { $0.kind == .text }))
+        #expect(store.detachedClipboardDocumentIDs.isEmpty)
+        #expect(store.clipboard == nil)
+
+        store.cutBlock(pasted, in: nil)
+        let nested = try #require(store.pasteClipboard(at: BlockPosition(x: 0.2, y: 0.2), in: outerDoc))
+        #expect(store.block(with: nested, in: outerDoc)?.kind == .node)
+        #expect(store.pursuit(for: nodeDoc)?.role == .node)
+        #expect(store.block(with: nested, in: outerDoc)?.pursuitID == nodeDoc)
+    }
+
+    @Test
+    func cutDocumentsStayProtectedUntilTheClipboardMovesOn() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuitBlockID = store.addBlock(.pursuit, to: nil)
+        let pursuitID = try #require(store.block(with: pursuitBlockID, in: nil)?.pursuitID)
+        store.cutBlock(pursuitBlockID, in: nil)
+        #expect(store.detachedClipboardDocumentIDs.contains(pursuitID))
+        #expect(store.pursuit(for: pursuitID) != nil)
+
+        var orphaned = store.snapshot
+        let protected = Set(store.detachedClipboardDocumentIDs.map(\.rawValue))
+        #expect(ComposerBoardSync.pruneUnreferenced(&orphaned, protecting: protected).isEmpty)
+        #expect(orphaned.pursuits.contains(where: { $0.id == pursuitID }))
+
+        let mosaicID = UUID()
+        let pursuitUUID = try #require(UUID(uuidString: pursuitID.rawValue))
+        #expect(
+            ComposerBoardSync.deadIDs(
+                live: [mosaicID],
+                remote: [mosaicID, pursuitUUID],
+                mosaicID: mosaicID,
+                protecting: [pursuitUUID]
+            ).isEmpty
+        )
+
+        store.copyBlock(store.addBlock(.text, to: nil), in: nil)
+        #expect(store.detachedClipboardDocumentIDs.isEmpty)
+        #expect(store.pursuit(for: pursuitID) == nil)
+    }
+
+    @Test
+    func folderPasteIsRefusedOnScrapbookPages() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let pursuitBlockID = store.addBlock(.pursuit, to: nil)
+        let pursuitID = try #require(store.block(with: pursuitBlockID, in: nil)?.pursuitID)
+        let scrapbookID = store.addBlock(.scrapbook, to: pursuitID)
+        let pageID = try #require(store.block(with: scrapbookID, in: pursuitID)?.scrapbookPageIDs.first)
+
+        store.copyBlock(pursuitBlockID, in: nil)
+        #expect(store.pasteClipboard(at: BlockPosition(x: 0.2, y: 0.2), in: pageID) == nil)
+        #expect(store.clipboard != nil)
+        #expect(store.blocks(for: pageID).isEmpty)
     }
 
     @Test

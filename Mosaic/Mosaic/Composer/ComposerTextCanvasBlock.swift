@@ -14,11 +14,16 @@ struct ComposerTextCanvasBlock: View {
     var showsFormatButton: Bool = true
     var onStyleMenuChange: (Bool) -> Void = { _ in }
     var onClaimFormatTap: () -> Void = {}
+    /// Hard wrap edge inside a pursuit / node widget. Board text uses the viewport instead.
+    var maxContentWidth: CGFloat? = nil
+    /// Hard bottom edge inside a pursuit / node widget. Nil means no vertical cap.
+    var maxContentHeight: CGFloat? = nil
 
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
     @State private var styleIconFrame: CGRect = .zero
-    @State private var measured = CGSize(width: 28, height: 28)
+    @State private var unwrapped = CGSize(width: 28, height: 28)
+    @State private var wrapped = CGSize(width: 28, height: 28)
     @State private var claimedFormatTap = false
 
     @Environment(\.composerViewportWidth) private var viewportWidth
@@ -33,7 +38,7 @@ struct ComposerTextCanvasBlock: View {
         ComposerChromePlacement.resolve(
             itemFrame: itemFrame,
             viewportWidth: viewportWidth,
-            contentWidth: measured.width
+            contentWidth: fitted.width
         )
     }
 
@@ -46,23 +51,64 @@ struct ComposerTextCanvasBlock: View {
         return block.style.displayFont(at: size)
     }
 
+    /// Available width before the hard right edge. Text wraps here instead of growing sideways.
+    private var wrapWidth: CGFloat {
+        if let maxContentWidth, maxContentWidth > 8 {
+            return maxContentWidth
+        }
+        let room = viewportWidth - itemFrame.minX - 28
+        if viewportWidth > 1, room > 48 { return room }
+        return 280
+    }
+
+    private var heightCap: CGFloat {
+        if let maxContentHeight, maxContentHeight > 8 {
+            return maxContentHeight
+        }
+        return .greatestFiniteMagnitude
+    }
+
+    private var fitted: CGSize {
+        let raw: CGSize
+        if unwrapped.width <= wrapWidth + 0.5 {
+            raw = CGSize(width: max(unwrapped.width, 8), height: max(unwrapped.height, 8))
+        } else {
+            raw = CGSize(width: wrapWidth, height: max(wrapped.height, 8))
+        }
+        return CGSize(width: raw.width, height: min(raw.height, heightCap))
+    }
+
     var body: some View {
         textContent
             .background(alignment: .topLeading) {
-                Text(sizingText)
-                    .font(activeFont)
-                    .multilineTextAlignment(block.style.alignment.alignment)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .hidden()
-                    .allowsHitTesting(false)
-                    .onGeometryChange(for: CGSize.self) { proxy in
-                        proxy.size
-                    } action: { size in
-                        let next = CGSize(width: max(size.width, 8), height: max(size.height, 8))
-                        guard abs(next.width - measured.width) > 0.5 || abs(next.height - measured.height) > 0.5 else { return }
-                        measured = next
-                    }
+                ZStack(alignment: .topLeading) {
+                    measureLabel(wrapping: false)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .hidden()
+                        .allowsHitTesting(false)
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            let next = CGSize(width: max(size.width, 8), height: max(size.height, 8))
+                            guard abs(next.width - unwrapped.width) > 0.5 || abs(next.height - unwrapped.height) > 0.5 else { return }
+                            unwrapped = next
+                        }
+                    measureLabel(wrapping: true)
+                        .frame(width: wrapWidth, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .allowsHitTesting(false)
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            let next = CGSize(width: max(size.width, 8), height: max(size.height, 8))
+                            guard abs(next.width - wrapped.width) > 0.5 || abs(next.height - wrapped.height) > 0.5 else { return }
+                            wrapped = next
+                        }
+                }
             }
+            .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
+            .clipped()
             .overlay(alignment: .topLeading) {
                 if showsFormatButton, isSelected, !isRelocating, !isLifted {
                     formatIconStack
@@ -98,6 +144,14 @@ struct ComposerTextCanvasBlock: View {
                 focusBlockID.wrappedValue = block.id
             }
         }
+    }
+
+    private func measureLabel(wrapping: Bool) -> some View {
+        Text(sizingText)
+            .font(activeFont)
+            .multilineTextAlignment(block.style.alignment.alignment)
+            .fixedSize(horizontal: !wrapping, vertical: true)
+            .frame(maxWidth: wrapping ? .infinity : nil, alignment: .topLeading)
     }
 
     private var formatIconStack: some View {
@@ -170,7 +224,7 @@ struct ComposerTextCanvasBlock: View {
             .multilineTextAlignment(block.style.alignment.alignment)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.95 : 0), radius: showsMoveAffordance ? 2 : 0)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.55 : 0), radius: showsMoveAffordance ? 10 : 0)
-            .frame(width: measured.width, height: measured.height, alignment: .topLeading)
+            .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
             .contentShape(Rectangle())
     }
 
@@ -191,7 +245,7 @@ struct ComposerTextCanvasBlock: View {
         .submitLabel(.done)
         .onSubmit(onCommit)
         .disabled(isRelocating)
-        .frame(width: measured.width, height: measured.height, alignment: .topLeading)
+        .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
     }
 
 }

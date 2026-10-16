@@ -94,9 +94,13 @@ enum ComposerBoardSync {
     }
 
     /// Drops Pursuit, node, and page rows that no board still points to. Returns the removed ids.
+    /// `protecting` keeps cut-but-not-pasted documents alive until the clipboard moves on.
     @discardableResult
-    static func pruneUnreferenced(_ snapshot: inout ComposerSnapshot) -> [ComposerDocumentID] {
-        let keep = referencedIDs(in: snapshot)
+    static func pruneUnreferenced(
+        _ snapshot: inout ComposerSnapshot,
+        protecting: Set<String> = []
+    ) -> [ComposerDocumentID] {
+        let keep = referencedIDs(in: snapshot).union(protecting)
         let removed = snapshot.pursuits.filter { !keep.contains($0.id.rawValue) }.map(\.id)
         guard !removed.isEmpty else { return [] }
         let removedKeys = Set(removed.map(\.rawValue))
@@ -105,8 +109,14 @@ enum ComposerBoardSync {
     }
 
     /// Remote rows the phone no longer owns. The Mosaic id is never listed.
-    static func deadIDs(live: [UUID], remote: [UUID], mosaicID: UUID) -> [UUID] {
-        let liveSet = Set(live)
+    /// `protecting` keeps cut-but-not-pasted documents from being deleted mid-move.
+    static func deadIDs(
+        live: [UUID],
+        remote: [UUID],
+        mosaicID: UUID,
+        protecting: Set<UUID> = []
+    ) -> [UUID] {
+        let liveSet = Set(live).union(protecting)
         return remote.filter { $0 != mosaicID && !liveSet.contains($0) }
     }
 

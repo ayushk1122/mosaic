@@ -53,10 +53,11 @@ enum ComposerResizeCorner: Equatable, Hashable, CaseIterable, Identifiable {
         )
     }
 
-    /// Where the finger grabs this corner. Pulled slightly inward so the handle sits on the photo, over the dot.
-    func grabPoint(in rect: CGRect) -> CGPoint {
+    /// Where the finger grabs this corner.
+    /// Positive `pull` moves inward (good for photos). Negative moves outward so
+    /// edge controls on tables and similar blocks stay tappable.
+    func grabPoint(in rect: CGRect, pull: CGFloat = 18) -> CGPoint {
         let dot = point(in: rect)
-        let pull: CGFloat = 18
         switch self {
         case .topLeft: return CGPoint(x: dot.x + pull, y: dot.y + pull)
         case .topRight: return CGPoint(x: dot.x - pull, y: dot.y + pull)
@@ -125,6 +126,9 @@ struct ComposerResizeChrome: View {
     var scaleX: CGFloat
     var scaleY: CGFloat
     var anchor: UnitPoint
+    /// Positive pulls the grab inward over the content; negative keeps edge controls free.
+    var grabPull: CGFloat = 18
+    var catcherSide: CGFloat = 52
     var onChanged: (ComposerResizeCorner, CGSize) -> Void
     var onEnded: (ComposerResizeCorner, CGSize) -> Void
 
@@ -134,6 +138,7 @@ struct ComposerResizeChrome: View {
     var body: some View {
         let bounds = CGRect(origin: .zero, size: layout)
         let rect = Self.liveRect(layout: layout, scaleX: scaleX, scaleY: scaleY, anchor: anchor)
+        let hitSide = max(catcherSide, 1)
         ZStack {
             Rectangle()
                 .stroke(Color.white.opacity(0.9), lineWidth: 1.5)
@@ -151,8 +156,8 @@ struct ComposerResizeChrome: View {
                     onChanged: { onChanged(corner, $0) },
                     onEnded: { onEnded(corner, $0) }
                 )
-                .frame(width: 52, height: 52)
-                .position(corner.grabPoint(in: bounds))
+                .frame(width: hitSide, height: hitSide)
+                .position(corner.grabPoint(in: bounds, pull: grabPull))
                 .onGeometryChange(for: CGRect.self) { item in
                     item.frame(in: .named(composerSpace))
                 } action: { frame in
@@ -172,7 +177,7 @@ struct ComposerResizeChrome: View {
             }
         }
         .frame(width: max(layout.width, 1), height: max(layout.height, 1))
-        .contentShape(ComposerCornerHitShape())
+        .contentShape(ComposerCornerHitShape(pull: grabPull, side: hitSide))
         .preference(key: ComposerResizeCornerFrameKey.self, value: [blockID: cornerFrames])
         .accessibilityElement(children: .contain)
     }
@@ -188,13 +193,17 @@ struct ComposerResizeChrome: View {
     }
 }
 
-/// Hit shape for the four corner handles. The rest of the box passes touches through to the photo.
+/// Hit shape for the four corner handles. The rest of the box passes touches through to the content.
 private struct ComposerCornerHitShape: Shape {
+    var pull: CGFloat = 18
+    var side: CGFloat = 52
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
+        let half = side / 2
         for corner in ComposerResizeCorner.allCases {
-            let center = corner.grabPoint(in: rect)
-            path.addRect(CGRect(x: center.x - 28, y: center.y - 28, width: 56, height: 56))
+            let center = corner.grabPoint(in: rect, pull: pull)
+            path.addRect(CGRect(x: center.x - half, y: center.y - half, width: side, height: side))
         }
         return path
     }

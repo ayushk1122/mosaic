@@ -15,15 +15,44 @@ struct ComposerMediaUploadPayload: Equatable, Sendable {
 }
 
 enum ComposerMediaPreparer {
+    /// Raw camera rolls can be huge; above this we upload a recompressed JPEG so Storage accepts it.
+    static let largePhotoBytes = 3_500_000
+
     static func prepare(fileAt url: URL) async -> ComposerMediaUploadPayload? {
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
         if ComposerMediaKind.isVideo(url.lastPathComponent) {
             return await video(originalURL: url, original: data)
         }
-        return photo(original: data, contentType: ComposerMediaKind.contentType(for: url.lastPathComponent))
+        return photoPayloads(from: data).first
     }
 
-    static func photo(original: Data, contentType: String) -> ComposerMediaUploadPayload? {
+    /// Best payload first, then smaller / simpler fallbacks if Storage rejects the first attempt.
+    static func photoPayloads(from data: Data) -> [ComposerMediaUploadPayload] {
+        var payloads: [ComposerMediaUploadPayload] = []
+        let sniffed = ComposerMediaKind.contentType(forFileData: data)
+        let needsJPEGOriginal = sniffed != "image/jpeg" || data.count > largePhotoBytes
+        // HEIC-as-.jpg and very large camera files are the usual sync failures for visitors.
+        if needsJPEGOriginal, let compact = photo(original: data, contentType: "image/jpeg", replaceOriginalWithDisplay: true) {
+            payloads.append(compact)
+        }
+        if let full = photo(original: data, contentType: sniffed, replaceOriginalWithDisplay: false) {
+            payloads.append(full)
+        }
+        if let compact = photo(original: data, contentType: "image/jpeg", replaceOriginalWithDisplay: true),
+           payloads.contains(where: { $0.original == compact.original }) == false {
+            payloads.append(compact)
+        }
+        if let raw = originalOnlyPhoto(original: data, contentType: sniffed) {
+            payloads.append(raw)
+        }
+        return payloads
+    }
+
+    static func photo(
+        original: Data,
+        contentType: String,
+        replaceOriginalWithDisplay: Bool = false
+    ) -> ComposerMediaUploadPayload? {
         guard let image = UIImage(data: original) else { return nil }
         let pixelWidth = Int((image.size.width * image.scale).rounded())
         let pixelHeight = Int((image.size.height * image.scale).rounded())
@@ -41,15 +70,33 @@ enum ComposerMediaPreparer {
         guard let display = jpeg(image, width: displaySize.width, height: displaySize.height, quality: 0.92),
               let thumb = jpeg(image, width: thumbSize.width, height: thumbSize.height, quality: 0.8)
         else { return nil }
+        let uploadOriginal = replaceOriginalWithDisplay ? display : original
+        let uploadType = replaceOriginalWithDisplay ? "image/jpeg" : contentType
+        return ComposerMediaUploadPayload(
+            kind: "photo",
+            status: "ready",
+            contentType: uploadType,
+            original: uploadOriginal,
+            displayJPEG: display,
+            thumbJPEG: thumb,
+            width: pixelWidth,
+            height: pixelHeight,
+            durationMilliseconds: nil
+        )
+    }
+
+    /// Last-resort payload when the image cannot be decoded or resized on device.
+    static func originalOnlyPhoto(original: Data, contentType: String) -> ComposerMediaUploadPayload? {
+        guard !original.isEmpty else { return nil }
         return ComposerMediaUploadPayload(
             kind: "photo",
             status: "ready",
             contentType: contentType,
             original: original,
-            displayJPEG: display,
-            thumbJPEG: thumb,
-            width: pixelWidth,
-            height: pixelHeight,
+            displayJPEG: nil,
+            thumbJPEG: nil,
+            width: nil,
+            height: nil,
             durationMilliseconds: nil
         )
     }
@@ -150,11 +197,37 @@ enum ComposerMediaKind {
             "application/octet-stream"
         }
     }
+
+    /// Sniff common photo headers when the on-disk extension is wrong (e.g. HEIC saved as .jpg).
+    static func contentType(forFileData data: Data) -> String {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        if data.count >= 12 {
+            let ftyp = data[4..<8]
+            if ftyp.elementsEqual([0x66, 0x74, 0x79, 0x70]) { // "ftyp"
+                let brand = data[8..<12]
+                if brand.elementsEqual([0x68, 0x65, 0x69, 0x63]) // heic
+                    || brand.elementsEqual([0x68, 0x65, 0x69, 0x66]) // heif
+                    || brand.elementsEqual([0x6D, 0x69, 0x66, 0x31]) // mif1
+                    || brand.elementsEqual([0x6D, 0x73, 0x66, 0x31]) // msf1
+                {
+                    return "image/heic"
+                }
+            }
+        }
+        return "application/octet-stream"
+    }
 }
 
 struct SupabaseMediaSync: Sendable {
     var config: SupabaseSyncConfig
-    var session: URLSession = .shared
+    var session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 300
+        return URLSession(configuration: configuration)
+    }()
 
     func upload(
         prepared: ComposerMediaUploadPayload,

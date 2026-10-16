@@ -22,8 +22,14 @@ struct ComposerTableCanvasBlock: View {
         case cell(String, Int)
     }
 
+    /// Chrome stays laid out while selected so a long-press drag does not jump size.
+    private var showsChrome: Bool {
+        isSelected && !isViewing
+    }
+
+    /// Interactive editing only while the table is idle (not lifted / relocating).
     private var showsEdits: Bool {
-        isSelected && !isViewing && !isLifted && !isRelocating
+        showsChrome && !isLifted && !isRelocating
     }
 
     private var metric: CGFloat {
@@ -35,19 +41,19 @@ struct ComposerTableCanvasBlock: View {
     }
 
     private var canAddColumn: Bool {
-        showsEdits && columns.count < ComposerTable.maximumColumns
+        showsChrome && columns.count < ComposerTable.maximumColumns
     }
 
     private var canRemoveColumn: Bool {
-        showsEdits && columns.count > ComposerTable.minimumColumns
+        showsChrome && columns.count > ComposerTable.minimumColumns
     }
 
     private var canAddRow: Bool {
-        showsEdits && block.tableRows.count < ComposerTable.maximumRows
+        showsChrome && block.tableRows.count < ComposerTable.maximumRows
     }
 
     private var canRemoveRow: Bool {
-        showsEdits && block.tableRows.count > ComposerTable.minimumRows
+        showsChrome && block.tableRows.count > ComposerTable.minimumRows
     }
 
     var body: some View {
@@ -71,6 +77,8 @@ struct ComposerTableCanvasBlock: View {
                         }
                     }
                     .padding(.top, 6 * metric)
+                    .opacity(showsEdits ? 1 : 0)
+                    .allowsHitTesting(showsEdits)
                 }
             }
             if canAddRow || canRemoveRow {
@@ -86,8 +94,14 @@ struct ComposerTableCanvasBlock: View {
                         }
                     }
                 }
+                .opacity(showsEdits ? 1 : 0)
+                .allowsHitTesting(showsEdits)
             }
         }
+        // Light inset so the size box hugs the table with a little breathing room.
+        // Tied to selection (not lift) so press-and-drag does not shrink the box.
+        .padding(showsChrome ? 10 * metric : 0)
+        .fixedSize(horizontal: true, vertical: true)
         .overlay {
             TablePinchCatcher(isEnabled: !isViewing && !isLifted && !isRelocating) { scale in
                 pinchScale = min(max(scale, 0.35), 4)
@@ -112,24 +126,32 @@ struct ComposerTableCanvasBlock: View {
     private var titleView: some View {
         let trimmed = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if editing == .title, showsEdits {
-            TextField("Add title", text: $block.text)
+            TextField("Add title", text: titleBinding)
                 .font(.system(size: 17 * metric, weight: .semibold))
                 .foregroundStyle(.white)
                 .focused($focus, equals: .title)
                 .submitLabel(.done)
-                .onSubmit { editing = nil }
-                .onAppear { focus = .title }
-        } else if !trimmed.isEmpty {
-            Text(trimmed)
+                .onSubmit {
+                    editing = nil
+                    focus = nil
+                }
+                .onAppear {
+                    DispatchQueue.main.async {
+                        focus = .title
+                    }
+                }
+        } else if !trimmed.isEmpty || showsChrome {
+            Text(trimmed.isEmpty ? "Add title" : trimmed)
                 .font(.system(size: 17 * metric, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.92))
+                .foregroundStyle(.white.opacity(trimmed.isEmpty ? 0.45 : 0.92))
                 .lineLimit(2)
-                .onTapGesture { begin(.title) }
-        } else if showsEdits {
-            Text("Add title")
-                .font(.system(size: 17 * metric, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
-                .onTapGesture { begin(.title) }
+                .frame(minHeight: 28 * metric, alignment: .leading)
+                .contentShape(Rectangle())
+                // Simultaneous with the board drag: short taps edit, long-press still moves.
+                .simultaneousGesture(TapGesture().onEnded { begin(.title) })
+                .allowsHitTesting(showsEdits)
+                .accessibilityLabel(trimmed.isEmpty ? "Add title" : trimmed)
+                .accessibilityAddTraits(.isButton)
         }
     }
 
@@ -236,9 +258,11 @@ struct ComposerTableCanvasBlock: View {
             .foregroundStyle(.white.opacity(0.9))
             .frame(width: 28 * metric, height: 28 * metric)
             .background(Color.white.opacity(0.14), in: Circle())
+            .padding(4 * metric)
             .contentShape(Circle())
-            .highPriorityGesture(TapGesture().onEnded {
+            .simultaneousGesture(TapGesture().onEnded {
                 editing = nil
+                focus = nil
                 action()
             })
             .accessibilityLabel(label)
@@ -250,7 +274,16 @@ struct ComposerTableCanvasBlock: View {
         onActivate()
         guard showsEdits else { return }
         editing = target
-        focus = target
+        DispatchQueue.main.async {
+            focus = target
+        }
+    }
+
+    private var titleBinding: Binding<String> {
+        Binding(
+            get: { block.text },
+            set: { block.text = $0 }
+        )
     }
 
     private func headerBinding(_ columnID: String) -> Binding<String> {
@@ -320,7 +353,7 @@ struct ComposerTableCanvasBlock: View {
                     .padding(.vertical, 6 * metric)
                     .background(Color.white.opacity(0.14), in: Capsule())
                     .contentShape(Capsule())
-                    .highPriorityGesture(TapGesture().onEnded {
+                    .simultaneousGesture(TapGesture().onEnded {
                         guard entries.count < ComposerTable.maximumEntries else { return }
                         editing = nil
                         store.startTableEntry(on: block.id, in: documentID)
@@ -337,7 +370,7 @@ struct ComposerTableCanvasBlock: View {
             .foregroundStyle(.white.opacity(enabled ? 0.9 : 0.28))
             .frame(width: 28 * metric, height: 28 * metric)
             .contentShape(Rectangle())
-            .highPriorityGesture(TapGesture().onEnded {
+            .simultaneousGesture(TapGesture().onEnded {
                 guard enabled else { return }
                 editing = nil
                 action()

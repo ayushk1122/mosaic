@@ -12,7 +12,7 @@ extension ComposerBlock {
 }
 
 enum ComposerContentPlatform: String, CaseIterable, Identifiable {
-    case youtube, instagram, tiktok, twitch
+    case youtube, instagram, tiktok, twitch, spotify, appleMusic, soundcloud
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -20,11 +20,15 @@ enum ComposerContentPlatform: String, CaseIterable, Identifiable {
         case .instagram: "Instagram"
         case .tiktok: "TikTok"
         case .twitch: "Twitch"
+        case .spotify: "Spotify"
+        case .appleMusic: "Apple Music"
+        case .soundcloud: "SoundCloud"
         }
     }
 
     /// A saved crop sets the card's shape. Otherwise YouTube and Twitch stay 16:9 so letterboxed
-    /// thumbnails crop cleanly, and vertical platforms take the cover's own shape so the whole preview shows.
+    /// thumbnails crop cleanly, music platforms stay square for artwork, and vertical platforms take
+    /// the cover's own shape so the whole preview shows.
     func cardSize(cover: CGSize?, cropAspect: Double = 0) -> CGSize {
         let aspect: CGFloat
         if cropAspect > 0.05 {
@@ -33,6 +37,8 @@ enum ComposerContentPlatform: String, CaseIterable, Identifiable {
             switch self {
             case .youtube, .twitch:
                 aspect = 16 / 9
+            case .spotify, .appleMusic, .soundcloud:
+                aspect = 1
             case .instagram, .tiktok:
                 if let cover, cover.width > 0, cover.height > 0 {
                     aspect = min(max(cover.width / cover.height, 9 / 16), 16 / 9)
@@ -52,7 +58,7 @@ enum ComposerContentPlatform: String, CaseIterable, Identifiable {
               parts.user == nil, parts.password == nil, parts.port == nil,
               let rawHost = parts.host?.lowercased() else { return nil }
         let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
-        let path = parts.path.split(separator: "/").map(String.init)
+        var path = parts.path.split(separator: "/").map(String.init)
         let platform: Self
         switch host {
         case "youtu.be":
@@ -79,13 +85,68 @@ enum ComposerContentPlatform: String, CaseIterable, Identifiable {
             guard (path.count == 2 && path[0] == "videos")
                     || (path.count == 3 && path[1] == "clip") else { return nil }
             platform = .twitch
+        case "open.spotify.com":
+            // Shared links often include `intl-en/` (or similar) before the resource type.
+            if path.first?.hasPrefix("intl-") == true { path.removeFirst() }
+            guard path.count == 2,
+                  ["track", "album", "playlist", "artist", "episode", "show", "audiobook"].contains(path[0]),
+                  !path[1].isEmpty else { return nil }
+            platform = .spotify
+            parts.host = "open.spotify.com"
+            parts.path = "/\(path[0])/\(path[1])"
+            parts.query = nil
+        case "music.apple.com":
+            guard let cleaned = appleMusicContentPath(path) else { return nil }
+            platform = .appleMusic
+            parts.host = "music.apple.com"
+            parts.path = cleaned
+            // Keep `i=` so album deep-links to a song still open the right track.
+            if let song = parts.queryItems?.first(where: { $0.name == "i" && !($0.value ?? "").isEmpty }) {
+                parts.queryItems = [song]
+            } else {
+                parts.query = nil
+            }
+        case "soundcloud.com", "m.soundcloud.com":
+            guard let cleaned = soundcloudContentPath(path) else { return nil }
+            platform = .soundcloud
+            parts.host = "soundcloud.com"
+            parts.path = cleaned
+            parts.query = nil
         default: return nil
         }
         parts.scheme = "https"
-        parts.host = rawHost
+        if platform != .spotify && platform != .appleMusic && platform != .soundcloud {
+            parts.host = rawHost
+        }
         parts.fragment = nil
         guard let url = parts.url else { return nil }
         return (platform, url)
+    }
+
+    /// Artists, songs, albums, playlists, videos, and stations — not listener profiles.
+    private static func appleMusicContentPath(_ path: [String]) -> String? {
+        let hasStorefront = path.first?.count == 2 && path.first?.allSatisfy(\.isLetter) == true
+        let kindIndex = hasStorefront ? 1 : 0
+        guard path.count > kindIndex else { return nil }
+        let kind = path[kindIndex]
+        guard ["artist", "song", "album", "playlist", "music-video", "station", "compilation"].contains(kind)
+        else { return nil }
+        // `/us/artist/name/id` (4) or `/artist/name/id` (3)
+        let minimum = hasStorefront ? 4 : 3
+        guard path.count >= minimum, !(path.last ?? "").isEmpty else { return nil }
+        return "/" + path.joined(separator: "/")
+    }
+
+    /// Tracks (`/user/track`) and playlists (`/user/sets/name`) — bare profiles are Social.
+    private static func soundcloudContentPath(_ path: [String]) -> String? {
+        guard let user = path.first, ComposerSocialPlatform.isSoundCloudUsername(user) else { return nil }
+        if path.count == 3, path[1] == "sets", !path[2].isEmpty {
+            return "/\(user)/sets/\(path[2])"
+        }
+        if path.count == 2, path[1] != "sets", !path[1].isEmpty {
+            return "/\(user)/\(path[1])"
+        }
+        return nil
     }
 }
 
@@ -162,6 +223,9 @@ struct ComposerContentCard: View {
     let isViewing: Bool
     let isSelected: Bool
     let liveScale: CGFloat
+    /// Set by the board on a true tap; drag-release must not open the editor.
+    var opensEditor: Bool = false
+    var onEditorPresented: () -> Void = {}
     let onCrop: () -> Void
     let onDelete: () -> Void
     @Environment(ComposerStore.self) private var store
@@ -181,56 +245,50 @@ struct ComposerContentCard: View {
 
     var body: some View {
         let size = (block.contentPlatform ?? .youtube).cardSize(cover: image?.size, cropAspect: block.mediaFrameAspect)
-        Button {
-            if isViewing {
-                if let target = ComposerContentPlatform.parse(block.linkURL ?? "") { openURL(target.url) }
-            } else { editing = true }
-        } label: {
-            ZStack {
-                Color(white: 0.18)
-                if let image {
-                    ComposerContentCover(image: image, frame: size, framing: ComposerContentFraming(block))
-                } else if let sourceLogo {
-                    ComposerSocialMark(platform: sourceLogo, side: 44)
-                } else {
-                    Image(systemName: "link").font(.largeTitle).foregroundStyle(.white.opacity(0.6))
-                }
+        ZStack {
+            Color(white: 0.18)
+            if let image {
+                ComposerContentCover(image: image, frame: size, framing: ComposerContentFraming(block))
+            } else if let sourceLogo {
+                ComposerSocialMark(platform: sourceLogo, side: 44)
+            } else {
+                Image(systemName: "link").font(.largeTitle).foregroundStyle(.white.opacity(0.6))
             }
-            .frame(width: size.width, height: size.height)
-            .clipped()
-            .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.8)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(height: 100)
-                .allowsHitTesting(false)
-            }
-            .overlay(alignment: .bottomLeading) {
-                HStack(alignment: .center, spacing: 8) {
-                    if let sourceLogo {
-                        ComposerSocialMark(platform: sourceLogo, side: 26)
-                            .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                            .accessibilityHidden(true)
-                    }
-                    Text(block.text.isEmpty ? "Content" : block.text)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
-                }
-                .padding(12)
-                .allowsHitTesting(false)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
         }
-        .buttonStyle(.plain)
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.8)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 100)
+            .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottomLeading) {
+            HStack(alignment: .center, spacing: 8) {
+                if let sourceLogo {
+                    ComposerSocialMark(platform: sourceLogo, side: 26)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                        .accessibilityHidden(true)
+                }
+                Text(block.text.isEmpty ? "Content" : block.text)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+            }
+            .padding(12)
+            .allowsHitTesting(false)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
         .scaleEffect(cardScale, anchor: .topLeading)
         .frame(width: size.width * cardScale, height: size.height * cardScale, alignment: .topLeading)
         .accessibilityLabel("\(block.contentPlatform?.title ?? "Content"): \(block.text)")
         .accessibilityHint(isViewing ? "Opens the original post" : "Edits this content link")
+        .accessibilityAddTraits(.isButton)
         .onGeometryChange(for: CGRect.self) { proxy in
             proxy.frame(in: .named(composerSpace))
         } action: { frame in
@@ -249,6 +307,11 @@ struct ComposerContentCard: View {
             image = loaded
         }
         .onAppear { if !isViewing && (block.linkURL ?? "").isEmpty { editing = true } }
+        .onChange(of: opensEditor) { _, open in
+            guard open else { return }
+            editing = true
+            onEditorPresented()
+        }
         .sheet(isPresented: $editing, onDismiss: {
             if (block.linkURL ?? "").isEmpty { onDelete() }
         }) {
@@ -328,7 +391,7 @@ struct ComposerContentEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ComposerSocialPlatformPicker(
-                        platforms: [.instagram, .tiktok, .youtube, .twitch],
+                        platforms: [.instagram, .tiktok, .youtube, .twitch, .spotify, .appleMusic, .soundcloud],
                         platform: Binding(
                             get: { ComposerSocialPlatform(rawValue: platform.rawValue) ?? .youtube },
                             set: { if let source = ComposerContentPlatform(rawValue: $0.rawValue) { platform = source } }
@@ -336,7 +399,7 @@ struct ComposerContentEditor: View {
                     )
                     ComposerSocialLinkField(placeholder: "Paste the full content link", link: $link)
                     if !link.isEmpty && target == nil {
-                        Text("Paste the full HTTPS link to a post, video, reel, or clip—not a username.")
+                        Text(contentLinkHint(for: platform))
                             .font(.caption).foregroundStyle(.white.opacity(0.65))
                     }
                     VStack(alignment: .leading, spacing: 12) {
@@ -416,6 +479,9 @@ struct ComposerContentEditor: View {
             let postURL = target.url
             async let fullInstagramCover = target.platform == .instagram ? ComposerInstagramCover.fetch(for: postURL) : nil
             async let twitchPreview = target.platform == .twitch ? ComposerTwitchPreview.fetch(for: postURL) : nil
+            async let spotifyPreview = target.platform == .spotify ? ComposerSpotifyPreview.fetch(for: postURL) : nil
+            async let appleMusicPreview = target.platform == .appleMusic ? ComposerAppleMusicPreview.fetch(for: postURL) : nil
+            async let soundcloudPreview = target.platform == .soundcloud ? ComposerSoundCloudPreview.fetch(for: postURL) : nil
             var fetched = false
             var fetchedTitle: String?
             do {
@@ -454,6 +520,33 @@ struct ComposerContentEditor: View {
                     framing = ComposerContentFraming()
                 }
             }
+            if let spotify = await spotifyPreview {
+                guard !Task.isCancelled, link == original else { return }
+                fetched = true
+                if let spotifyTitle = spotify.title, title.isEmpty || title == fetchedTitle { title = spotifyTitle }
+                if let image = spotify.image {
+                    cover = image
+                    framing = ComposerContentFraming()
+                }
+            }
+            if let appleMusic = await appleMusicPreview {
+                guard !Task.isCancelled, link == original else { return }
+                fetched = true
+                if let appleTitle = appleMusic.title, title.isEmpty || title == fetchedTitle { title = appleTitle }
+                if let image = appleMusic.image {
+                    cover = image
+                    framing = ComposerContentFraming()
+                }
+            }
+            if let soundcloud = await soundcloudPreview {
+                guard !Task.isCancelled, link == original else { return }
+                fetched = true
+                if let cloudTitle = soundcloud.title, title.isEmpty || title == fetchedTitle { title = cloudTitle }
+                if let image = soundcloud.image {
+                    cover = image
+                    framing = ComposerContentFraming()
+                }
+            }
             if cover == nil {
                 message = fetched ? "No preview image was available. You can choose a cover photo."
                     : "Preview unavailable. You can still save the link and choose a cover photo."
@@ -467,6 +560,19 @@ struct ComposerContentEditor: View {
             framing = ComposerContentFraming()
         }
         .onDisappear { provider?.cancel() }
+    }
+
+    private func contentLinkHint(for platform: ComposerContentPlatform) -> String {
+        switch platform {
+        case .spotify:
+            "Paste a full open.spotify.com link to a song, album, playlist, artist, or podcast."
+        case .appleMusic:
+            "Paste a full music.apple.com link to a song, album, playlist, or artist—not a profile."
+        case .soundcloud:
+            "Paste a full soundcloud.com link to a track or playlist—not a profile."
+        default:
+            "Paste the full HTTPS link to a post, video, reel, or clip—not a username."
+        }
     }
 
     /// Shown at the card's real size and shape, so what you frame here is what the board shows.

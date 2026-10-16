@@ -29,6 +29,51 @@ private struct PursuitNameWeight: ViewModifier {
     }
 }
 
+private enum PursuitTextBounds {
+    static let edgeInset: CGFloat = 4
+
+    /// Room from a normalized origin to the hard right edge of the widget.
+    static func wrapWidth(x: Double, in travel: CGSize) -> CGFloat {
+        max(travel.width * (1 - CGFloat(x)) - edgeInset, 48)
+    }
+
+    /// Room from a normalized origin to the hard bottom edge of the widget.
+    static func wrapHeight(y: Double, in travel: CGSize) -> CGFloat {
+        max(travel.height * (1 - CGFloat(y)) - edgeInset, 24)
+    }
+
+    /// Keeps a top-leading box inside the widget’s hard borders.
+    static func clampedOrigin(x: Double, y: Double, size: CGSize, in travel: CGSize) -> (Double, Double) {
+        let width = max(travel.width, 1)
+        let height = max(travel.height, 1)
+        let inset = Double(edgeInset)
+        let minX = inset / Double(width)
+        let minY = inset / Double(height)
+        let maxX = max(minX, 1 - Double(max(size.width, 8) + edgeInset) / Double(width))
+        let maxY = max(minY, 1 - Double(max(size.height, 8) + edgeInset) / Double(height))
+        return (min(max(x, minX), maxX), min(max(y, minY), maxY))
+    }
+
+    /// Stops a live drag at the hard edges so the piece cannot leave the widget.
+    static func clampedDrag(
+        translation: CGSize,
+        originX: Double,
+        originY: Double,
+        size: CGSize,
+        in travel: CGSize
+    ) -> CGSize {
+        ComposerTabEdge.clampedDrag(
+            translation: translation,
+            frameMinX: CGFloat(originX) * travel.width,
+            frameWidth: max(size.width, 8),
+            viewportWidth: travel.width,
+            frameMinY: CGFloat(originY) * travel.height,
+            frameHeight: max(size.height, 8),
+            viewportHeight: travel.height
+        )
+    }
+}
+
 struct PursuitWidgetFace: View {
     @Binding var text: String
     var textX: Double
@@ -108,7 +153,9 @@ struct PursuitWidgetFace: View {
             focusBlockID: $textFocus,
             onCommit: {},
             onStyleChange: {},
-            showsFormatButton: false
+            showsFormatButton: false,
+            maxContentWidth: PursuitTextBounds.wrapWidth(x: item.wrappedValue.x, in: travel),
+            maxContentHeight: PursuitTextBounds.wrapHeight(y: item.wrappedValue.y, in: travel)
         )
         .offset(x: item.wrappedValue.x * travel.width, y: item.wrappedValue.y * travel.height)
         .opacity(lifted ? 0 : 1)
@@ -180,7 +227,9 @@ struct PursuitWidgetFace: View {
                 focusBlockID: focusBlockID,
                 onCommit: onSubmit,
                 onStyleChange: {},
-                showsFormatButton: false
+                showsFormatButton: false,
+                maxContentWidth: PursuitTextBounds.wrapWidth(x: textX, in: travel),
+                maxContentHeight: PursuitTextBounds.wrapHeight(y: textY, in: travel)
             )
             if let textDrag, !routesTextDragOutside {
                 nameText
@@ -208,6 +257,13 @@ struct PursuitWidgetFace: View {
             .focused(focusBlockID, equals: focusID)
             .submitLabel(.done)
             .onSubmit(onSubmit)
+            .frame(
+                maxWidth: PursuitTextBounds.wrapWidth(x: textX, in: travel),
+                maxHeight: PursuitTextBounds.wrapHeight(y: textY, in: travel),
+                alignment: .topLeading
+            )
+            .fixedSize(horizontal: false, vertical: true)
+            .clipped()
         } else {
             let shown = text.trimmingCharacters(in: .whitespacesAndNewlines)
             Text(shown.isEmpty ? namePlaceholder : text)
@@ -217,7 +273,13 @@ struct PursuitWidgetFace: View {
                 .foregroundStyle(titleColor.opacity(shown.isEmpty ? 0.45 : 1))
                 .multilineTextAlignment(.leading)
                 .lineLimit(3)
+                .frame(
+                    maxWidth: PursuitTextBounds.wrapWidth(x: textX, in: travel),
+                    maxHeight: PursuitTextBounds.wrapHeight(y: textY, in: travel),
+                    alignment: .topLeading
+                )
                 .fixedSize(horizontal: false, vertical: true)
+                .clipped()
         }
     }
 
@@ -288,6 +350,7 @@ struct PursuitWidgetEditor: View {
     @State private var pinchOrigin: Double = 1
     @State private var nameTyping = false
     @State private var typingTextID: String?
+    @State private var textSizes: [String: CGSize] = [:]
     @FocusState private var nameFocus: ComposerBlockID?
 
     private let fill: ComposerRGBColor?
@@ -437,6 +500,8 @@ struct PursuitWidgetEditor: View {
             selectedTextID: selectedTextID,
             onSelectText: { id in
                 panel = .text(id)
+                typingTextID = id
+                nameTyping = false
             },
             showsField: false,
             focusBlockID: $nameFocus,
@@ -454,6 +519,8 @@ struct PursuitWidgetEditor: View {
             editingTextID: typingTextID,
             onSelectName: {
                 panel = .name
+                nameTyping = true
+                typingTextID = nil
             },
             activeDrag: textDragVisual,
             textDrag: { id, travel, originX, originY in
@@ -534,11 +601,19 @@ struct PursuitWidgetEditor: View {
             focusBlockID: $nameFocus,
             onCommit: {},
             onStyleChange: {},
-            showsFormatButton: false
+            showsFormatButton: false,
+            maxContentWidth: PursuitTextBounds.wrapWidth(x: x, in: fitted),
+            maxContentHeight: PursuitTextBounds.wrapHeight(y: y, in: fitted)
         )
-        .fixedSize()
         .opacity(0.02)
         .contentShape(Rectangle())
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            let next = CGSize(width: max(size.width, 8), height: max(size.height, 8))
+            guard textSizes[id] != next else { return }
+            textSizes[id] = next
+        }
         .highPriorityGesture(itemDrag(id: id, travel: fitted, originX: x, originY: y))
         .allowsHitTesting(!isTyping(id))
         .alignmentGuide(.leading) { _ in -CGFloat(x) * fitted.width }
@@ -796,9 +871,17 @@ struct PursuitWidgetEditor: View {
                     }
                     let baseline = dragSession.baseline ?? .zero
                     next.isMoving = true
-                    next.translation = CGSize(
+                    let raw = CGSize(
                         width: value.translation.width - baseline.width,
                         height: value.translation.height - baseline.height
+                    )
+                    let size = textSizes[id] ?? CGSize(width: 48, height: 24)
+                    next.translation = PursuitTextBounds.clampedDrag(
+                        translation: raw,
+                        originX: dragSession.originX,
+                        originY: dragSession.originY,
+                        size: size,
+                        in: dragSession.travel.width > 1 ? dragSession.travel : travel
                     )
                     let hit = controlsFrame.width > 1 && trashHitRect.contains(value.location)
                     next.hoveringTrash = hit
@@ -827,27 +910,37 @@ struct PursuitWidgetEditor: View {
                             deleteText(id: id)
                         }
                     } else {
-                        let width = max(stageFrame.width, 1)
-                        let height = max(stageFrame.height, 1)
-                        let nextX = min(max(originX + Double(translation.width) / Double(width), 0), 1)
-                        let nextY = min(max(originY + Double(translation.height) / Double(height), 0), 1)
+                        let travel = CGSize(
+                            width: max(stageFrame.width, 1),
+                            height: max(stageFrame.height, 1)
+                        )
+                        let size = textSizes[id] ?? CGSize(width: 48, height: 24)
+                        let rawX = originX + Double(translation.width) / Double(travel.width)
+                        let rawY = originY + Double(translation.height) / Double(travel.height)
+                        let clamped = PursuitTextBounds.clampedOrigin(
+                            x: rawX,
+                            y: rawY,
+                            size: size,
+                            in: travel
+                        )
                         if id == PursuitTextDrag.nameID {
-                            textX = nextX
-                            textY = nextY
+                            textX = clamped.0
+                            textY = clamped.1
                         } else if let index = texts.firstIndex(where: { $0.id == id }) {
-                            texts[index].x = nextX
-                            texts[index].y = nextY
+                            texts[index].x = clamped.0
+                            texts[index].y = clamped.1
                         }
                     }
                 } else if distance < 12, elapsed < 0.32 {
+                    // First tap opens the style tools and the keyboard together.
                     if id == PursuitTextDrag.nameID {
-                        typingTextID = nil
                         panel = .name
                         nameTyping = true
+                        typingTextID = nil
                     } else {
-                        nameTyping = false
                         panel = .text(id)
                         typingTextID = id
+                        nameTyping = false
                     }
                 }
             }
@@ -1037,6 +1130,14 @@ struct PursuitWidgetEditor: View {
 
     private func floatingPiece(id: String) -> some View {
         let block = floatingBlock(id: id)
+        let fractionX: Double
+        if id == PursuitTextDrag.nameID {
+            fractionX = textX
+        } else if let item = texts.first(where: { $0.id == id }) {
+            fractionX = item.x
+        } else {
+            fractionX = 0
+        }
         return ComposerTextCanvasBlock(
             block: Binding(get: { block }, set: { _ in }),
             isEditing: false,
@@ -1047,7 +1148,14 @@ struct PursuitWidgetEditor: View {
             focusBlockID: $nameFocus,
             onCommit: {},
             onStyleChange: {},
-            showsFormatButton: false
+            showsFormatButton: false,
+            maxContentWidth: PursuitTextBounds.wrapWidth(x: fractionX, in: stageFrame.size),
+            maxContentHeight: PursuitTextBounds.wrapHeight(
+                y: id == PursuitTextDrag.nameID
+                    ? textY
+                    : (texts.first(where: { $0.id == id })?.y ?? 0),
+                in: stageFrame.size
+            )
         )
     }
 

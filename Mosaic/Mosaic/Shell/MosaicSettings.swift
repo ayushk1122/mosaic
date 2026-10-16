@@ -1013,7 +1013,12 @@ struct MosaicSettingsView: View {
         let levelsSaved = await applyChangedLevels()
         var synced = true
         if let remoteSync {
-            synced = await remoteSync.syncNow(snapshot: store.snapshot, account: account, mediaFile: store.mediaURL(for:))
+            synced = await remoteSync.syncNow(
+                snapshot: store.snapshot,
+                account: account,
+                mediaFile: store.mediaURL(for:),
+                protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+            )
         }
         if !namesSaved, status.isEmpty, usernameMessage.isEmpty {
             status = "Fix your username to save it."

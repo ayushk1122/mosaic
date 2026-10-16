@@ -73,6 +73,14 @@ struct ComposerBoardSyncTests {
             mosaicID: mosaicID
         )
         #expect(dead == [deadUUID])
+        #expect(
+            ComposerBoardSync.deadIDs(
+                live: [mosaicID, liveUUID],
+                remote: [mosaicID, liveUUID, deadUUID],
+                mosaicID: mosaicID,
+                protecting: [deadUUID]
+            ).isEmpty
+        )
 
         let base = URL(string: "https://example.supabase.co")!
         let owner = UUID(uuidString: "00000000-0000-0000-0000-00000000000a")!
@@ -790,6 +798,15 @@ struct ComposerBoardSyncTests {
         #expect(small == (width: 300, height: 200))
         #expect(ComposerMediaScale.videoMilliseconds(seconds: 3.2) == 3200)
         #expect(ComposerMediaScale.videoMilliseconds(seconds: 15) == nil)
+
+        // Undecodable bytes still produce an upload payload so sync can publish the original.
+        let raw = Data("not-a-real-image".utf8)
+        #expect(ComposerMediaPreparer.photo(original: raw, contentType: "image/jpeg") == nil)
+        let payloads = ComposerMediaPreparer.photoPayloads(from: raw)
+        #expect(payloads.count == 1)
+        #expect(payloads[0].displayJPEG == nil)
+        #expect(payloads[0].original == raw)
+        #expect(ComposerMediaKind.contentType(forFileData: Data([0xFF, 0xD8, 0xFF, 0xE0])) == "image/jpeg")
 
         let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
         let mediaID = store.addBlock(.media, to: nil)

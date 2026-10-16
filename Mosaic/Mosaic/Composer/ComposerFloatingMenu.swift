@@ -59,6 +59,8 @@ struct ComposerFloatingMenu: View {
     var includesTabs: Bool = true
     var includesBanner: Bool = true
     var includesTable: Bool = true
+    var includesCarousel: Bool = true
+    var includesBackground: Bool = true
     /// Pages outside the composer offer just these, without the search field.
     var onlyOptions: [BlockMenuOption]? = nil
     var addLabel = "Add to Mosaic"
@@ -86,7 +88,9 @@ struct ComposerFloatingMenu: View {
             includingScrapbook: includesScrapbook,
             includingTabs: includesTabs,
             includingBanner: includesBanner,
-            includingTable: includesTable
+            includingTable: includesTable,
+            includingCarousel: includesCarousel,
+            includingBackground: includesBackground
         )
     }
 

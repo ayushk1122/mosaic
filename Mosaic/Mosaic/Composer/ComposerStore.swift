@@ -4,6 +4,8 @@ import Observation
 struct ComposerClipboardItem: Equatable {
     var block: ComposerBlock
     var documents: [ComposerPursuit]
+    /// Cut keeps document ids; copy mints new ones on paste.
+    var isCut: Bool
 }
 
 @MainActor
@@ -67,7 +69,10 @@ final class ComposerStore {
         guard ComposerBoardSync.referencedIDs(in: merged).isSubset(of: ids) else {
             throw ComposerRestoreError.incompleteBoards
         }
-        ComposerBoardSync.pruneUnreferenced(&merged)
+        ComposerBoardSync.pruneUnreferenced(
+            &merged,
+            protecting: Set(detachedClipboardDocumentIDs.map(\.rawValue))
+        )
         Self.refreshPursuitTitles(&merged)
         if persistToDisk {
             try encoder.encode(merged).write(to: location.snapshotURL, options: .atomic)
@@ -597,21 +602,63 @@ final class ComposerStore {
 
     /// The component most recently copied or cut. Shared across the board, Pursuit pages, and journal pages.
     var clipboard: ComposerClipboardItem?
+    /// Document ids held by a cut that has not been pasted yet. Sync must not delete them.
+    private(set) var detachedClipboardDocumentIDs: Set<ComposerDocumentID> = []
+
+    /// UUID form of detached cut documents for remote sync.
+    var syncProtectedDocumentUUIDs: Set<UUID> {
+        Set(detachedClipboardDocumentIDs.compactMap { UUID(uuidString: $0.rawValue) })
+    }
 
     func copyBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
         guard let block = block(with: blockID, in: documentID) else { return }
-        clipboard = ComposerClipboardItem(block: block, documents: ownedDocuments(of: block))
+        releaseDetachedClipboard()
+        clipboard = ComposerClipboardItem(block: block, documents: ownedDocuments(of: block), isCut: false)
+    }
+
+    /// Removes the block from the board but keeps its documents until paste or clipboard replace.
+    func cutBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        guard let block = block(with: blockID, in: documentID) else { return }
+        releaseDetachedClipboard()
+        let owned = ownedDocuments(of: block)
+        clipboard = ComposerClipboardItem(block: block, documents: owned, isCut: true)
+        detachedClipboardDocumentIDs = Set(owned.map(\.id))
+        captureUndo(in: documentID, includePursuits: !owned.isEmpty)
+        mutateBlocks(for: documentID) { blocks in
+            blocks.removeAll { $0.id == blockID }
+            if block.kind == .tabs {
+                for index in blocks.indices {
+                    blocks[index].tabID = nil
+                }
+            }
+        }
+        persist()
     }
 
     /// Places the clipboard on this page and clears it.
+    /// Folder widgets become Pursuits on the Mosaic and Nodes inside a Pursuit or Node.
     @discardableResult
     func pasteClipboard(at position: BlockPosition, in documentID: ComposerDocumentID?) -> ComposerBlockID? {
         guard let clipboard else { return nil }
         let page = blocks(for: documentID)
         if clipboard.block.kind == .banner, page.contains(where: { $0.kind == .banner }) { return nil }
         if clipboard.block.kind == .tabs, page.contains(where: { $0.kind == .tabs }) { return nil }
-        let (copy, documents) = Self.reidentified(block: clipboard.block, documents: clipboard.documents)
-        var placed = copy
+        let folderRole = Self.folderRole(forPasteInto: documentID, pursuits: snapshot.pursuits)
+        if folderRole == nil, Self.containsFolder(clipboard.block) { return nil }
+
+        let placedBlock: ComposerBlock
+        let documents: [ComposerPursuit]
+        if clipboard.isCut {
+            placedBlock = clipboard.block
+            documents = clipboard.documents
+        } else {
+            (placedBlock, documents) = Self.reidentified(block: clipboard.block, documents: clipboard.documents)
+        }
+        var placed = placedBlock
+        var adaptedDocuments = documents
+        if let folderRole {
+            Self.adaptFolderRoles(block: &placed, documents: &adaptedDocuments, role: folderRole)
+        }
         placed.position = position
         if placed.kind != .banner, placed.kind != .tabs,
            let selected = page.first(where: { $0.kind == .tabs })?.selectedTabID {
@@ -619,18 +666,82 @@ final class ComposerStore {
         }
         captureUndo(
             in: documentID,
-            includePursuits: !documents.isEmpty
+            includePursuits: !adaptedDocuments.isEmpty
                 || placed.kind == .pursuit
                 || placed.kind == .node
                 || placed.kind == .scrapbook
         )
-        snapshot.pursuits.append(contentsOf: documents)
+        if clipboard.isCut {
+            for document in adaptedDocuments {
+                if let index = snapshot.pursuits.firstIndex(where: { $0.id == document.id }) {
+                    snapshot.pursuits[index].role = document.role
+                    snapshot.pursuits[index].title = document.title
+                } else {
+                    snapshot.pursuits.append(document)
+                }
+            }
+            detachedClipboardDocumentIDs = []
+        } else {
+            snapshot.pursuits.append(contentsOf: adaptedDocuments)
+        }
         mutateBlocks(for: documentID) { blocks in
             blocks.append(placed)
         }
         self.clipboard = nil
         persist()
         return placed.id
+    }
+
+    /// Drops cut documents that never got pasted once the clipboard moves on.
+    private func releaseDetachedClipboard() {
+        let protected = detachedClipboardDocumentIDs
+        detachedClipboardDocumentIDs = []
+        guard !protected.isEmpty else { return }
+        let keep = ComposerBoardSync.referencedIDs(in: snapshot)
+        let dropKeys = Set(protected.map(\.rawValue).filter { !keep.contains($0) })
+        guard !dropKeys.isEmpty else { return }
+        snapshot.pursuits.removeAll { dropKeys.contains($0.id.rawValue) }
+    }
+
+    /// Mosaic → Pursuit. Inside a Pursuit or Node → Node. Journal / scrapbook pages refuse folders.
+    private static func folderRole(
+        forPasteInto documentID: ComposerDocumentID?,
+        pursuits: [ComposerPursuit]
+    ) -> ComposerDocumentRole? {
+        guard let documentID else { return .pursuit }
+        guard let role = pursuits.first(where: { $0.id == documentID })?.role else { return nil }
+        switch role {
+        case .pursuit, .node: return .node
+        case .page: return nil
+        }
+    }
+
+    private static func containsFolder(_ block: ComposerBlock) -> Bool {
+        if block.kind == .pursuit || block.kind == .node { return true }
+        return block.groupMembers.contains(where: containsFolder)
+    }
+
+    /// Rewrites only the pasted folder roots (and group members). Nested boards stay as they are.
+    private static func adaptFolderRoles(
+        block: inout ComposerBlock,
+        documents: inout [ComposerPursuit],
+        role: ComposerDocumentRole
+    ) {
+        let kind: BlockKind = role == .pursuit ? .pursuit : .node
+        func adapt(_ block: inout ComposerBlock) {
+            if block.kind == .pursuit || block.kind == .node {
+                block.kind = kind
+                if let id = block.pursuitID,
+                   let index = documents.firstIndex(where: { $0.id == id }) {
+                    documents[index].role = role
+                }
+                return
+            }
+            for index in block.groupMembers.indices {
+                adapt(&block.groupMembers[index])
+            }
+        }
+        adapt(&block)
     }
 
     func mediaURL(for fileName: String) -> URL {
