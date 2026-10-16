@@ -169,7 +169,8 @@ struct ComposerStoreTests {
     @Test
     func addMenuSearchFiltersOptions() {
         let all = BlockMenuOption.menuOptions(matching: "")
-        #expect(all.count == BlockMenuOption.allCases.count)
+        #expect(all.count == BlockMenuOption.allCases.count - 1)
+        #expect(!all.contains(.link))
 
         let mediaOnly = BlockMenuOption.menuOptions(matching: "media")
         #expect(mediaOnly == [.media])
@@ -178,8 +179,9 @@ struct ComposerStoreTests {
         #expect(none.isEmpty)
 
         let pursuitPage = BlockMenuOption.menuOptions(matching: "", includingPursuit: false)
-        #expect(pursuitPage.count == BlockMenuOption.allCases.count - 1)
+        #expect(pursuitPage.count == BlockMenuOption.allCases.count - 2)
         #expect(!pursuitPage.contains(.pursuit))
+        #expect(!pursuitPage.contains(.link))
         #expect(pursuitPage.contains(.carousel))
         #expect(pursuitPage.contains(.calendar))
 
@@ -194,6 +196,7 @@ struct ComposerStoreTests {
         #expect(!mosaicMenu.contains(.graph))
         #expect(!mosaicMenu.contains(.node))
         #expect(!mosaicMenu.contains(.table))
+        #expect(!mosaicMenu.contains(.link))
         #expect(mosaicMenu.contains(.pursuit))
         #expect(mosaicMenu.contains(.list))
         #expect(mosaicMenu.contains(.tabs))
@@ -228,6 +231,9 @@ struct ComposerStoreTests {
         let carousel = BlockMenuOption.menuOptions(matching: "carosoul")
         #expect(carousel == [.carousel])
 
+        let linkSearch = BlockMenuOption.menuOptions(matching: "link")
+        #expect(linkSearch.isEmpty)
+
         let grouped = BlockMenuOption.menuOptions(matching: "group")
         #expect(grouped == [.group])
         let social = BlockMenuOption.menuOptions(matching: "social")
@@ -236,6 +242,45 @@ struct ComposerStoreTests {
         #expect(instagram == [.social, .content])
         #expect(mosaicMenu.contains(.social))
         #expect(pursuitPage.contains(.social))
+
+        let journalMenu = BlockMenuOption.menuOptions(
+            matching: "",
+            includingPursuit: false,
+            includingGraph: false,
+            includingNode: false,
+            includingScrapbook: false,
+            includingTabs: false,
+            includingBanner: false,
+            includingTable: false,
+            includingCarousel: false,
+            includingBackground: false
+        )
+        #expect(Set(journalMenu) == [
+            .text, .media, .group, .social, .content, .list, .heading, .calendar
+        ])
+    }
+
+    @Test
+    func pageEdgeClampKeepsFramesInsideThePaper() {
+        let moved = ComposerTabEdge.clampedDrag(
+            translation: CGSize(width: 80, height: 200),
+            frameMinX: 40,
+            frameWidth: 200,
+            viewportWidth: 320,
+            frameMinY: 40,
+            frameHeight: 200,
+            viewportHeight: 400
+        )
+        #expect(moved.width == 76)
+        #expect(moved.height == 156)
+
+        let origin = ComposerTabEdge.clampedOrigin(
+            CGPoint(x: 280, y: 360),
+            size: CGSize(width: 200, height: 200),
+            viewportWidth: 320,
+            viewportHeight: 400
+        )
+        #expect(origin == CGPoint(x: 116, y: 196))
     }
 
     @Test

@@ -59,6 +59,8 @@ struct ComposerTabsCanvasBlock: View {
                 .offset(y: -(34 * metric))
             }
         }
+        // Room between the tabs and the size box so the corner grabs stay clear of them.
+        .padding(showsEdits ? 10 * metric : 0)
         .fixedSize(horizontal: true, vertical: true)
         .shadow(color: .white.opacity(isLifted || isRelocating ? 0.28 : 0), radius: isLifted || isRelocating ? 8 : 0)
         .animation(.snappy(duration: 0.22), value: block.selectedTabID)
@@ -113,7 +115,13 @@ struct ComposerTabsCanvasBlock: View {
                     .multilineTextAlignment(.center)
                     .focused($titleFocus, equals: tab.id)
                     .submitLabel(.done)
-                    .onSubmit { renamingID = nil }
+                    .onSubmit {
+                        renamingID = nil
+                        titleFocus = nil
+                    }
+                    .onAppear {
+                        DispatchQueue.main.async { titleFocus = tab.id }
+                    }
                     .frame(minWidth: 44 * metric)
             } else {
                 Text(title.isEmpty ? "Title" : title)
@@ -130,14 +138,15 @@ struct ComposerTabsCanvasBlock: View {
             choose(tab)
         })
         .accessibilityLabel(title.isEmpty ? "Title" : title)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAddTraits(renamingID == tab.id ? [] : (selected ? [.isButton, .isSelected] : .isButton))
     }
 
     private func choose(_ tab: ComposerTab) {
         let alreadyOpen = block.selectedTabID == tab.id
         if showsEdits, alreadyOpen {
             renamingID = tab.id
-            titleFocus = tab.id
+            // The field only exists after this update, so focus it on the next turn.
+            DispatchQueue.main.async { titleFocus = tab.id }
         } else {
             renamingID = nil
             block.selectedTabID = tab.id
@@ -177,7 +186,7 @@ struct ComposerTabsCanvasBlock: View {
             .frame(width: 28 * metric, height: 28 * metric)
             .background(Color.white.opacity(0.14), in: Circle())
             .contentShape(Circle())
-            .highPriorityGesture(TapGesture().onEnded {
+            .simultaneousGesture(TapGesture().onEnded {
                 guard let last = block.tabs.last else { return }
                 renamingID = nil
                 store.removeComposerTab(last.id, from: block.id, in: documentID)
@@ -226,12 +235,15 @@ enum ComposerTabEdge {
         return minX
     }
 
-    /// Horizontal movement that keeps a held block inside the side edges. Vertical movement is unchanged.
+    /// Keeps a held block inside the side edges. Pass a page height to lock the top and bottom too.
     static func clampedDrag(
         translation: CGSize,
         frameMinX: CGFloat,
         frameWidth: CGFloat,
-        viewportWidth: CGFloat
+        viewportWidth: CGFloat,
+        frameMinY: CGFloat = 0,
+        frameHeight: CGFloat = 0,
+        viewportHeight: CGFloat = 0
     ) -> CGSize {
         guard viewportWidth > 1, frameWidth > 1 else { return translation }
         let available = viewportWidth - dragMargin * 2
@@ -243,6 +255,36 @@ enum ComposerTabEdge {
             let maxDx = viewportWidth - dragMargin - (frameMinX + frameWidth)
             dx = min(max(translation.width, minDx), maxDx)
         }
-        return CGSize(width: dx, height: translation.height)
+        guard viewportHeight > 1, frameHeight > 1 else {
+            return CGSize(width: dx, height: translation.height)
+        }
+        let availableY = viewportHeight - dragMargin * 2
+        let dy: CGFloat
+        if frameHeight >= availableY {
+            dy = dragMargin - frameMinY
+        } else {
+            let minDy = dragMargin - frameMinY
+            let maxDy = viewportHeight - dragMargin - (frameMinY + frameHeight)
+            dy = min(max(translation.height, minDy), maxDy)
+        }
+        return CGSize(width: dx, height: dy)
+    }
+
+    /// Shifts an origin so a placed frame sits fully inside the page.
+    static func clampedOrigin(
+        _ origin: CGPoint,
+        size: CGSize,
+        viewportWidth: CGFloat,
+        viewportHeight: CGFloat
+    ) -> CGPoint {
+        guard viewportWidth > 1, viewportHeight > 1 else { return origin }
+        let width = max(size.width, 1)
+        let height = max(size.height, 1)
+        let maxX = max(viewportWidth - dragMargin - width, dragMargin)
+        let maxY = max(viewportHeight - dragMargin - height, dragMargin)
+        return CGPoint(
+            x: min(max(origin.x, dragMargin), maxX),
+            y: min(max(origin.y, dragMargin), maxY)
+        )
     }
 }

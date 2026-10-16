@@ -86,6 +86,7 @@ struct ComposerCalendarCanvasBlock: View {
     let isRelocating: Bool
     let isViewing: Bool
 
+    @Environment(\.composerPaperPage) private var onPaper
     @State private var year = Calendar.current.component(.year, from: .now)
     @State private var month = Calendar.current.component(.month, from: .now)
     @State private var showsYear = false
@@ -95,6 +96,10 @@ struct ComposerCalendarCanvasBlock: View {
     private var metric: CGFloat { max(0.45, scale * livePinchScale) }
     private var width: CGFloat { 332 * metric }
     private var canTap: Bool { !isLifted && !isRelocating }
+    /// Paper pages need the same dark card as Mosaic / Pursuit so the grid stays readable.
+    private var cardFill: Color {
+        onPaper ? Color(red: 0.20, green: 0.21, blue: 0.23) : Color.white.opacity(0.05)
+    }
 
     var body: some View {
         VStack(spacing: 10 * metric) {
@@ -111,10 +116,10 @@ struct ComposerCalendarCanvasBlock: View {
         .padding(.bottom, 6 * metric)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .frame(width: width)
-        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(Color.white.opacity(onPaper ? 0.14 : 0.1), lineWidth: 1)
         }
         .shadow(color: .white.opacity(isLifted ? 0.85 : 0), radius: isLifted ? 3 : 0)
         .shadow(color: .white.opacity(isLifted ? 0.4 : 0), radius: isLifted ? 14 : 0)

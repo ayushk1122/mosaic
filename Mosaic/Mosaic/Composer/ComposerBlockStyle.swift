@@ -24,6 +24,15 @@ extension EnvironmentValues {
     }
 }
 
+/// Bubbles grouping mode up so journal chrome can release page-turn catchers.
+struct ComposerGroupingPreferenceKey: PreferenceKey {
+    static var defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 extension TextBlockStyle {
     /// Default white type is for the dark board. On a scrapbook page it reads as ink.
     func readingColor(onPaper: Bool) -> Color {

@@ -73,6 +73,7 @@ struct ScrapbookBookView: View {
     @State private var drag: CGFloat = 0
     @State private var settling = false
     @State private var mediaObscured = false
+    @State private var isGrouping = false
     @State private var pageWidth: CGFloat = 1
 
     private var block: ComposerBlock? {
@@ -103,6 +104,7 @@ struct ScrapbookBookView: View {
             index = min(index, max(count - 1, 0))
         }
         .onPreferenceChange(ComposerMediaObscuredKey.self) { mediaObscured = $0 }
+        .onPreferenceChange(ComposerGroupingPreferenceKey.self) { isGrouping = $0 }
     }
 
     private func restoreIndex() {
@@ -127,14 +129,6 @@ struct ScrapbookBookView: View {
             Spacer(minLength: 8)
             pageTurnArrows
                 .layoutPriority(1)
-            Spacer(minLength: 8)
-            if !chrome.isVisiting {
-                journalEyeButton
-                    .layoutPriority(1)
-            }
-            if !chrome.isViewing {
-                pageButtons
-            }
         }
     }
 
@@ -166,56 +160,6 @@ struct ScrapbookBookView: View {
         }
     }
 
-    private var journalEyeButton: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.28)) {
-                chrome.isViewing.toggle()
-            }
-        } label: {
-            Image(systemName: chrome.isViewing ? "pencil" : "eye")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.white)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 36, height: 36)
-                .background(Color.white.opacity(0.14), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(chrome.isViewing ? "Edit Mosaic" : "View Mosaic")
-        .accessibilityIdentifier("composer.viewMode")
-    }
-
-    private var pageButtons: some View {
-        HStack(spacing: 8) {
-            if pageIDs.count > 1 {
-                Button {
-                    guard let next = store.removeScrapbookPage(at: index, on: blockID, in: parentDocumentID) else { return }
-                    index = next
-                } label: {
-                    Image(systemName: "minus")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.14), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remove page")
-            }
-            Button {
-                guard let created = store.insertScrapbookPage(after: index, on: blockID, in: parentDocumentID) else { return }
-                index = created
-            } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.14), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(pageIDs.count >= 30)
-            .accessibilityLabel("Add page")
-        }
-    }
-
     private var livePageIDs: [ComposerDocumentID] {
         store.block(with: blockID, in: parentDocumentID)?.scrapbookPageIDs ?? pageIDs
     }
@@ -227,16 +171,23 @@ struct ScrapbookBookView: View {
             let pageHeight = proxy.size.height
             ZStack(alignment: .topLeading) {
                 notebook(pageWidth: pageWidth, pageHeight: pageHeight, spiral: spiral)
-                if !settling {
-                    if index > 0 {
-                        pageTurnCorner(forward: false, spiral: spiral, pageWidth: pageWidth)
+                    .overlay(alignment: .topLeading) {
+                        if !settling, !isGrouping, index > 0 {
+                            pageTurnCorner(forward: false)
+                                .padding(.leading, spiral)
+                        }
                     }
-                    pageTurnCorner(forward: true, spiral: spiral, pageWidth: pageWidth)
-                }
+                    .overlay(alignment: .topTrailing) {
+                        if !settling, !isGrouping {
+                            pageTurnCorner(forward: true)
+                        }
+                    }
                 SpiralBinding(pageHeight: pageHeight, columnWidth: spiral)
                     .frame(width: spiral, height: pageHeight)
                     .overlay {
-                        ScrapbookSpineScroll()
+                        if !isGrouping {
+                            ScrapbookSpineScroll()
+                        }
                         if mediaObscured {
                             Color.black.opacity(0.94)
                                 .allowsHitTesting(false)
@@ -303,7 +254,7 @@ struct ScrapbookBookView: View {
         .clipped()
     }
 
-    private func pageTurnCorner(forward: Bool, spiral: CGFloat, pageWidth: CGFloat) -> some View {
+    private func pageTurnCorner(forward: Bool) -> some View {
         let enabled = forward ? canTurnForward : index > 0
         return ZStack(alignment: forward ? .topTrailing : .topLeading) {
             ScrapbookTurnSurface(turnsForward: forward) { translation in
@@ -320,13 +271,7 @@ struct ScrapbookBookView: View {
                 .allowsHitTesting(false)
         }
         .frame(width: 72, height: 72)
-        .padding(.leading, forward ? 0 : spiral)
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: forward ? .topTrailing : .topLeading
-        )
-        .contentShape(JournalCornerHit(forward: forward, spiral: spiral))
+        .contentShape(Rectangle())
         .allowsHitTesting(enabled)
         .accessibilityLabel(forward ? "Next page" : "Previous page")
     }
@@ -617,17 +562,6 @@ private final class ScrapbookTurnView: UIView, UIGestureRecognizerDelegate {
             current = view.superview
         }
         return nil
-    }
-}
-
-private struct JournalCornerHit: Shape {
-    var forward: Bool
-    var spiral: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let side: CGFloat = 72
-        let x = forward ? rect.width - side : spiral
-        return Path(CGRect(x: x, y: 0, width: side, height: side))
     }
 }
 

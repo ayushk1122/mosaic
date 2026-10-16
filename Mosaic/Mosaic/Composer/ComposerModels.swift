@@ -183,10 +183,14 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         includingScrapbook: Bool = true,
         includingTabs: Bool = true,
         includingBanner: Bool = true,
-        includingTable: Bool = true
+        includingTable: Bool = true,
+        includingCarousel: Bool = true,
+        includingBackground: Bool = true
     ) -> [BlockMenuOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var ordered = Array(allCases.reversed())
+        // Plain Link is retired from every composer; Content covers URL embeds.
+        ordered.removeAll { $0 == .link }
         if !includingPursuit {
             ordered.removeAll { $0 == .pursuit }
         }
@@ -210,6 +214,12 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         }
         if !includingTable {
             ordered.removeAll { $0 == .table }
+        }
+        if !includingCarousel {
+            ordered.removeAll { $0 == .carousel }
+        }
+        if !includingBackground {
+            ordered.removeAll { $0 == .background }
         }
         guard !trimmed.isEmpty else { return ordered }
         return ordered.filter { $0.searchTokens.contains(trimmed) }
