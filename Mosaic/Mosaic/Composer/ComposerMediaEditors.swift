@@ -182,9 +182,17 @@ enum ComposerVideoCompatibility {
             return nil
         }
         guard UIVideoEditorController.canEditVideo(atPath: output.path) else {
+            try? FileManager.default.removeItem(at: output)
             return nil
         }
         return output
+    }
+
+    /// Removes the temporary copy `editableURL` exported, never the board's own file.
+    static func discardExport(_ exported: URL, source: URL) {
+        guard exported.standardizedFileURL != source.standardizedFileURL,
+              exported.path.hasPrefix(FileManager.default.temporaryDirectory.path) else { return }
+        try? FileManager.default.removeItem(at: exported)
     }
 }
 

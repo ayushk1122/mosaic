@@ -5,6 +5,23 @@ struct MosaicOnboardingView: View {
     var userID: UUID
     var onComplete: () -> Void
 
+    /// Starts from what the server already holds, so a person can keep their default username.
+    init(
+        account: MosaicAccount,
+        userID: UUID,
+        existing: MosaicOnboardingStatus? = nil,
+        onComplete: @escaping () -> Void
+    ) {
+        self.account = account
+        self.userID = userID
+        self.onComplete = onComplete
+        _username = State(initialValue: existing?.username ?? "")
+        _displayName = State(initialValue: existing?.displayName ?? "")
+        if let birthday = existing?.birthday {
+            _birthday = State(initialValue: birthday)
+        }
+    }
+
     private enum Step: Int, CaseIterable {
         case username
         case password

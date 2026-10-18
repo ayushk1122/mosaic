@@ -137,15 +137,20 @@ enum ComposerContentPlatform: String, CaseIterable, Identifiable {
         return "/" + path.joined(separator: "/")
     }
 
-    /// Tracks (`/user/track`) and playlists (`/user/sets/name`) — bare profiles are Social.
+    /// Tracks (`/user/track`) and playlists (`/user/sets/name`), plus private share tokens
+    /// (`/s-…`) on either — bare profiles and profile tabs are Social.
     private static func soundcloudContentPath(_ path: [String]) -> String? {
         guard let user = path.first, ComposerSocialPlatform.isSoundCloudUsername(user) else { return nil }
-        if path.count == 3, path[1] == "sets", !path[2].isEmpty {
-            return "/\(user)/sets/\(path[2])"
+        let isSecret: (String) -> Bool = { $0.hasPrefix("s-") && $0.count > 2 }
+        if path.count >= 3, path[1] == "sets", !path[2].isEmpty {
+            if path.count == 3 { return "/\(user)/sets/\(path[2])" }
+            if path.count == 4, isSecret(path[3]) { return "/\(user)/sets/\(path[2])/\(path[3])" }
+            return nil
         }
-        if path.count == 2, path[1] != "sets", !path[1].isEmpty {
-            return "/\(user)/\(path[1])"
-        }
+        guard path.count >= 2, !path[1].isEmpty,
+              !ComposerSocialPlatform.soundCloudProfileTabs.contains(path[1].lowercased()) else { return nil }
+        if path.count == 2 { return "/\(user)/\(path[1])" }
+        if path.count == 3, isSecret(path[2]) { return "/\(user)/\(path[1])/\(path[2])" }
         return nil
     }
 }
@@ -383,6 +388,8 @@ struct ComposerContentEditor: View {
     @State private var message: String?
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var provider: LPMetadataProvider?
+    @State private var resolvingShareLink = false
+    @State private var shareResolveToken: UUID?
 
     private var target: (platform: ComposerContentPlatform, url: URL)? { ComposerContentPlatform.parse(link) }
 
@@ -398,7 +405,10 @@ struct ComposerContentEditor: View {
                         )
                     )
                     ComposerSocialLinkField(placeholder: "Paste the full content link", link: $link)
-                    if !link.isEmpty && target == nil {
+                    if resolvingShareLink {
+                        ProgressView("Opening SoundCloud link…")
+                            .font(.caption).tint(.white)
+                    } else if !link.isEmpty && target == nil && message == nil {
                         Text(contentLinkHint(for: platform))
                             .font(.caption).foregroundStyle(.white.opacity(0.65))
                     }
@@ -415,13 +425,15 @@ struct ComposerContentEditor: View {
                         if let cover {
                             coverPreview(cover)
                         }
+                        // Locked while a short link resolves: the resolved link resets title and cover.
                         TextField("Title", text: $title)
                             .padding(.horizontal, 12).padding(.vertical, 10)
                             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                            .disabled(resolvingShareLink)
                         PhotosPicker(selection: $pickedPhoto, matching: .images) {
                             Label(cover == nil ? "Choose cover photo" : "Change cover photo", systemImage: "photo")
                                 .font(.subheadline)
-                        }.disabled(loading)
+                        }.disabled(loading || resolvingShareLink)
                         if let message { Text(message).font(.caption).foregroundStyle(.white.opacity(0.65)) }
                         Text("Opens the original post. If a preview isn’t available, choose a cover photo.")
                             .font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -444,7 +456,7 @@ struct ComposerContentEditor: View {
                         } catch {
                             message = "The cover couldn’t be saved. Please try again."
                         }
-                    }.disabled(target == nil || loading)
+                    }.disabled(target == nil || loading || resolvingShareLink)
                 }
             }
         }
@@ -464,6 +476,33 @@ struct ComposerContentEditor: View {
         }
         .onChange(of: platform) { _, next in
             if let target, target.platform != next { link = "" }
+        }
+        .task(id: link) {
+            // Short share links are opaque, so expand them before parsing; the board only ever
+            // stores the canonical soundcloud.com URL.
+            let share = ComposerSoundCloudPreview.shareLink(from: link)
+            let token = UUID()
+            shareResolveToken = token
+            resolvingShareLink = share != nil
+            guard let share else { return }
+            let original = link
+            platform = .soundcloud
+            // Waits out typing, so a link entered by hand isn't requested on every keystroke.
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            defer {
+                if shareResolveToken == token { resolvingShareLink = false }
+            }
+            let resolved = await ComposerSoundCloudPreview.resolveShareLink(share)
+            guard !Task.isCancelled, link == original else { return }
+            guard let resolved else {
+                message = "Couldn’t open that SoundCloud link. Paste the full soundcloud.com link instead."
+                return
+            }
+            if let canonical = ComposerContentPlatform.parse(resolved.absoluteString) {
+                link = canonical.url.absoluteString
+            } else {
+                message = "That link opens a SoundCloud profile. Add it as Social instead."
+            }
         }
         .task(id: attempt) {
             guard attempt > 0, let target else { return }

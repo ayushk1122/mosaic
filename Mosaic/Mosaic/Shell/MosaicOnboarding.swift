@@ -17,8 +17,9 @@ enum MosaicOnboardingRoute: Equatable {
 }
 
 enum MosaicOnboardingCache {
+    /// Versioned so caches written before placeholder accounts were reopened are re-checked with the server.
     private static func key(_ userID: UUID) -> String {
-        "mosaic.onboarded.\(userID.uuidString.lowercased())"
+        "mosaic.onboarded.v2.\(userID.uuidString.lowercased())"
     }
 
     static func markComplete(_ userID: UUID) {
@@ -59,48 +60,21 @@ enum MosaicOnboardingRouter {
 
 enum MosaicOnboardingError: Error, Equatable {
     case usernameTaken
+    case alreadyOnboarded
     case invalidInput
     case requestFailed
-}
 
-struct MosaicLoginClient: Sendable {
-    var config: SupabaseSyncConfig
-    var session: URLSession = .shared
-
-    /// Maps `@username` or email to the auth email used for password sign-in.
-    func emailForLogin(identifier: String) async throws -> String? {
-        let cleaned = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return nil }
-        let data = try await rpc(
-            name: "email_for_login",
-            body: ["p_identifier": cleaned],
-            accessToken: nil
-        )
-        let json = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
-        if json is NSNull { return nil }
-        if let email = json as? String, !email.isEmpty { return email }
-        return nil
-    }
-
-    private func rpc(name: String, body: [String: Any], accessToken: String?) async throws -> Data {
-        let endpoint = config.url
-            .appendingPathComponent("rest")
-            .appendingPathComponent("v1")
-            .appendingPathComponent("rpc")
-            .appendingPathComponent(name)
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        if let accessToken {
-            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+    static func from(status: Int, message: String) -> MosaicOnboardingError {
+        if status == 409 || message.contains("23505") || message.contains("username taken") {
+            return .usernameTaken
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw SupabaseDocumentSyncError.requestFailed
+        if message.contains("already onboarded") {
+            return .alreadyOnboarded
         }
-        return data
+        if message.contains("22023") || message.contains("invalid") {
+            return .invalidInput
+        }
+        return .requestFailed
     }
 }
 
@@ -113,6 +87,7 @@ struct MosaicOnboardingClient: Sendable {
         return try Self.status(from: data)
     }
 
+    /// Saves the profile. A retry after an earlier success counts as done, not as a failure.
     func complete(
         username: String,
         displayName: String,
@@ -125,8 +100,13 @@ struct MosaicOnboardingClient: Sendable {
             "p_display_name": displayName,
             "p_birthday": formatter.string(from: birthday)
         ]
-        let data = try await rpc(name: "complete_onboarding", body: body, accessToken: accessToken)
-        _ = data
+        do {
+            _ = try await rpc(name: "complete_onboarding", body: body, accessToken: accessToken)
+        } catch MosaicOnboardingError.alreadyOnboarded {
+            guard try await status(accessToken: accessToken)?.isOnboarded == true else {
+                throw MosaicOnboardingError.requestFailed
+            }
+        }
     }
 
     func updateBirthday(_ birthday: Date, accessToken: String) async throws {
@@ -187,14 +167,10 @@ struct MosaicOnboardingClient: Sendable {
             throw MosaicOnboardingError.requestFailed
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? ""
-            if http.statusCode == 409 || message.contains("23505") || message.contains("username taken") {
-                throw MosaicOnboardingError.usernameTaken
-            }
-            if message.contains("22023") || message.contains("invalid") {
-                throw MosaicOnboardingError.invalidInput
-            }
-            throw MosaicOnboardingError.requestFailed
+            throw MosaicOnboardingError.from(
+                status: http.statusCode,
+                message: String(data: data, encoding: .utf8) ?? ""
+            )
         }
         return data
     }

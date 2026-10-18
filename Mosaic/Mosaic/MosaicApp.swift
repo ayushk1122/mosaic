@@ -103,6 +103,7 @@ private struct MosaicOnboardingGateView: View {
     var onReady: () -> Void
 
     @State private var route = MosaicOnboardingRoute.loading
+    @State private var status: MosaicOnboardingStatus?
     @State private var attempt = 0
 
     var body: some View {
@@ -139,7 +140,7 @@ private struct MosaicOnboardingGateView: View {
                 .background(MosaicBrand.cream.ignoresSafeArea())
                 .environment(\.colorScheme, .light)
             case .needsSetup:
-                MosaicOnboardingView(account: account, userID: userID) {
+                MosaicOnboardingView(account: account, userID: userID, existing: status) {
                     MosaicOnboardingCache.markComplete(userID)
                     route = .readyForPreparation
                 }
@@ -175,6 +176,7 @@ private struct MosaicOnboardingGateView: View {
         }
         let status = try? await MosaicOnboardingClient(config: config).status(accessToken: token)
         guard account.session?.userID == userID else { return }
+        self.status = status
         if status?.isOnboarded == true {
             MosaicOnboardingCache.markComplete(userID)
         }

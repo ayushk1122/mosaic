@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 enum ComposerAnimatedImage {
     nonisolated static let maxPixel = 540
     nonisolated static let frameBudgetBytes = 32 * 1024 * 1024
+    /// Stills are decoded no larger than this: sharp full screen, without a 24 MP photo costing ~96 MB.
+    nonisolated static let stillMaxPixel = 2400
 
     nonisolated static func isGIF(_ data: Data) -> Bool {
         data.starts(with: Array("GIF8".utf8))
@@ -16,18 +18,32 @@ enum ComposerAnimatedImage {
     /// An animated image for a GIF with more than one frame, otherwise the still image.
     nonisolated static func image(contentsOf url: URL) -> UIImage? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
-        if let source = CGImageSourceCreateWithURL(url as CFURL, options), let animated = animated(from: source) {
-            return animated
+        if let source = CGImageSourceCreateWithURL(url as CFURL, options) {
+            if let animated = animated(from: source) { return animated }
+            if let still = still(from: source) { return still }
         }
         return UIImage(contentsOfFile: url.path)
     }
 
     nonisolated static func image(data: Data) -> UIImage? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
-        if let source = CGImageSourceCreateWithData(data as CFData, options), let animated = animated(from: source) {
-            return animated
+        if let source = CGImageSourceCreateWithData(data as CFData, options) {
+            if let animated = animated(from: source) { return animated }
+            if let still = still(from: source) { return still }
         }
         return UIImage(data: data)
+    }
+
+    /// Decodes at display size (never upscaled) with the photo's orientation applied.
+    nonisolated static func still(from source: CGImageSource) -> UIImage? {
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: stillMaxPixel
+        ] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        return UIImage(cgImage: image)
     }
 
     nonisolated static func animated(from source: CGImageSource) -> UIImage? {

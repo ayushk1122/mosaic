@@ -68,6 +68,14 @@ struct MosaicOnboardingTests {
     }
 
     @Test
+    func onboardingErrorsSeparateRetryFromInvalidInput() {
+        #expect(MosaicOnboardingError.from(status: 400, message: #"{"code":"22023","message":"already onboarded"}"#) == .alreadyOnboarded)
+        #expect(MosaicOnboardingError.from(status: 400, message: #"{"code":"22023","message":"invalid username"}"#) == .invalidInput)
+        #expect(MosaicOnboardingError.from(status: 409, message: #"{"code":"23505","message":"username taken"}"#) == .usernameTaken)
+        #expect(MosaicOnboardingError.from(status: 500, message: "") == .requestFailed)
+    }
+
+    @Test
     func onboardingStatusParsesBirthdayAndCompletion() throws {
         let json = """
         [{"onboarded_at":"2026-10-16T12:00:00+00:00","username":"ada_golf","display_name":"Ada","birthday":"1994-03-02"}]

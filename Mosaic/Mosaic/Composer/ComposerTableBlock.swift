@@ -323,6 +323,17 @@ struct ComposerTableCanvasBlock: View {
         ComposerTable.ordered(block.tableEntries)
     }
 
+    /// Viewers browse through the binding, which keeps it on screen only; the owner's
+    /// edit-mode browse goes through the store so the current entry's cells are kept.
+    private func show(_ entry: ComposerTableEntry) {
+        if isViewing {
+            block.selectedTableEntryID = entry.id
+            block.tableRows = entry.rows
+        } else {
+            store.showTableEntry(entry.id, on: block.id, in: documentID)
+        }
+    }
+
     private var entryBar: some View {
         let entries = orderedEntries
         let index = entries.firstIndex(where: { $0.id == block.selectedTableEntryID }) ?? max(entries.count - 1, 0)
@@ -332,7 +343,7 @@ struct ComposerTableCanvasBlock: View {
             if canBrowse {
                 entryControl("chevron.left", label: "Previous entry", enabled: index > 0) {
                     guard index > 0 else { return }
-                    store.showTableEntry(entries[index - 1].id, on: block.id, in: documentID)
+                    show(entries[index - 1])
                 }
             }
             Text(current.map { ComposerTable.stampLabel(for: $0.stampedAt, among: entries) } ?? "")
@@ -342,7 +353,7 @@ struct ComposerTableCanvasBlock: View {
             if canBrowse {
                 entryControl("chevron.right", label: "Next entry", enabled: index + 1 < entries.count) {
                     guard index + 1 < entries.count else { return }
-                    store.showTableEntry(entries[index + 1].id, on: block.id, in: documentID)
+                    show(entries[index + 1])
                 }
             }
             if showsEdits {

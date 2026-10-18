@@ -120,6 +120,7 @@ struct ComposerBackgroundEditor: View {
                     }
 
                     Button("Use the original background") {
+                        pickedItem = nil
                         isCustom = false
                         onChange(nil)
                     }
@@ -142,15 +143,15 @@ struct ComposerBackgroundEditor: View {
             }
         }
         .preferredColorScheme(.dark)
-        .onChange(of: pickedItem) { _, item in
-            guard let item else { return }
-            Task {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let fileName = try? saveImage(data) else { return }
-                draft.kind = .media
-                draft.mediaFileName = fileName
-                publish()
-            }
+        .task(id: pickedItem) {
+            // Keyed on the pick, so a newer pick or a reset cancels a load that is still running.
+            guard let item = pickedItem,
+                  let data = try? await item.loadTransferable(type: Data.self),
+                  !Task.isCancelled, pickedItem == item,
+                  let fileName = try? saveImage(data) else { return }
+            draft.kind = .media
+            draft.mediaFileName = fileName
+            publish()
         }
     }
 

@@ -80,6 +80,8 @@ struct ComposerMediaCanvasBlock: View {
             )
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
             if isVideo, let mediaURL {
+                // A photo replaced by a video must not keep showing the old photo if the video is missing.
+                preview = nil
                 loadFailed = !FileManager.default.fileExists(atPath: mediaURL.path)
                 let loaded = await Self.videoAspect(at: mediaURL)
                 guard !Task.isCancelled else { return }
@@ -280,9 +282,15 @@ struct ComposerMediaCrop: Equatable {
         } else if let preset = shape.presetAspect {
             preset
         } else {
-            max(contentAspect, 0.4)
+            Self.originalShape(contentAspect: contentAspect)
         }
-        return max(aspect, MediaFrameShape.minimumAspect)
+        return min(max(aspect, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
+    }
+
+    /// The uncropped frame: the photo's own shape, kept between a tall 0.4 and the widest frame.
+    /// The crop editor starts from the same value, so opening it and tapping Done changes nothing.
+    static func originalShape(contentAspect: CGFloat) -> CGFloat {
+        min(max(contentAspect, 0.4), MediaFrameShape.maximumAspect)
     }
 
     func framed<Content: View>(_ content: Content, width: CGFloat, contentAspect: CGFloat) -> some View {
@@ -393,6 +401,7 @@ struct ComposerInlineVideo: UIViewRepresentable {
         if isPaused {
             player.pause()
         } else if player.timeControlStatus != .playing {
+            Self.claimAudio()
             player.play()
         }
     }
@@ -406,13 +415,19 @@ struct ComposerInlineVideo: UIViewRepresentable {
         context.coordinator.player = player
         context.coordinator.isPaused = isPaused
         context.coordinator.startLooping()
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
         if isPaused {
             player.pause()
         } else {
+            Self.claimAudio()
             player.play()
         }
+    }
+
+    /// Only a video that actually plays takes over audio, so a paused video on screen
+    /// doesn't stop the person's music.
+    static func claimAudio() {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     static func dismantleUIView(_ uiView: ComposerPlayerView, coordinator: Coordinator) {
@@ -487,6 +502,25 @@ enum ComposerImagePreparation: Sendable {
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
     }
+
+    /// The largest a single board photo is stored at; uploads already cap their original here.
+    nonisolated static let boardMaxPixel: CGFloat = 2560
+
+    /// GIFs keep their bytes so they still animate. PNGs within the limit keep their bytes
+    /// (and transparency). Everything else, and oversized PNGs, becomes a JPEG at `boardMaxPixel`.
+    nonisolated static func boardImage(from data: Data) -> (data: Data, fileExtension: String) {
+        if ComposerAnimatedImage.isGIF(data) { return (data, "gif") }
+        let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+        if let source, CGImageSourceGetType(source) as String? == UTType.png.identifier,
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+           let height = properties[kCGImagePropertyPixelHeight] as? CGFloat,
+           max(width, height) <= boardMaxPixel {
+            return (data, "png")
+        }
+        if let jpeg = jpeg(from: data, maxPixel: boardMaxPixel, quality: 0.86) { return (jpeg, "jpg") }
+        return (data, "jpg")
+    }
 }
 
 struct PreparedCarouselMedia: Sendable {
@@ -501,13 +535,17 @@ enum ComposerMediaImport {
         let isVideo = item.supportedContentTypes.contains { type in
             type.conforms(to: .movie) || type.conforms(to: .video)
         }
-        if isVideo, let movie = try? await item.loadTransferable(type: ComposerMovieFile.self) {
-            return try? store.saveMediaFile(from: movie.url)
+        if isVideo {
+            // The picker's copy is already in the temp folder; move it rather than leave a duplicate.
+            // A video that can't be transferred as a file is not read into memory and saved as a photo.
+            guard let movie = try? await item.loadTransferable(type: ComposerMovieFile.self) else { return nil }
+            return try? store.saveMediaFile(from: movie.url, removeSource: true)
         }
-        if let data = try? await item.loadTransferable(type: Data.self) {
-            return try? store.saveMediaData(data)
-        }
-        return nil
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
+        let prepared = await Task.detached(priority: .userInitiated) {
+            ComposerImagePreparation.boardImage(from: data)
+        }.value
+        return try? store.saveMediaData(prepared.data, fileExtension: prepared.fileExtension)
     }
 
     nonisolated static func prepareForCarousel(_ item: PhotosPickerItem) async -> PreparedCarouselMedia? {

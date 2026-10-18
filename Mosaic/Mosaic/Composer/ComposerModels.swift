@@ -941,15 +941,25 @@ enum ComposerLineGraph {
         guard !ordered.isEmpty else { return [] }
         let minX = ordered.map(\.x.timeIntervalSinceReferenceDate).min() ?? 0
         let maxX = ordered.map(\.x.timeIntervalSinceReferenceDate).max() ?? 0
-        let minY = ordered.map(\.y).min() ?? 0
-        let maxY = ordered.map(\.y).max() ?? 0
+        // Doubles, not Int: two saved values far enough apart would overflow and crash on every draw.
+        let minY = Double(ordered.map(\.y).min() ?? 0)
+        let maxY = Double(ordered.map(\.y).max() ?? 0)
         let xSpan = maxX - minX
         let ySpan = maxY - minY
         return ordered.map { point in
             let nx: CGFloat = xSpan == 0 ? 0.5 : CGFloat((point.x.timeIntervalSinceReferenceDate - minX) / xSpan)
-            let ny: CGFloat = ySpan == 0 ? 0.5 : CGFloat(Double(point.y - minY) / Double(ySpan))
+            let ny: CGFloat = ySpan == 0 ? 0.5 : CGFloat((Double(point.y) - minY) / ySpan)
             return Placed(id: point.id, nx: nx, ny: ny)
         }
+    }
+
+    /// The picked calendar day at noon UTC, so the point keeps its day for viewers in other
+    /// time zones and same-day points don't drift apart by time of entry.
+    static func day(_ date: Date, calendar: Calendar = .current) -> Date {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        return utc.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day, hour: 12)) ?? date
     }
 
     static func dateLabel(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {

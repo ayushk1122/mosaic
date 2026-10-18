@@ -65,10 +65,11 @@ final class ComposerStore {
         var merged = snapshot
         let existing = Set(merged.pursuits.map(\.id))
         merged.pursuits.append(contentsOf: remote.pursuits.filter { !existing.contains($0.id) })
-        let ids = Set(merged.pursuits.map { $0.id.rawValue })
-        guard ComposerBoardSync.referencedIDs(in: merged).isSubset(of: ids) else {
-            throw ComposerRestoreError.incompleteBoards
-        }
+        // A widget whose board never reached the server (a push that failed partway) gets an empty
+        // board instead of blocking the restore, and with it every upload, forever.
+        merged.pursuits.append(contentsOf: ComposerBoardSync.missingReferences(in: merged).map { id, role in
+            ComposerPursuit(id: id, title: "", blocks: [], role: role)
+        })
         ComposerBoardSync.pruneUnreferenced(
             &merged,
             protecting: Set(detachedClipboardDocumentIDs.map(\.rawValue))
@@ -79,21 +80,15 @@ final class ComposerStore {
             try encoder.encode(state).write(to: location.syncStateURL, options: .atomic)
         }
         snapshot = merged
-        // Undoing a landing-board edit must also recover children that were still downloading.
+        // An undo that brings back a widget deleted mid-download also needs that widget's
+        // downloaded boards. Undo only restores saved boards that are referenced and missing,
+        // so adding them to every entry changes nothing else.
         for key in Array(undoStacks.keys) {
             guard var entries = undoStacks[key] else { continue }
             for index in entries.indices {
-                guard key == Self.undoKey(nil) || entries[index].pursuits != nil else { continue }
-                var saved = entries[index].pursuits ?? merged.pursuits
+                var saved = entries[index].pursuits ?? []
                 let savedIDs = Set(saved.map(\.id))
                 saved.append(contentsOf: remote.pursuits.filter { !savedIDs.contains($0.id) })
-                if key == Self.undoKey(nil) {
-                    var before = merged
-                    before.mosaicBlocks = entries[index].blocks
-                    before.pursuits = saved
-                    ComposerBoardSync.pruneUnreferenced(&before)
-                    saved = before.pursuits
-                }
                 entries[index].pursuits = saved
             }
             undoStacks[key] = entries
@@ -116,20 +111,48 @@ final class ComposerStore {
         undoStacks[key] = stack
         undoCoalesce = nil
         isApplyingUndo = true
-        if let documentID {
-            if let index = snapshot.pursuits.firstIndex(where: { $0.id == documentID }) {
-                snapshot.pursuits[index].blocks = entry.blocks
-            }
-        } else {
-            snapshot.mosaicBlocks = entry.blocks
-            if let pursuits = entry.pursuits {
-                snapshot.pursuits = pursuitsKeepingPageEdits(from: pursuits)
-            } else {
-                syncPursuitTitlesFromMosaicBlocks()
-            }
+        mutateBlocks(for: documentID) { blocks in
+            blocks = entry.blocks
         }
+        if let clipboard, clipboard.isCut, containsBlockAnywhere(clipboard.block.id) {
+            // The cut was undone, so its block is back on a board; pasting must not duplicate it.
+            self.clipboard?.isCut = false
+            detachedClipboardDocumentIDs = []
+        }
+        restoreDocuments(from: entry.pursuits)
+        Self.refreshPursuitTitles(&snapshot)
         isApplyingUndo = false
         persist()
+    }
+
+    /// Brings back boards the restored blocks point to again, and drops boards nothing reaches.
+    /// Boards that still exist keep their live content; each board's own edits undo on its own stack.
+    private func restoreDocuments(from saved: [ComposerPursuit]?) {
+        if let saved {
+            var liveIDs = Set(snapshot.pursuits.map(\.id))
+            var addedAny = true
+            while addedAny {
+                addedAny = false
+                let referenced = ComposerBoardSync.referencedIDs(in: snapshot)
+                for document in saved where !liveIDs.contains(document.id) && referenced.contains(document.id.rawValue) {
+                    snapshot.pursuits.append(document)
+                    liveIDs.insert(document.id)
+                    addedAny = true
+                }
+            }
+        }
+        guard !isRestoringDocuments else { return }
+        ComposerBoardSync.pruneUnreferenced(
+            &snapshot,
+            protecting: Set(detachedClipboardDocumentIDs.map(\.rawValue))
+        )
+    }
+
+    private func containsBlockAnywhere(_ id: ComposerBlockID) -> Bool {
+        func contains(_ blocks: [ComposerBlock]) -> Bool {
+            blocks.contains { $0.id == id || contains($0.groupMembers) }
+        }
+        return contains(snapshot.mosaicBlocks) || snapshot.pursuits.contains { contains($0.blocks) }
     }
 
     func replacePage(_ blocks: [ComposerBlock], in documentID: ComposerDocumentID?) {
@@ -242,8 +265,29 @@ final class ComposerStore {
         return addBlock(kind, at: position, to: documentID)
     }
 
+    /// Removes a block that never became anything (picker cancelled, nothing added) together with
+    /// the undo step that added it, so Undo doesn't bring back an empty placeholder.
+    func discardPlaceholder(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        let key = Self.undoKey(documentID)
+        let remaining = blocks(for: documentID).filter { $0.id != blockID }
+        guard remaining.count < blocks(for: documentID).count else { return }
+        if let last = undoStacks[key]?.last, last.blocks == remaining {
+            undoStacks[key]?.removeLast()
+            undoCoalesce = nil
+            mutateBlocks(for: documentID) { $0 = remaining }
+            persist()
+        } else {
+            deleteBlock(blockID, in: documentID)
+        }
+    }
+
     @discardableResult
-    func addBlock(_ kind: BlockKind, at position: BlockPosition, to documentID: ComposerDocumentID?) -> ComposerBlockID {
+    func addBlock(
+        _ kind: BlockKind,
+        at position: BlockPosition,
+        to documentID: ComposerDocumentID?,
+        configure: ((inout ComposerBlock) -> Void)? = nil
+    ) -> ComposerBlockID {
         if kind == .tabs, let existing = blocks(for: documentID).first(where: { $0.kind == .tabs }) {
             return existing.id
         }
@@ -252,6 +296,7 @@ final class ComposerStore {
         }
         captureUndo(in: documentID, includePursuits: kind == .pursuit || kind == .node || kind == .scrapbook)
         var block = ComposerBlock.make(kind: kind, position: position)
+        configure?(&block)
         if kind == .scrapbook {
             let pages = (1...2).map { _ in ComposerDocumentID() }
             block.scrapbookPageIDs = pages
@@ -292,6 +337,7 @@ final class ComposerStore {
     }
 
     func updateBlock(_ block: ComposerBlock, in documentID: ComposerDocumentID?) {
+        guard let current = self.block(with: block.id, in: documentID), current != block else { return }
         captureUndo(in: documentID, coalesce: block.id)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(block.id, in: &blocks) { current in
@@ -307,12 +353,12 @@ final class ComposerStore {
     }
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        let removed = blocks(for: documentID).first(where: { $0.id == blockID })
-        let owned = removed.map { ownedDocuments(of: $0) } ?? []
+        guard let removed = blocks(for: documentID).first(where: { $0.id == blockID }) else { return }
+        let owned = ownedDocuments(of: removed)
         captureUndo(in: documentID, includePursuits: !owned.isEmpty)
         mutateBlocks(for: documentID) { blocks in
             blocks.removeAll { $0.id == blockID }
-            if removed?.kind == .tabs {
+            if removed.kind == .tabs {
                 for index in blocks.indices {
                     blocks[index].tabID = nil
                 }
@@ -385,7 +431,7 @@ final class ComposerStore {
     }
 
     func addComposerTab(to blockID: ComposerBlockID, in documentID: ComposerDocumentID?, longestSide: CGFloat) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             guard let index = blocks.firstIndex(where: { $0.id == blockID }),
                   blocks[index].kind == .tabs,
@@ -394,11 +440,11 @@ final class ComposerStore {
             blocks[index].tabs.append(tab)
             blocks[index].selectedTabID = tab.id
         }
-        persist()
+        finishEdit(edit)
     }
 
     func removeComposerTab(_ tabID: String, from blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             guard let index = blocks.firstIndex(where: { $0.id == blockID }),
                   blocks[index].kind == .tabs,
@@ -413,11 +459,11 @@ final class ComposerStore {
                 blocks[item].tabID = fallback
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func addTableColumn(to blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table else { return }
@@ -429,11 +475,11 @@ final class ComposerStore {
                 rememberVisibleTableRows(&block)
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func removeLastTableColumn(from blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table else { return }
@@ -445,11 +491,11 @@ final class ComposerStore {
                 rememberVisibleTableRows(&block)
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func addTableRow(to blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table else { return }
@@ -459,11 +505,11 @@ final class ComposerStore {
                 rememberVisibleTableRows(&block)
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func removeLastTableRow(from blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table else { return }
@@ -473,11 +519,11 @@ final class ComposerStore {
                 rememberVisibleTableRows(&block)
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func startTableEntry(on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table else { return }
@@ -494,11 +540,11 @@ final class ComposerStore {
                 block.tableRows = blank
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     func showTableEntry(_ entryID: String, on blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 guard block.kind == .table,
@@ -509,7 +555,7 @@ final class ComposerStore {
                 block.tableRows = entry.rows
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     private func rememberVisibleTableRows(_ block: inout ComposerBlock) {
@@ -518,7 +564,7 @@ final class ComposerStore {
     }
 
     func moveBlock(_ blockID: ComposerBlockID, direction: MoveDirection, in documentID: ComposerDocumentID?) {
-        captureUndo(in: documentID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             guard let index = blocks.firstIndex(where: { $0.id == blockID }) else { return }
             let target: Int
@@ -531,7 +577,7 @@ final class ComposerStore {
             guard blocks.indices.contains(target) else { return }
             blocks.swapAt(index, target)
         }
-        persist()
+        finishEdit(edit)
     }
 
     /// A different photo or video doesn't fit the old zoom and pan, so `resetsFraming` clears them; the frame shape stays.
@@ -541,7 +587,7 @@ final class ComposerStore {
         in documentID: ComposerDocumentID?,
         resetsFraming: Bool = false
     ) {
-        captureUndo(in: documentID, coalesce: blockID)
+        let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(blockID, in: &blocks) { block in
                 if resetsFraming {
@@ -553,7 +599,7 @@ final class ComposerStore {
                 block.mediaFileName = fileName
             }
         }
-        persist()
+        finishEdit(edit)
     }
 
     /// A GIF keeps its own extension, so it uploads as a GIF and visitors download the animation.
@@ -618,7 +664,7 @@ final class ComposerStore {
 
     /// Removes the block from the board but keeps its documents until paste or clipboard replace.
     func cutBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
-        guard let block = block(with: blockID, in: documentID) else { return }
+        guard let block = blocks(for: documentID).first(where: { $0.id == blockID }) else { return }
         releaseDetachedClipboard()
         let owned = ownedDocuments(of: block)
         clipboard = ComposerClipboardItem(block: block, documents: owned, isCut: true)
@@ -645,6 +691,9 @@ final class ComposerStore {
         if clipboard.block.kind == .tabs, page.contains(where: { $0.kind == .tabs }) { return nil }
         let folderRole = Self.folderRole(forPasteInto: documentID, pursuits: snapshot.pursuits)
         if folderRole == nil, Self.containsFolder(clipboard.block) { return nil }
+        let isJournalPage = documentID.flatMap { id in snapshot.pursuits.first(where: { $0.id == id })?.role } == .page
+        guard Self.allowsPlacement(of: clipboard.block, onMosaic: documentID == nil, onJournalPage: isJournalPage)
+        else { return nil }
 
         let placedBlock: ComposerBlock
         let documents: [ComposerPursuit]
@@ -685,11 +734,38 @@ final class ComposerStore {
             snapshot.pursuits.append(contentsOf: adaptedDocuments)
         }
         mutateBlocks(for: documentID) { blocks in
+            if placed.kind == .tabs {
+                // Same as adding a tabs bar: everything already on the page starts on the selected tab.
+                let tabIDs = Set(placed.tabs.map(\.id))
+                let selected = placed.selectedTabID.flatMap { tabIDs.contains($0) ? $0 : nil } ?? placed.tabs.first?.id
+                placed.selectedTabID = selected
+                for index in blocks.indices where blocks[index].kind != .banner {
+                    if blocks[index].tabID.map({ !tabIDs.contains($0) }) ?? true {
+                        blocks[index].tabID = selected
+                    }
+                }
+            }
             blocks.append(placed)
         }
         self.clipboard = nil
         persist()
         return placed.id
+    }
+
+    /// The same rules as the add menu: the Mosaic has no scrapbooks, calendars, graphs, or tables,
+    /// and journal pages only take simple pieces. Group members follow the same rule.
+    static func allowsPlacement(of block: ComposerBlock, onMosaic: Bool, onJournalPage: Bool) -> Bool {
+        let allowed: Bool
+        if onMosaic {
+            allowed = ![.scrapbook, .calendar, .graph, .table].contains(block.kind)
+        } else if onJournalPage {
+            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar].contains(block.kind)
+        } else {
+            allowed = true
+        }
+        return allowed && block.groupMembers.allSatisfy {
+            allowsPlacement(of: $0, onMosaic: onMosaic, onJournalPage: onJournalPage)
+        }
     }
 
     /// Drops cut documents that never got pasted once the clipboard moves on.
@@ -753,6 +829,37 @@ final class ComposerStore {
         case down
     }
 
+    private struct PendingEdit {
+        var documentID: ComposerDocumentID?
+        var blocks: [ComposerBlock]
+        var depth: Int
+        var coalesce: ComposerUndoCoalesce?
+    }
+
+    /// Records an undo step for a structural edit. `finishEdit` drops it again when nothing changed.
+    private func beginEdit(in documentID: ComposerDocumentID?) -> PendingEdit {
+        let edit = PendingEdit(
+            documentID: documentID,
+            blocks: blocks(for: documentID),
+            depth: undoStacks[Self.undoKey(documentID)]?.count ?? 0,
+            coalesce: undoCoalesce
+        )
+        captureUndo(in: documentID)
+        return edit
+    }
+
+    private func finishEdit(_ edit: PendingEdit) {
+        guard blocks(for: edit.documentID) == edit.blocks else {
+            persist()
+            return
+        }
+        let key = Self.undoKey(edit.documentID)
+        if let stack = undoStacks[key], stack.count > edit.depth {
+            undoStacks[key]?.removeLast()
+        }
+        undoCoalesce = edit.coalesce
+    }
+
     private func captureUndo(
         in documentID: ComposerDocumentID?,
         coalesce blockID: ComposerBlockID? = nil,
@@ -781,30 +888,6 @@ final class ComposerStore {
         }
         undoStacks[key] = stack
         undoCoalesce = blockID.map { ComposerUndoCoalesce(documentKey: key, blockID: $0, at: now) }
-    }
-
-    /// A board undo remembers the scrapbook structure. Pieces added on a journal page after that
-    /// snapshot stay on the page instead of being replaced by the older empty copy.
-    private func pursuitsKeepingPageEdits(from saved: [ComposerPursuit]) -> [ComposerPursuit] {
-        let live = snapshot.pursuits
-        return saved.map { savedPursuit in
-            guard savedPursuit.role == .page,
-                  let current = live.first(where: { $0.id == savedPursuit.id }) else {
-                return savedPursuit
-            }
-            var kept = savedPursuit
-            kept.blocks = current.blocks
-            kept.background = current.background
-            kept.layoutHeight = current.layoutHeight
-            return kept
-        }
-    }
-    private func syncPursuitTitlesFromMosaicBlocks() {
-        for block in snapshot.mosaicBlocks where block.kind == .pursuit || block.kind == .node {
-            guard let pursuitID = block.pursuitID,
-                  let index = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) else { continue }
-            snapshot.pursuits[index].title = block.pursuitDisplayName
-        }
     }
 
     /// Sets each Pursuit and node title from its widget, on every board. Returns true when a title changed.
@@ -943,14 +1026,18 @@ final class ComposerStore {
         }
     }
 
+    /// A file that exists but can't be read (for example, written by a newer build) is copied aside
+    /// before the empty board that replaces it is saved, so its content can still be recovered.
     private static func loadSnapshot(at url: URL, fileManager: FileManager, decoder: JSONDecoder) -> ComposerSnapshot? {
-        guard fileManager.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let snapshot = try? decoder.decode(ComposerSnapshot.self, from: data)
-        else {
-            return nil
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        if let data = try? Data(contentsOf: url),
+           let snapshot = try? decoder.decode(ComposerSnapshot.self, from: data) {
+            return snapshot
         }
-        return snapshot
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backup = url.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).json")
+        try? fileManager.copyItem(at: url, to: backup)
+        return nil
     }
 
     private struct ComposerUndoEntry {

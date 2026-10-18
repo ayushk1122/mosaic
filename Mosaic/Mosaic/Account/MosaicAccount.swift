@@ -105,6 +105,12 @@ enum MosaicOTPError: Error, Equatable {
     case requestFailed
 }
 
+enum MosaicPasswordLoginError: Error, Equatable {
+    case rejected
+    case rateLimited
+    case requestFailed
+}
+
 enum MosaicAuthErrorClassification {
     /// Permanent when the refresh token itself is rejected; transport for offline/5xx/unknown.
     static func isPermanentFailure(status: Int, body: Data) -> Bool {
@@ -207,58 +213,58 @@ final class MosaicAccount {
             lastError = "Enter your password."
             return false
         }
+        let cleaned = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            guard let email = try await MosaicLoginClient(config: config).emailForLogin(identifier: identifier) else {
-                lastError = "Account not found. Check your email or username."
-                return false
+            let data: Data
+            if cleaned.contains("@"), !cleaned.hasPrefix("@") {
+                data = try await post(
+                    config: config,
+                    path: "auth/v1/token",
+                    query: "grant_type=password",
+                    body: ["email": cleaned.lowercased(), "password": password],
+                    accessToken: nil
+                )
+            } else {
+                data = try await postUsernameLogin(
+                    config: config,
+                    username: MosaicSettingsList.username(from: cleaned),
+                    password: password
+                )
             }
-            let data = try await post(
-                config: config,
-                path: "auth/v1/token",
-                query: "grant_type=password",
-                body: ["email": email, "password": password],
-                accessToken: nil
-            )
             let signedIn = try MosaicAuthResponse.session(from: data)
             store(session: signedIn)
             return true
+        } catch MosaicPasswordLoginError.rateLimited {
+            lastError = "Too many attempts. Wait a few minutes and try again."
+            return false
         } catch {
             lastError = passwordMessage(for: error)
             return false
         }
     }
 
-    func signUpWithPassword(email: String, password: String) async -> Bool {
-        lastError = nil
-        guard let config else {
-            lastError = "Mosaic is not connected to a project yet."
-            return false
+    /// Usernames go through the `username-login` Edge Function, which looks up the email
+    /// server-side so it is never exposed to the app.
+    private func postUsernameLogin(config: SupabaseSyncConfig, username: String, password: String) async throws -> Data {
+        var request = URLRequest(url: config.url.appending(path: "functions/v1/username-login"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "username": username,
+            "password": password
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw MosaicPasswordLoginError.requestFailed
         }
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
-            lastError = "Enter a valid email address."
-            return false
+        if http.statusCode == 429 {
+            throw MosaicPasswordLoginError.rateLimited
         }
-        guard password.count >= 6 else {
-            lastError = "Use a password with at least 6 characters."
-            return false
+        guard (200..<300).contains(http.statusCode) else {
+            throw MosaicPasswordLoginError.rejected
         }
-        do {
-            let data = try await postSignup(
-                config: config,
-                email: trimmedEmail,
-                password: password
-            )
-            if let signedIn = try? MosaicAuthResponse.session(from: data) {
-                store(session: signedIn)
-                return true
-            }
-            lastError = "Check your email to confirm your account, then sign in."
-            return false
-        } catch {
-            lastError = passwordMessage(for: error)
-            return false
-        }
+        return data
     }
 
     /// Attaches a password to the signed-in auth user (OAuth / OTP) so username login works later.
@@ -550,6 +556,9 @@ final class MosaicAccount {
         session = nil
         lastError = nil
         MosaicSessionKeychain.clear()
+        if let ending {
+            MosaicOnboardingCache.clear(ending.userID)
+        }
         guard let config, let ending else { return }
         var components = URLComponents(url: config.url.appending(path: "auth/v1/logout"), resolvingAgainstBaseURL: false)
         components?.query = "scope=local"
@@ -675,26 +684,7 @@ final class MosaicAccount {
     }
 
     private func passwordMessage(for error: Error) -> String {
-        "Email, username, or password didn’t match. Try again or reset your password in Supabase."
-    }
-
-    private func postSignup(config: SupabaseSyncConfig, email: String, password: String) async throws -> Data {
-        var request = URLRequest(url: config.url.appending(path: "auth/v1/signup"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "email": email,
-            "password": password
-        ])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw SupabaseDocumentSyncError.requestFailed
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw SupabaseDocumentSyncError.requestFailed
-        }
-        return data
+        "Email, username, or password didn’t match. If you signed up with Google, Apple, or a code, continue with that instead."
     }
 
     private func putUser(

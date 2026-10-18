@@ -17,20 +17,31 @@ struct ComposerMediaUploadPayload: Equatable, Sendable {
 enum ComposerMediaPreparer {
     /// Raw camera rolls can be huge; above this we upload a recompressed JPEG so Storage accepts it.
     static let largePhotoBytes = 3_500_000
+    /// Just under the media bucket's 25 MiB object limit.
+    static let originalLimitBytes = 24_000_000
 
     static func prepare(fileAt url: URL) async -> ComposerMediaUploadPayload? {
-        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
         if ComposerMediaKind.isVideo(url.lastPathComponent) {
-            return await video(originalURL: url, original: data)
+            return await video(originalURL: url)
         }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
         return photoPayloads(from: data).first
+    }
+
+    /// Reads a video only when it fits the bucket, so a multi-gigabyte clip is never loaded into memory.
+    private static func uploadableData(at url: URL) -> Data? {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 0, size <= originalLimitBytes else { return nil }
+        return try? Data(contentsOf: url)
     }
 
     /// Best payload first, then smaller / simpler fallbacks if Storage rejects the first attempt.
     static func photoPayloads(from data: Data) -> [ComposerMediaUploadPayload] {
         var payloads: [ComposerMediaUploadPayload] = []
         let sniffed = ComposerMediaKind.contentType(forFileData: data)
-        let needsJPEGOriginal = sniffed != "image/jpeg" || data.count > largePhotoBytes
+        // A GIF must stay a GIF to animate for visitors, and a PNG keeps its transparency.
+        let keepsOriginal = (sniffed == "image/gif" || sniffed == "image/png") && data.count <= originalLimitBytes
+        let needsJPEGOriginal = !keepsOriginal && (sniffed != "image/jpeg" || data.count > largePhotoBytes)
         // HEIC-as-.jpg and very large camera files are the usual sync failures for visitors.
         if needsJPEGOriginal, let compact = photo(original: data, contentType: "image/jpeg", replaceOriginalWithDisplay: true) {
             payloads.append(compact)
@@ -101,11 +112,12 @@ enum ComposerMediaPreparer {
         )
     }
 
-    private static func video(originalURL: URL, original: Data) async -> ComposerMediaUploadPayload? {
+    private static func video(originalURL: URL) async -> ComposerMediaUploadPayload? {
         let asset = AVURLAsset(url: originalURL)
         let seconds = (try? await asset.load(.duration).seconds) ?? 0
         let size = await pixelSize(of: asset)
         if let milliseconds = ComposerMediaScale.videoMilliseconds(seconds: seconds) {
+            guard let original = uploadableData(at: originalURL) else { return nil }
             return ComposerMediaUploadPayload(
                 kind: "video",
                 status: "processing",
@@ -126,7 +138,7 @@ enum ComposerMediaPreparer {
             guard let export else { return nil }
             export.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: 10, preferredTimescale: 600))
             try await export.export(to: trimmed, as: .mp4)
-            guard let data = try? Data(contentsOf: trimmed), !data.isEmpty else { return nil }
+            guard let data = uploadableData(at: trimmed) else { return nil }
             return ComposerMediaUploadPayload(
                 kind: "video",
                 status: "processing",

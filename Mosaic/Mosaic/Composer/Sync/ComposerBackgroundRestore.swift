@@ -106,7 +106,10 @@ final class ComposerBackgroundRestore {
         defer { isLoading = false }
         if state.pendingRestore {
             let rows = try await client.ownDocuments(ownerID: ownerID, accessToken: accessToken)
-            let (remote, downloadedState) = try ComposerAccountRestore.assemble(rows: rows, ownerID: ownerID, mosaicID: state.mosaicID)
+            // Missing child rows get empty boards in `finishRestoring` rather than failing every retry.
+            let (remote, downloadedState) = try ComposerAccountRestore.assemble(
+                rows: rows, ownerID: ownerID, mosaicID: state.mosaicID, requireComplete: false
+            )
             var complete = downloadedState
             // The landing board may have been edited while the children downloaded.
             // Keep its original revision and assets, never replace it with another snapshot.

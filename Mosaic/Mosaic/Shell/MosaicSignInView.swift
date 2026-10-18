@@ -15,11 +15,7 @@ struct MosaicSignInView: View {
     @State private var route = Route.signIn
     @State private var loginIdentifier = ""
     @State private var password = ""
-    @State private var signUpUsername = ""
     @State private var signUpEmail = ""
-    @State private var signUpPassword = ""
-    @State private var signUpDisplayName = ""
-    @State private var signUpBirthday = Calendar.current.date(byAdding: .year, value: -25, to: .now) ?? .now
     @State private var otpEmail = ""
     @State private var otpPhone = ""
     @State private var code = ""
@@ -28,7 +24,7 @@ struct MosaicSignInView: View {
     @FocusState private var codeFocused: Bool
 
     private let signInSocial: [MosaicAuthMethod] = [.google, .apple, .email, .phone]
-    private let signUpSocial: [MosaicAuthMethod] = [.google, .apple, .email, .phone]
+    private let signUpSocial: [MosaicAuthMethod] = [.google, .apple, .phone]
 
     var body: some View {
         Group {
@@ -52,7 +48,7 @@ struct MosaicSignInView: View {
                 otpCodeScreen(
                     title: "Check your email",
                     detail: "Enter the 6-digit code sent to \(address).",
-                    back: { route = .emailOTP(signUp) }
+                    back: { route = signUp ? .signUp : .emailOTP(false) }
                 ) {
                     Task { await verifyEmailOTP(address, signUp: signUp) }
                 } resend: {
@@ -130,25 +126,7 @@ struct MosaicSignInView: View {
 
     private var signUpScreen: some View {
         MosaicAuthScreenChrome(title: "Sign up", back: { route = .signIn }) {
-            VStack(spacing: 16) {
-                MosaicAuthField(
-                    title: "Username",
-                    prompt: "username",
-                    text: $signUpUsername,
-                    identifier: "account.signUp.username"
-                )
-                .onChange(of: signUpUsername) { _, typed in
-                    let cleaned = MosaicSettingsList.typedUsername(typed)
-                    if cleaned != typed {
-                        signUpUsername = cleaned
-                    }
-                }
-                ForEach(signUpUsernameAdvice, id: \.self) { advice in
-                    Text(advice)
-                        .font(.footnote)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .foregroundStyle(MosaicBrand.inkBlack.opacity(0.72))
-                }
+            VStack(spacing: 18) {
                 MosaicAuthField(
                     title: "Email",
                     prompt: "you@example.com",
@@ -156,32 +134,13 @@ struct MosaicSignInView: View {
                     keyboard: .emailAddress,
                     identifier: "account.signUp.email"
                 )
-                MosaicAuthField(
-                    title: "Password",
-                    prompt: "At least 6 characters",
-                    text: $signUpPassword,
-                    isSecure: true,
-                    identifier: "account.signUp.password"
-                )
-                MosaicAuthField(
-                    title: "Display name",
-                    prompt: "How friends see you",
-                    text: $signUpDisplayName,
-                    identifier: "account.signUp.displayName"
-                )
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Birthday")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(MosaicBrand.inkBlack.opacity(0.72))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    MosaicBirthdayPicker(
-                        date: $signUpBirthday,
-                        accessibilityIdentifier: "account.signUp.birthday"
-                    )
-                }
+                Text("We’ll send a code to confirm it’s you. You’ll choose a username and password next.")
+                    .font(.footnote)
+                    .foregroundStyle(MosaicBrand.inkBlack.opacity(0.6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                MosaicAuthPrimaryButton(title: "Sign up", disabled: busy || !signUpFormValid) {
-                    Task { await signUpWithPassword() }
+                MosaicAuthPrimaryButton(title: "Continue", disabled: busy || !signUpEmailValid) {
+                    Task { await sendEmailOTP(to: normalizedSignUpEmail, signUp: true) }
                 }
                 .accessibilityIdentifier("account.signUp.submit")
 
@@ -207,19 +166,14 @@ struct MosaicSignInView: View {
         }
     }
 
-    private var signUpUsernameAdvice: [String] {
-        let name = MosaicSettingsList.typedUsername(signUpUsername)
-        guard !name.isEmpty else { return [] }
-        return MosaicSettingsList.usernameProblems(name)
+    private var normalizedSignUpEmail: String {
+        signUpEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private var signUpFormValid: Bool {
-        let name = MosaicSettingsList.typedUsername(signUpUsername)
-        return MosaicSettingsList.usernameProblems(name).isEmpty
-            && signUpEmail.contains("@")
-            && signUpPassword.count >= 6
-            && !MosaicSettingsList.displayName(from: signUpDisplayName).isEmpty
-            && signUpBirthday < Calendar.current.startOfDay(for: .now)
+    private var signUpEmailValid: Bool {
+        let email = normalizedSignUpEmail
+        guard let at = email.firstIndex(of: "@") else { return false }
+        return at != email.startIndex && email[at...].contains(".")
     }
 
     private func switchAuthFooter(prompt: String, action: String, handler: @escaping () -> Void) -> some View {
@@ -252,34 +206,6 @@ struct MosaicSignInView: View {
         busy = true
         defer { busy = false }
         _ = await account.signInWithPassword(identifier: loginIdentifier, password: password)
-    }
-
-    private func signUpWithPassword() async {
-        busy = true
-        defer { busy = false }
-        let username = MosaicSettingsList.username(from: signUpUsername)
-        guard MosaicSettingsList.usernameProblems(username).isEmpty else {
-            account.present("Fix your username before signing up.")
-            return
-        }
-        guard await account.signUpWithPassword(email: signUpEmail, password: signUpPassword) else { return }
-        guard let userID = account.session?.userID,
-              let config = SupabaseSyncConfig.current(),
-              let token = await account.accessToken()
-        else { return }
-        do {
-            try await MosaicOnboardingClient(config: config).complete(
-                username: username,
-                displayName: MosaicSettingsList.displayName(from: signUpDisplayName),
-                birthday: signUpBirthday,
-                accessToken: token
-            )
-            MosaicOnboardingCache.markComplete(userID)
-        } catch MosaicOnboardingError.usernameTaken {
-            account.present("@\(username) is taken. Choose another username.")
-        } catch {
-            account.present("Account created, but your profile could not be saved. Finish setup after sign-in.")
-        }
     }
 
     private func otpEntryScreen(

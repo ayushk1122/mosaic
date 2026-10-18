@@ -195,6 +195,32 @@ struct ComposerContentTests {
         #expect(!ComposerSoundCloudPreview.isTrustedImageHost("evil.test"))
     }
 
+    @Test func soundcloudShareLinksAreRecognizedButNeverStored() {
+        #expect(ComposerSoundCloudPreview.shareLink(from: " https://on.soundcloud.com/WIad4iCKWBgkct046F ")?.absoluteString
+                == "https://on.soundcloud.com/WIad4iCKWBgkct046F")
+        #expect(ComposerSoundCloudPreview.shareLink(from: "https://on.soundcloud.com/WIad4iCKWBgkct046F?si=abc")?.absoluteString
+                == "https://on.soundcloud.com/WIad4iCKWBgkct046F")
+        for value in ["http://on.soundcloud.com/WIad4iCKWBgkct046F", "https://on.soundcloud.com.evil.test/WIad4iCK",
+                      "https://on.soundcloud.com/", "https://on.soundcloud.com/a/b", "https://soundcloud.com/artist/track"] {
+            #expect(ComposerSoundCloudPreview.shareLink(from: value) == nil)
+        }
+        // The short link itself is not content; only its resolved soundcloud.com URL is.
+        #expect(ComposerContentPlatform.parse("https://on.soundcloud.com/WIad4iCKWBgkct046F") == nil)
+    }
+
+    @Test func soundcloudContentKeepsPrivateTokensAndRejectsProfileTabs() {
+        #expect(ComposerContentPlatform.parse("https://soundcloud.com/artist/track-name/s-AbC123?si=x&utm_source=clipboard")?
+                .url.absoluteString == "https://soundcloud.com/artist/track-name/s-AbC123")
+        #expect(ComposerContentPlatform.parse("https://soundcloud.com/artist/sets/mix/s-AbC123")?.url.absoluteString
+                == "https://soundcloud.com/artist/sets/mix/s-AbC123")
+        #expect(ComposerContentPlatform.parse("https://soundcloud.com/artist/track-name?si=x&utm_medium=text")?
+                .url.absoluteString == "https://soundcloud.com/artist/track-name")
+        for value in ["https://soundcloud.com/artist/tracks", "https://soundcloud.com/artist/likes",
+                      "https://soundcloud.com/artist/track-name/extra", "https://soundcloud.com/artist/sets/mix/extra"] {
+            #expect(ComposerContentPlatform.parse(value) == nil)
+        }
+    }
+
     @Test func appleMusicPreviewReadsOpenGraphTags() {
         let html = """
         <head><meta property="og:title" content="Anti-Hero"><meta property="og:image" \

@@ -162,7 +162,23 @@ struct ComposerListCanvasBlock: View {
     }
 
     private var displayedItems: [ComposerListItem] {
-        block.listItems.isEmpty ? [ComposerListItem(id: "placeholder", text: "")] : block.listItems
+        if isViewing {
+            // Viewers see only written rows, never the "List" placeholder of a blank bullet.
+            return block.listItems.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+        return block.listItems.isEmpty ? [ComposerListItem(id: "placeholder", text: "")] : block.listItems
+    }
+
+    /// Looks the row up by id on every read and write, so a row removed while its field is
+    /// still focused can't read or write past the end of the list.
+    private func textBinding(for id: String) -> Binding<String> {
+        Binding(
+            get: { block.listItems.first(where: { $0.id == id })?.text ?? "" },
+            set: { text in
+                guard let index = block.listItems.firstIndex(where: { $0.id == id }) else { return }
+                block.listItems[index].text = text
+            }
+        )
     }
 
     private func row(_ item: ComposerListItem) -> some View {
@@ -170,10 +186,11 @@ struct ComposerListCanvasBlock: View {
         let isEmpty = item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             marker(for: item)
-            if canEditRows, let index = block.listItems.firstIndex(where: { $0.id == item.id }) {
+            if canEditRows, block.listItems.contains(where: { $0.id == item.id }) {
+                let text = textBinding(for: item.id)
                 TextField(
                     "",
-                    text: $block.listItems[index].text,
+                    text: text,
                     prompt: Text("List").foregroundStyle(readingColor.opacity(0.28)),
                     axis: .vertical
                 )
@@ -183,7 +200,7 @@ struct ComposerListCanvasBlock: View {
                 .tint(readingColor)
                 .focused($focusedItemID, equals: item.id)
                 .lineLimit(1...40)
-                .onChange(of: block.listItems[index].text) { _, _ in
+                .onChange(of: text.wrappedValue) { _, _ in
                     continueRow(item.id)
                 }
                 .disabled(isRelocating)
@@ -214,7 +231,7 @@ struct ComposerListCanvasBlock: View {
                 })
                 .accessibilityLabel(item.isChecked ? "Checked" : "Unchecked")
                 .accessibilityAddTraits(.isButton)
-        } else if let index = block.listItems.firstIndex(where: { $0.id == item.id }) {
+        } else if let index = displayedItems.firstIndex(where: { $0.id == item.id }) {
             Text(block.listMarker.marker(at: index))
                 .font(activeFont)
                 .foregroundStyle(readingColor.opacity(0.85))

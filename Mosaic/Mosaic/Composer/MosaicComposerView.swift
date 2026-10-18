@@ -27,6 +27,13 @@ struct MosaicComposerView: View {
     @FocusState private var focusedTextBlockID: ComposerBlockID?
     @State private var textDragSession = TextDragSession()
     @GestureState private var textDragVisual = TextDragVisual.inactive
+    /// True while any block press is down; it resets on its own when SwiftUI cancels the gesture.
+    @GestureState private var blockPressActive = false
+    /// What a viewer changed by browsing (tab picked, carousel swiped, table entry, calendar day).
+    /// Shown while viewing only; never saved, synced, or added to undo.
+    @State private var viewingOverrides: [ComposerBlockID: ComposerBlock] = [:]
+    /// A trim made inside the crop editor, applied only when the editor's Done is tapped.
+    @State private var pendingTrimmedFile: String?
     @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
     @State private var showMediaPicker = false
@@ -68,7 +75,9 @@ struct MosaicComposerView: View {
     @State private var profileRefresh = 0
 
     private var blocks: [ComposerBlock] {
-        store.blocks(for: documentID)
+        let stored = store.blocks(for: documentID)
+        guard chrome.isViewing, !viewingOverrides.isEmpty else { return stored }
+        return stored.map { viewingOverrides[$0.id] ?? $0 }
     }
 
     private var visibleBlocks: [ComposerBlock] {
@@ -341,10 +350,26 @@ struct MosaicComposerView: View {
                 grownCanvasHeight = max(grownCanvasHeight, needed)
             }
             .onChange(of: chrome.isViewing) { _, viewing in
-                guard viewing else { return }
+                guard viewing else {
+                    viewingOverrides = [:]
+                    lockLayoutHeightIfNeeded()
+                    return
+                }
                 menuExpanded = false
                 placingOption = nil
                 dismissBlockInteraction()
+            }
+            .onChange(of: blockPressActive) { _, active in
+                guard !active else { return }
+                // `onEnded` runs in the same turn when the press finishes normally; anything still
+                // set on the next turn belongs to a press that was cancelled.
+                Task { @MainActor in
+                    await Task.yield()
+                    guard !blockPressActive, textPinchVisual.blockID == nil else { return }
+                    if textDragSession.blockID != nil || dragScrollRelay.active || textDragSession.resizeCorner != nil {
+                        resetGestureState()
+                    }
+                }
             }
     }
 
@@ -400,7 +425,8 @@ struct MosaicComposerView: View {
                     guard let blockID, pendingMediaBlockID == blockID, pickedMediaItems.isEmpty else { return }
                     pendingMediaBlockID = nil
                     if store.block(with: blockID, in: documentID)?.mediaFileName == nil {
-                        store.deleteBlock(blockID, in: documentID)
+                        store.discardPlaceholder(blockID, in: documentID)
+                        clearInteraction(with: blockID)
                     }
                 }
             }
@@ -662,7 +688,7 @@ struct MosaicComposerView: View {
             if isGrouping {
                 ComposerGroupingCatcher(
                     targets: scrollingBlocks.compactMap { block in
-                        guard block.kind != .banner, let frame = blockFrames[block.id], frame.width > 1 else { return nil }
+                        guard ComposerGroupMath.canGroup(block.kind), let frame = blockFrames[block.id], frame.width > 1 else { return nil }
                         return (block.id, frame)
                     }
                 ) { blockID in
@@ -889,17 +915,22 @@ struct MosaicComposerView: View {
     private func blockBinding(for blockID: ComposerBlockID, fallback: ComposerBlock) -> Binding<ComposerBlock> {
         Binding(
             get: {
-                store.block(with: blockID, in: documentID) ?? fallback
+                if chrome.isViewing, let override = viewingOverrides[blockID] { return override }
+                return store.block(with: blockID, in: documentID) ?? fallback
             },
             set: { updated in
                 guard store.block(with: blockID, in: documentID) != nil else { return }
+                if chrome.isViewing {
+                    viewingOverrides[blockID] = updated
+                    return
+                }
                 store.updateBlock(updated, in: documentID)
             }
         )
     }
 
     private var placementDragGesture: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named("composerCanvas"))
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
                 ghostLocation = clamped(point: value.location)
             }
@@ -953,7 +984,7 @@ struct MosaicComposerView: View {
         ghostLocation = clamped(
             point: CGPoint(
                 x: canvasSize.width * 0.5,
-                y: layoutHeight * 0.35
+                y: scrollBubbleRail.metrics.offset + 280
             )
         )
     }
@@ -1005,7 +1036,8 @@ struct MosaicComposerView: View {
         guard let blockID = editedCarouselID else { return }
         editedCarouselID = nil
         guard store.block(with: blockID, in: documentID)?.carouselItems.isEmpty == true else { return }
-        store.deleteBlock(blockID, in: documentID)
+        store.discardPlaceholder(blockID, in: documentID)
+        clearInteraction(with: blockID)
     }
 
     private func importMedia(_ item: PhotosPickerItem, into blockID: ComposerBlockID) async {
@@ -1013,16 +1045,15 @@ struct MosaicComposerView: View {
             store.setMedia(fileName, for: blockID, in: documentID, resetsFraming: true)
         } else if let block = store.block(with: blockID, in: documentID),
                   block.kind != .banner, block.mediaFileName == nil {
-            store.deleteBlock(blockID, in: documentID)
+            store.discardPlaceholder(blockID, in: documentID)
+            clearInteraction(with: blockID)
         }
     }
 
     private func importPlacedMedia(_ items: [PhotosPickerItem], firstBlockID: ComposerBlockID, origin: CGPoint?) async {
         guard let first = items.first else { return }
         await importMedia(first, into: firstBlockID)
-        if store.block(with: firstBlockID, in: documentID) != nil {
-            selectedBlockID = firstBlockID
-        }
+        selectPageBlock(firstBlockID)
         guard let origin else { return }
         for (offset, item) in items.dropFirst().enumerated() {
             let point = mediaClusterPoint(index: offset + 1, origin: origin)
@@ -1035,13 +1066,12 @@ struct MosaicComposerView: View {
         guard canvasSize.width > 0, canvasSize.height > 0 else { return }
         let origin = placementOrigin(for: option, at: point)
         let position = normalizedPosition(from: origin)
-        let newID = store.addBlock(option.blockKind, at: position, to: documentID)
+        let newID = store.addBlock(option.blockKind, at: position, to: documentID) { block in
+            guard option == .content else { return }
+            block.socialPlatform = "content:youtube"
+            block.text = "Content"
+        }
         if option == .content {
-            if var item = store.block(with: newID, in: documentID) {
-                item.socialPlatform = "content:youtube"
-                item.text = "Content"
-                store.updateBlock(item, in: documentID)
-            }
             selectedBlockID = newID
         } else if option.blockKind == .social {
             selectedBlockID = newID
@@ -1095,6 +1125,14 @@ struct MosaicComposerView: View {
         let finishedID = editingBlockID
         editingBlockID = nil
         focusedTextBlockID = nil
+        // A text or heading left empty was never written; remove it with the step that added it.
+        if let finishedID, let finished = blocks.first(where: { $0.id == finishedID }),
+           finished.kind == .text || finished.kind == .heading,
+           finished.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.discardPlaceholder(finishedID, in: documentID)
+            clearInteraction(with: finishedID)
+            return
+        }
         if let finishedID, blocks.contains(where: { $0.id == finishedID && (isTextLikeKind($0.kind) || $0.kind == .pursuit || $0.kind == .node) }) {
             selectedBlockID = finishedID
         }
@@ -1107,7 +1145,7 @@ struct MosaicComposerView: View {
         styleMenuBlockID = nil
         clipboardMenuBlockID = nil
         pasteAnchor = nil
-        textDragSession.reset()
+        resetGestureState()
     }
 
     private func handleEmptyCanvasTap(at point: CGPoint) {
@@ -1171,7 +1209,7 @@ struct MosaicComposerView: View {
             }
             clipboardMenuButton("Cut") {
                 store.cutBlock(blockID, in: documentID)
-                clipboardMenuBlockID = nil
+                clearInteraction(with: blockID)
             }
         }
         .fixedSize()
@@ -1213,6 +1251,7 @@ struct MosaicComposerView: View {
             .updating($textDragVisual) { value, visual, _ in
                 updateTextDrag(for: block, value: value, visual: &visual)
             }
+            .updating($blockPressActive) { _, active, _ in active = true }
             .onChanged { value in
                 let distance = hypot(value.translation.width, value.translation.height)
                 if distance > 10 || textDragSession.resizeCorner != nil || textDragSession.graphResizing {
@@ -1526,20 +1565,35 @@ struct MosaicComposerView: View {
     }
 
     private func deleteBlock(_ blockID: ComposerBlockID) {
+        guard store.blocks(for: documentID).contains(where: { $0.id == blockID }) else {
+            clearInteraction(with: blockID)
+            return
+        }
         store.deleteBlock(blockID, in: documentID)
-        if editingBlockID == blockID {
-            editingBlockID = nil
-        }
-        if selectedBlockID == blockID {
-            selectedBlockID = nil
-        }
-        if styleMenuBlockID == blockID {
-            styleMenuBlockID = nil
-        }
-        if clipboardMenuBlockID == blockID {
-            clipboardMenuBlockID = nil
-        }
+        clearInteraction(with: blockID)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// A removed block must not keep the selection, its menus, editing, or an in-progress gesture.
+    private func clearInteraction(with blockID: ComposerBlockID) {
+        if editingBlockID == blockID { editingBlockID = nil }
+        if focusedTextBlockID == blockID { focusedTextBlockID = nil }
+        if selectedBlockID == blockID { selectedBlockID = nil }
+        if styleMenuBlockID == blockID { styleMenuBlockID = nil }
+        if clipboardMenuBlockID == blockID { clipboardMenuBlockID = nil }
+        if textDragSession.blockID == blockID || resizePreview?.blockID == blockID {
+            resetGestureState()
+        }
+    }
+
+    /// Clears every in-progress drag, resize, and press. Gestures that are cancelled (a second
+    /// finger, a system interruption, the block disappearing) never reach `onEnded`.
+    private func resetGestureState() {
+        cancelClipboardPress()
+        textDragSession.reset()
+        stopDragFollow()
+        resizePreview = nil
+        socialCornerResizing = false
     }
 
     private func moveBlock(_ blockID: ComposerBlockID, to canvasPoint: CGPoint) {
@@ -1550,17 +1604,23 @@ struct MosaicComposerView: View {
 
     /// After layout, nudge anything that still hangs past a journal page edge (media size, etc.).
     private func keepBlocksInsidePage(using frames: [ComposerBlockID: CGRect]) {
-        guard isBookPage, pageViewportHeight > 1 else { return }
+        // Viewing (including visits on a different phone size) never rewrites the owner's layout.
+        guard isBookPage, !chrome.isViewing, pageViewportHeight > 1 else { return }
         let pageWidth = max(viewportWidth > 1 ? viewportWidth : canvasSize.width, 1)
         let margin = ComposerTabEdge.dragMargin
         for block in blocks {
             guard let frame = frames[block.id], frame.width > 1, frame.height > 1 else { continue }
             var dx: CGFloat = 0
             var dy: CGFloat = 0
-            if frame.maxX > pageWidth - margin { dx -= frame.maxX - (pageWidth - margin) }
-            if frame.minX < margin { dx += margin - frame.minX }
-            if frame.maxY > pageViewportHeight - margin { dy -= frame.maxY - (pageViewportHeight - margin) }
-            if frame.minY < margin { dy += margin - frame.minY }
+            // A piece larger than the page can't be nudged inside; moving it would only bounce it.
+            if frame.width <= pageWidth - 2 * margin {
+                if frame.maxX > pageWidth - margin { dx -= frame.maxX - (pageWidth - margin) }
+                if frame.minX < margin { dx += margin - frame.minX }
+            }
+            if frame.height <= pageViewportHeight - 2 * margin {
+                if frame.maxY > pageViewportHeight - margin { dy -= frame.maxY - (pageViewportHeight - margin) }
+                if frame.minY < margin { dy += margin - frame.minY }
+            }
             guard abs(dx) > 1 || abs(dy) > 1 else { continue }
             let origin = canvasPoint(for: block.position)
             moveBlock(block.id, to: CGPoint(x: origin.x + dx, y: origin.y + dy))
@@ -1591,7 +1651,7 @@ struct MosaicComposerView: View {
             ComposerVideoTrimEditor(url: url) {
                 mediaEditRequest = nil
             } onSave: { editedURL in
-                if let fileName = try? store.saveMediaFile(from: editedURL) {
+                if let fileName = try? store.saveMediaFile(from: editedURL, removeSource: true) {
                     store.setMedia(fileName, for: blockID, in: documentID)
                 }
                 mediaEditRequest = nil
@@ -1617,11 +1677,19 @@ struct MosaicComposerView: View {
                     initialPanY: block.mediaPanY,
                     initialFrameAspect: contentCropAspect(for: block, fileName: fileName) ?? block.mediaFrameAspect,
                     showsShapes: !block.isContent,
-                    onCancel: { mediaEditRequest = nil },
+                    onCancel: {
+                        discardPendingTrim()
+                        mediaEditRequest = nil
+                    },
                     onDone: { shape, zoom, panX, panY, frameAspect in
                         guard var current = store.block(with: blockID, in: documentID) else {
+                            discardPendingTrim()
                             mediaEditRequest = nil
                             return
+                        }
+                        if let pendingTrimmedFile {
+                            current.mediaFileName = pendingTrimmedFile
+                            self.pendingTrimmedFile = nil
                         }
                         current.mediaShape = shape
                         current.mediaZoom = zoom
@@ -1633,13 +1701,21 @@ struct MosaicComposerView: View {
                         mediaEditRequest = nil
                     },
                     onReplaceVideo: { editedURL in
-                        guard let fileName = try? store.saveMediaFile(from: editedURL) else { return nil }
-                        store.setMedia(fileName, for: blockID, in: documentID)
+                        // Kept aside until Done, so Cancel leaves the board's video untouched.
+                        guard let fileName = try? store.saveMediaFile(from: editedURL, removeSource: true) else { return nil }
+                        discardPendingTrim()
+                        pendingTrimmedFile = fileName
                         return store.mediaURL(for: fileName)
                     }
                 )
             }
         }
+    }
+
+    private func discardPendingTrim() {
+        guard let pendingTrimmedFile else { return }
+        try? FileManager.default.removeItem(at: store.mediaURL(for: pendingTrimmedFile))
+        self.pendingTrimmedFile = nil
     }
 
     private func contentCropAspect(for block: ComposerBlock, fileName: String) -> Double? {
@@ -2057,6 +2133,8 @@ struct MosaicComposerView: View {
             visit.askToRequest(id)
             return
         }
+        // "View as a visitor" must not open what a real visitor finds locked.
+        guard privacyDisplay.look(of: block) != .locked else { return }
         guard let pursuitID = block.pursuitID else { return }
         editingBlockID = nil
         focusedTextBlockID = nil
@@ -2117,7 +2195,7 @@ struct MosaicComposerView: View {
     }
 
     private func lockLayoutHeightIfNeeded() {
-        guard store.layoutHeight(for: documentID) == nil else { return }
+        guard !chrome.isViewing, store.layoutHeight(for: documentID) == nil else { return }
         store.lockLayoutHeight(Double(proposedLayoutHeight), for: documentID)
     }
 
@@ -2125,8 +2203,9 @@ struct MosaicComposerView: View {
         let enabled = store.canUndo(in: documentID)
         return Button {
             store.undo(in: documentID)
-            if let selectedBlockID, store.block(with: selectedBlockID, in: documentID) == nil {
+            if let selectedBlockID, !store.blocks(for: documentID).contains(where: { $0.id == selectedBlockID }) {
                 self.selectedBlockID = nil
+                resetGestureState()
             }
             editingBlockID = nil
             focusedTextBlockID = nil
@@ -2192,7 +2271,7 @@ struct MosaicComposerView: View {
     }
 
     private func toggleGroupSelection(_ blockID: ComposerBlockID) {
-        guard store.block(with: blockID, in: documentID)?.kind != .banner else { return }
+        guard let kind = store.block(with: blockID, in: documentID)?.kind, ComposerGroupMath.canGroup(kind) else { return }
         if groupSelection.contains(blockID) {
             groupSelection.remove(blockID)
         } else {
@@ -2201,7 +2280,7 @@ struct MosaicComposerView: View {
     }
 
     private func finishGrouping() {
-        let members = blocks.filter { groupSelection.contains($0.id) && $0.kind != .banner }
+        let members = blocks.filter { groupSelection.contains($0.id) && ComposerGroupMath.canGroup($0.kind) }
         let tabID = blocks.first(where: { $0.kind == .tabs })?.selectedTabID
         guard let group = ComposerGroupMath.groupedBlock(
             members: members,
@@ -2210,8 +2289,9 @@ struct MosaicComposerView: View {
             layoutHeight: layoutHeight,
             tabID: tabID
         ) else { return }
+        let memberIDs = Set(group.groupMembers.map(\.id))
         var next = blocks
-        next.removeAll { groupSelection.contains($0.id) }
+        next.removeAll { memberIDs.contains($0.id) }
         next.append(group)
         store.replacePage(next, in: documentID)
         isGrouping = false

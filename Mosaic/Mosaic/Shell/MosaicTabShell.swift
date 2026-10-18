@@ -171,7 +171,13 @@ struct MosaicTabShell: View {
                         mediaFile: store.mediaURL(for:),
                         protectingDocumentIDs: store.syncProtectedDocumentUUIDs
                     )
+                } else if let account {
+                    // A push that failed while offline goes out once the app is back.
+                    remoteSync.resumeIfNeeded(account: account)
                 }
+            } else if phase == .background, let account {
+                // An edit still in its short pause would otherwise wait until the next launch.
+                remoteSync.flushNow(account: account)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {

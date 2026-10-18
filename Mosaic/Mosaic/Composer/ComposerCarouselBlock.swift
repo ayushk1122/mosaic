@@ -672,6 +672,8 @@ struct ComposerCarouselEditor: View {
                         next.fileName = try ComposerContentCoverFile.save(cover, to: store)
                         posters[next.fileName] = cover
                     }
+                } else if url.absoluteString == draft.link, posters[draft.fileName] == nil {
+                    // The saved cover just hadn't loaded (or synced) yet; keep it, as the board card does.
                 } else {
                     next.fileName = ""
                 }
@@ -700,7 +702,8 @@ struct ComposerCarouselEditor: View {
             .disabled(item.isPending)
             .accessibilityLabel(item.kind == .media ? "Replace item" : "Edit item")
 
-            if canRemove, !item.isPending {
+            // A pending item left over from an interrupted import (undo, relaunch) can be removed.
+            if canRemove, !item.isPending || !isImporting {
                 Button {
                     remove(item)
                 } label: {
