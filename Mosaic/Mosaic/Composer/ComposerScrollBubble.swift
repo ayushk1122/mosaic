@@ -6,6 +6,9 @@ struct ComposerScrollBubbleMetrics: Equatable, Sendable {
     var offset: CGFloat = 0
     var minOffset: CGFloat = 0
     var maxOffset: CGFloat = 0
+    var containerHeight: CGFloat = 0
+    var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
 
     init(offset: CGFloat = 0, minOffset: CGFloat = 0, maxOffset: CGFloat = 0) {
         self.offset = offset
@@ -20,6 +23,16 @@ struct ComposerScrollBubbleMetrics: Equatable, Sendable {
             geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height,
             minOffset
         )
+        containerHeight = geometry.containerSize.height
+        topInset = geometry.contentInsets.top
+        bottomInset = geometry.contentInsets.bottom
+    }
+
+    /// The part of the board on screen, in the board's own coordinates. Nil before the first layout.
+    func visibleContentRect(width: CGFloat) -> CGRect? {
+        guard containerHeight > 1, width > 1 else { return nil }
+        let top = offset + topInset
+        return CGRect(x: 0, y: top, width: width, height: max(containerHeight - topInset - bottomInset, 1))
     }
 
     /// A board that fits on screen has nothing to scroll.

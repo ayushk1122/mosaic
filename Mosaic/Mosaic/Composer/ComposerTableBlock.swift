@@ -12,6 +12,7 @@ struct ComposerTableCanvasBlock: View {
     var onActivate: () -> Void
 
     @Environment(ComposerStore.self) private var store
+    @Environment(\.composerBlockLocked) private var isLocked
     @FocusState private var focus: TableFocus?
     @State private var editing: TableFocus?
     @State private var pinchScale: CGFloat = 1
@@ -103,7 +104,7 @@ struct ComposerTableCanvasBlock: View {
         .padding(showsChrome ? 10 * metric : 0)
         .fixedSize(horizontal: true, vertical: true)
         .overlay {
-            TablePinchCatcher(isEnabled: !isViewing && !isLifted && !isRelocating) { scale in
+            TablePinchCatcher(isEnabled: !isViewing && !isLifted && !isRelocating && !isLocked) { scale in
                 pinchScale = min(max(scale, 0.35), 4)
             } onEnded: { scale in
                 onActivate()

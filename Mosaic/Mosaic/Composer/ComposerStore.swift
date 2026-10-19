@@ -578,6 +578,49 @@ final class ComposerStore {
         block.tableEntries[entryIndex].rows = block.tableRows
     }
 
+    /// Draw order is the page's block order: the last block is on top.
+    func bringToFront(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        reorder(blockID, toFront: true, in: documentID)
+    }
+
+    func sendToBack(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        reorder(blockID, toFront: false, in: documentID)
+    }
+
+    private func reorder(_ blockID: ComposerBlockID, toFront: Bool, in documentID: ComposerDocumentID?) {
+        let edit = beginEdit(in: documentID)
+        mutateBlocks(for: documentID) { blocks in
+            guard let index = blocks.firstIndex(where: { $0.id == blockID }) else { return }
+            let block = blocks.remove(at: index)
+            if toFront {
+                blocks.append(block)
+            } else {
+                blocks.insert(block, at: 0)
+            }
+        }
+        finishEdit(edit)
+    }
+
+    func setRotation(_ degrees: Double, for blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        let angle = ComposerRotation.normalized(degrees)
+        let edit = beginEdit(in: documentID)
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { block in
+                guard block.canRotate, !block.isLocked else { return }
+                block.rotation = angle
+            }
+        }
+        finishEdit(edit)
+    }
+
+    func setLocked(_ locked: Bool, for blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        let edit = beginEdit(in: documentID)
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { $0.isLocked = locked }
+        }
+        finishEdit(edit)
+    }
+
     func moveBlock(_ blockID: ComposerBlockID, direction: MoveDirection, in documentID: ComposerDocumentID?) {
         let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in

@@ -1183,6 +1183,50 @@ enum ComposerTable {
     }
 }
 
+/// Tilting pieces. Angles are degrees, clockwise, kept in (-180, 180].
+enum ComposerRotation {
+    static let snapAngles: [Double] = [-180, -90, -45, -15, 0, 15, 45, 90, 180]
+    static let snapTolerance: Double = 4
+
+    static func normalized(_ degrees: Double) -> Double {
+        guard degrees.isFinite else { return 0 }
+        var angle = degrees.truncatingRemainder(dividingBy: 360)
+        if angle > 180 { angle -= 360 }
+        if angle <= -180 { angle += 360 }
+        return angle
+    }
+
+    /// Settles near 0°, ±15°, ±45°, ±90°, and 180° so pieces straighten easily.
+    static func snapped(_ degrees: Double) -> (angle: Double, didSnap: Bool) {
+        let angle = normalized(degrees)
+        guard let target = snapAngles.first(where: { abs($0 - angle) <= snapTolerance }) else {
+            return (angle, false)
+        }
+        return (normalized(target), true)
+    }
+
+    /// The handle sits straight above the piece's center, so its direction from the center is the angle.
+    static func handleAngle(fromCenterTo vector: CGSize) -> Double {
+        guard vector.width != 0 || vector.height != 0 else { return 0 }
+        return normalized(atan2(Double(vector.height), Double(vector.width)) * 180 / .pi + 90)
+    }
+}
+
+extension ComposerBlock {
+    /// Visual pieces tilt. Grids (tables, calendars, graphs) stay straight so they remain easy to use,
+    /// and the tabs bar and banner are pinned to the page.
+    var canRotate: Bool {
+        switch kind {
+        case .media, .text, .heading, .list, .social, .pursuit, .node, .carousel, .scrapbook, .group:
+            true
+        case .link:
+            isContent
+        case .calendar, .graph, .tabs, .banner, .table:
+            false
+        }
+    }
+}
+
 struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     let id: ComposerBlockID
     var kind: BlockKind
@@ -1245,9 +1289,13 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var scrapbookPageIDs: [ComposerDocumentID]
     /// Page shown the last time the book was open.
     var scrapbookIndex: Int
+    /// Tilt in degrees, clockwise, around the piece's center. Older boards decode as 0.
+    var rotation: Double
+    /// A locked piece can't be moved, resized, rotated, or deleted; its content can still be edited.
+    var isLocked: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked
     }
 
     init(
@@ -1303,7 +1351,9 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         groupWidth: Double = 0,
         groupHeight: Double = 0,
         scrapbookPageIDs: [ComposerDocumentID] = [],
-        scrapbookIndex: Int = 0
+        scrapbookIndex: Int = 0,
+        rotation: Double = 0,
+        isLocked: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -1358,6 +1408,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.groupHeight = groupHeight
         self.scrapbookPageIDs = scrapbookPageIDs
         self.scrapbookIndex = scrapbookIndex
+        self.rotation = rotation
+        self.isLocked = isLocked
     }
 
     init(from decoder: Decoder) throws {
@@ -1416,6 +1468,8 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         groupHeight = try container.decodeIfPresent(Double.self, forKey: .groupHeight) ?? 0
         scrapbookPageIDs = try container.decodeIfPresent([ComposerDocumentID].self, forKey: .scrapbookPageIDs) ?? []
         scrapbookIndex = try container.decodeIfPresent(Int.self, forKey: .scrapbookIndex) ?? 0
+        rotation = try container.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+        isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
         if kind == .table {
             ComposerTable.ensure(&self)
         }

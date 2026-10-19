@@ -177,6 +177,72 @@ struct ComposerStoreUndoTests {
     }
 
     @Test
+    func layerOrderMovesAPieceToTheFrontOrBack() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let a = store.addBlock(.text, to: nil)
+        let b = store.addBlock(.media, to: nil)
+        let c = store.addBlock(.social, to: nil)
+
+        store.sendToBack(c, in: nil)
+        #expect(store.blocks(for: nil).map(\.id) == [c, a, b])
+        store.bringToFront(a, in: nil)
+        #expect(store.blocks(for: nil).map(\.id) == [c, b, a])
+
+        // Already in front: nothing changes, so Undo reverts the previous move.
+        store.bringToFront(a, in: nil)
+        store.undo(in: nil)
+        #expect(store.blocks(for: nil).map(\.id) == [c, a, b])
+    }
+
+    @Test
+    func lockingIsAnUndoableEditThatKeepsContent() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let id = store.addBlock(.text, to: nil)
+        store.setLocked(true, for: id, in: nil)
+        #expect(store.block(with: id, in: nil)?.isLocked == true)
+
+        var edited = try #require(store.block(with: id, in: nil))
+        edited.text = "Still editable"
+        store.updateBlock(edited, in: nil)
+        #expect(store.block(with: id, in: nil)?.text == "Still editable")
+        #expect(store.block(with: id, in: nil)?.isLocked == true)
+
+        store.undo(in: nil)
+        store.undo(in: nil)
+        #expect(store.block(with: id, in: nil)?.isLocked == false)
+    }
+
+    @Test
+    func rotationIsUndoableAndRespectsLockAndKind() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let photo = store.addBlock(.media, to: nil)
+        store.setRotation(372, for: photo, in: nil)
+        #expect(store.block(with: photo, in: nil)?.rotation == 12)
+        store.undo(in: nil)
+        #expect(store.block(with: photo, in: nil)?.rotation == 0)
+
+        store.setLocked(true, for: photo, in: nil)
+        store.setRotation(30, for: photo, in: nil)
+        #expect(store.block(with: photo, in: nil)?.rotation == 0)
+
+        let pursuitID = try #require(store.block(with: store.addBlock(.pursuit, to: nil), in: nil)?.pursuitID)
+        let table = store.addBlock(.table, to: pursuitID)
+        store.setRotation(30, for: table, in: pursuitID)
+        #expect(store.block(with: table, in: pursuitID)?.rotation == 0)
+    }
+
+    @Test
+    func olderBlocksDecodeUnrotatedAndUnlocked() throws {
+        let block = ComposerBlock.make(kind: .media, position: BlockPosition(x: 0.1, y: 0.1))
+        var json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(block)) as? [String: Any])
+        json.removeValue(forKey: "rotation")
+        json.removeValue(forKey: "isLocked")
+        let decoded = try JSONDecoder().decode(ComposerBlock.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.rotation == 0)
+        #expect(!decoded.isLocked)
+    }
+
+    @Test
     func anUnreadableSnapshotIsKeptAsABackup() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let location = ComposerStorageLocation(root: root)
