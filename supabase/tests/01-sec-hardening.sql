@@ -1,6 +1,24 @@
 -- Adversarial checks for SEC-01/02/03 write lockdown and ownership binds.
 begin;
-select plan(14);
+select plan(16);
+
+-- Uploads use x-upsert, which needs SELECT; a new file is not yet in any board's mediaAssets.
+select ok(
+    exists (
+        select 1 from pg_policies
+         where schemaname = 'storage' and tablename = 'objects'
+           and policyname = 'media_storage_owner_select' and cmd = 'SELECT'
+    ),
+    'owners can read their own media folder, so new uploads are accepted'
+);
+select ok(
+    not exists (
+        select 1 from pg_policies
+         where schemaname = 'storage' and tablename = 'objects'
+           and policyname = 'media_storage_owner_all'
+    ),
+    'the old catch-all owner media policy stays removed'
+);
 
 select has_function('public', 'delete_documents', 'delete_documents RPC exists');
 select has_function('public', 'finalize_media_asset', 'finalize_media_asset RPC exists');

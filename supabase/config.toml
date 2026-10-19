@@ -387,6 +387,10 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# Callers are not signed in yet; the function validates its own input and uses Auth for credentials.
+[functions.username-login]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

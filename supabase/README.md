@@ -13,6 +13,7 @@ This directory versions the Mosaic database schema so a fresh local database can
 - `migrations/20261012180000_baseline.sql` — squashed schema captured from Mosaic-dev on 2026-10-16 (tables, functions, RLS, storage buckets/policies, grants), including `save_document` pursuit↔node role moves and the foreign-key covering indexes from the beta-readiness review
 - `migrations_archive/` — earlier partial migration files kept for history; not applied by `supabase db reset`
 - `tests/` — SQL regression tests for local `supabase test db`
+- `functions/username-login/` — Edge Function for password sign-in by `@username`; deploy with `supabase functions deploy username-login --no-verify-jwt` (also set in `config.toml`)
 
 ## Local workflow
 

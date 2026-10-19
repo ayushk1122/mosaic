@@ -1,6 +1,8 @@
 -- Onboarding schema, grants, and birthday validation.
 begin;
-select plan(9);
+select plan(10);
+
+select hasnt_function('public', 'email_for_login', array['text'], 'usernames cannot be resolved to emails over the API');
 
 select has_function('public', 'onboarding_status', 'onboarding_status exists');
 select has_function('public', 'complete_onboarding', 'complete_onboarding exists');
@@ -17,8 +19,12 @@ select ok(
 );
 
 select ok(
-    not exists (select 1 from public.profiles where onboarded_at is null),
-    'profile rows are never left without onboarded_at'
+    (select column_default is null
+       from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'profiles'
+        and column_name = 'onboarded_at'),
+    'new profiles start without onboarded_at'
 );
 
 do $$
