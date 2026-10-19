@@ -93,6 +93,31 @@ enum ComposerBoardSync {
         return seen
     }
 
+    /// Boards a widget points to that are not in the snapshot, with the role the widget implies.
+    static func missingReferences(in snapshot: ComposerSnapshot) -> [(ComposerDocumentID, ComposerDocumentRole)] {
+        let present = Set(snapshot.pursuits.map(\.id))
+        var missing: [(ComposerDocumentID, ComposerDocumentRole)] = []
+        var seen = Set<ComposerDocumentID>()
+        func note(_ id: ComposerDocumentID, _ role: ComposerDocumentRole) {
+            guard !present.contains(id), seen.insert(id).inserted else { return }
+            missing.append((id, role))
+        }
+        func walk(_ blocks: [ComposerBlock]) {
+            for block in blocks {
+                if block.kind == .scrapbook {
+                    block.scrapbookPageIDs.forEach { note($0, .page) }
+                }
+                if let id = block.pursuitID, block.kind == .pursuit || block.kind == .node {
+                    note(id, block.kind == .node ? .node : .pursuit)
+                }
+                walk(block.groupMembers)
+            }
+        }
+        walk(snapshot.mosaicBlocks)
+        snapshot.pursuits.forEach { walk($0.blocks) }
+        return missing
+    }
+
     /// Drops Pursuit, node, and page rows that no board still points to. Returns the removed ids.
     /// `protecting` keeps cut-but-not-pasted documents alive until the clipboard moves on.
     @discardableResult

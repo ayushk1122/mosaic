@@ -18,6 +18,8 @@ struct ComposerTextCanvasBlock: View {
     var maxContentWidth: CGFloat? = nil
     /// Hard bottom edge inside a pursuit / node widget. Nil means no vertical cap.
     var maxContentHeight: CGFloat? = nil
+    /// Viewers never see the "Text" / "Heading" placeholder of an empty block.
+    var isViewing: Bool = false
 
     @State private var showsStyleDialog = false
     @State private var itemFrame: CGRect = .zero
@@ -220,7 +222,7 @@ struct ComposerTextCanvasBlock: View {
         Text(block.text.isEmpty ? (isHeading ? "Heading" : "Text") : block.text)
             .font(activeFont)
             .underline(block.style.isUnderlined, color: readingColor)
-            .foregroundStyle(readingColor.opacity(block.text.isEmpty ? 0.28 : 1))
+            .foregroundStyle(readingColor.opacity(block.text.isEmpty ? (isViewing ? 0 : 0.28) : 1))
             .multilineTextAlignment(block.style.alignment.alignment)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.95 : 0), radius: showsMoveAffordance ? 2 : 0)
             .shadow(color: .white.opacity(showsMoveAffordance ? 0.55 : 0), radius: showsMoveAffordance ? 10 : 0)

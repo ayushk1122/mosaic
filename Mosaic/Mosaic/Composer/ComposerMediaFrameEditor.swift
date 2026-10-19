@@ -417,14 +417,17 @@ struct ComposerMediaFrameEditor: View {
                         }
                         Button("Done", action: commit)
                             .fontWeight(.semibold)
+                            .disabled(!isReady)
                     }
                 }
             }
         }
         .fullScreenCover(item: $trimRequest) { request in
             ComposerVideoTrimEditor(url: request.url, maximumDuration: request.maximumDuration) {
+                ComposerVideoCompatibility.discardExport(request.url, source: playbackURL)
                 trimRequest = nil
             } onSave: { editedURL in
+                ComposerVideoCompatibility.discardExport(request.url, source: playbackURL)
                 if let saved = onReplaceVideo(editedURL) {
                     playbackURL = saved
                 }
@@ -441,14 +444,20 @@ struct ComposerMediaFrameEditor: View {
                 guard !Task.isCancelled else { return }
                 aspect = loadedAspect
             } else {
-                let loaded = UIImage(contentsOfFile: playbackURL.path)
+                let url = playbackURL
+                let loaded = await Task.detached(priority: .userInitiated) {
+                    ComposerAnimatedImage.image(contentsOf: url)
+                }.value
+                guard !Task.isCancelled else { return }
                 image = loaded
                 if let loaded, loaded.size.height > 0 {
                     aspect = loaded.size.width / loaded.size.height
                 }
             }
+            // After a trim the same video reloads; keep the crop the person already set.
+            guard !isReady else { return }
             if initialFrameAspect <= 0.05, shape.presetAspect == nil {
-                frameAspect = min(max(aspect, MediaFrameShape.minimumAspect), MediaFrameShape.maximumAspect)
+                frameAspect = ComposerMediaCrop.originalShape(contentAspect: aspect)
             }
             crop = MediaCropMath.window(
                 contentAspect: aspect,

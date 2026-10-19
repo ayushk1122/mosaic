@@ -171,11 +171,26 @@ struct MosaicTabShell: View {
                         mediaFile: store.mediaURL(for:),
                         protectingDocumentIDs: store.syncProtectedDocumentUUIDs
                     )
+                } else if let account {
+                    // A push that failed while offline goes out once the app is back.
+                    remoteSync.resumeIfNeeded(account: account)
                 }
+            } else if phase == .background, let account {
+                // An edit still in its short pause would otherwise wait until the next launch.
+                remoteSync.flushNow(account: account)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let failure = downloads.failure, !downloads.isLoading {
+            if store.saveFailed {
+                Text("Your latest changes couldn’t be saved on this phone. Free up storage — Mosaic keeps trying.")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.36, green: 0.18, blue: 0.18))
+                    .accessibilityIdentifier("mosaic.saveStatus")
+            } else if let failure = downloads.failure, !downloads.isLoading {
                 HStack(spacing: 10) {
                     Text(failure)
                         .font(.caption)

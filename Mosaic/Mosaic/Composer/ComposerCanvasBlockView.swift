@@ -64,7 +64,8 @@ struct ComposerBlockActions {
     var onEditCarousel: () -> Void
     var onSelectTabs: () -> Void
     var onEditSocial: () -> Void
-    var onUngroup: () -> Void
+    /// Nil for a group nested inside another group, which can't be ungrouped in place.
+    var onUngroup: (() -> Void)?
     var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)?
     var onBodyTap: (() -> Void)?
     var onOpenSocial: (() -> Void)?
@@ -125,6 +126,7 @@ struct ComposerCanvasBlockView: View {
         .modifier(NonTextInteractionModifier(
             handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
             editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
+            isViewing: isViewing,
             onTap: actions.onBeginEditing,
             onDelete: actions.onDelete
         ))
@@ -145,7 +147,8 @@ struct ComposerCanvasBlockView: View {
                     onCommit: actions.onCommit,
                     onStyleChange: actions.onStyleChange,
                     onStyleMenuChange: actions.onStyleMenuChange,
-                    onClaimFormatTap: actions.onClaimFormatTap
+                    onClaimFormatTap: actions.onClaimFormatTap,
+                    isViewing: isViewing
                 )
             case .list:
                 ComposerListCanvasBlock(
@@ -433,11 +436,12 @@ struct ComposerCanvasBlockView: View {
 private struct NonTextInteractionModifier: ViewModifier {
     let handlesCanvasGestures: Bool
     let editsOnTap: Bool
+    let isViewing: Bool
     let onTap: () -> Void
     let onDelete: () -> Void
 
     func body(content: Content) -> some View {
-        if handlesCanvasGestures {
+        if handlesCanvasGestures || isViewing {
             content
         } else if editsOnTap {
             content

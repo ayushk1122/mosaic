@@ -5,8 +5,9 @@
 
 ## Current structure
 
-- `Mosaic/Mosaic/Account/MosaicAccount.swift`: Google OAuth with PKCE, token refresh, and Keychain sessions.
-- `Mosaic/Mosaic/MosaicApp.swift`: launch, login, and account preparation before the editor opens.
+- `Mosaic/Mosaic/Account/MosaicAccount.swift`: Google OAuth with PKCE, email and phone one-time codes, token refresh, and Keychain sessions.
+- `Mosaic/Mosaic/MosaicApp.swift`: launch, login, onboarding gate, and account preparation before the editor opens.
+- `Mosaic/Mosaic/Shell/MosaicOnboarding.swift` and `MosaicOnboardingView.swift`: profile setup (username, password, display name, birthday) before the first editor open on a device.
 - `Mosaic/Mosaic/Composer/ComposerStorageLocation.swift`: account-specific local folders and migration of pre-account data.
 - `Mosaic/Mosaic/Composer/ComposerStore.swift`: local editable snapshot and media files.
 - `Mosaic/Mosaic/Composer/Sync/ComposerAccountRestore.swift`: landing-board restoration and safe local installation.
@@ -17,6 +18,12 @@
 - `Mosaic/Mosaic/Shell/`: navigation, discovery, visits, circle, profile, and sharing UI.
 
 ## Login behavior
+
+**Current repository fact:** The default account screen is **Sign in** with email-or-username and password, plus social icons for Google, Apple, email OTP, and phone OTP. **Sign up** verifies the email first: it asks only for an email, sends a one-time code, and after the code is verified the onboarding gate collects username, password, display name, and birthday. Google, Apple, and phone sign-up icons sit below and reach the same onboarding. Sign-in OTP uses `create_user: false`; sign-up OTP uses `create_user: true`. Password sign-in with an email uses the Supabase password grant directly. Password sign-in with a username calls the `username-login` Edge Function (`supabase/functions/username-login`, deployed with `verify_jwt = false` because callers aren't signed in), which looks up the account's email or phone with the service role, performs the password grant, and returns only the session. Unknown usernames, wrong passwords, and unconfirmed accounts return the same `invalid_credentials` response. The earlier anonymous `email_for_login` RPC, which returned the email for any username, was dropped in `20261017210000_drop_email_for_login.sql`. **Assumption:** Auth's sign-in rate limit is applied per caller through the forwarded client address; if it's applied to the function's own address instead, username sign-ins share one limit and may need their own throttling.
+
+**Current repository fact:** After sign-in, the app reads `onboarding_status` before downloading boards. Accounts with `onboarded_at` set (including existing users backfilled at migration time) proceed to account preparation. New accounts complete a one-time setup for username, password, display name, and birthday. Every sign-up path attaches the password during onboarding via `PUT /auth/v1/user` before `complete_onboarding`, so those users can later sign in with `@username` or email and password as well as their original provider. Birthday lives in owner-only `profile_private`, not in public `profiles`. **Open question:** minimum age / age-gate policy once product and legal requirements are settled. **Current repository fact:** Existing backfilled accounts that never set a password keep using their original provider until they set one. Completion is decided only by `onboarded_at`, never by the username's shape: onboarding starts from the server's current username, display name, and birthday, so a person may keep the generated `user_…` handle. `20261017200000_reopen_placeholder_onboarding.sql` was a one-time cleanup that reopened setup for pre-onboarding accounts the backfill had marked complete; it is not an ongoing rule. The device-side onboarding cache is cleared on sign-out, so a fresh sign-in always asks `onboarding_status`; a restored session uses the cache to open without waiting on the network.
+
+**Current repository fact:** A repeated `complete_onboarding` call that the server rejects as already onboarded is treated as success after re-reading `onboarding_status`. Entering an email that already has an account on the sign-up screen sends a code to that account and signs in to it; if it was already onboarded, it opens normally.
 
 **Current repository fact:** The stored session is loaded from Keychain without waiting for a network refresh. Network operations share a lazy token refresh; a connection failure leaves the cached account available. The app checks for legacy local data belonging to the account. An account with a readable local snapshot and sync state opens that local copy immediately, including offline edits.
 
@@ -34,7 +41,7 @@ The starter heading from older versions can be replaced with cloud content. Actu
 
 - `own_mosaic_id` RPC, returning a UUID or JSON `null`.
 - Authenticated owner access to `documents`: `id`, `owner_id`, `parent_id`, `role`, `title`, `body`, and `revision`.
-- Authenticated reads of `media/{owner UUID}/{asset UUID}/original`.
+- Authenticated reads of `media/{owner UUID}/{asset UUID}/original`. Owners can always read their own folder (`media_storage_owner_select`), which uploads need because they use `x-upsert`; visitors read through `viewer_can_read_media`. From the SEC-03 migration on 2026-10-16 until `20261018200000_media_owner_select.sql`, that owner rule was missing and every new upload was rejected.
 
 RLS remains enforced by Supabase. No service-role key is used. The repository does not contain a complete versioned backend schema; the live project must expose the existing owner-read contract. Only migrations added since Daily Visits are kept in `supabase/migrations/`.
 
@@ -47,7 +54,7 @@ RLS remains enforced by Supabase. No service-role key is used. The repository do
 
 `pursuit_is_requestable`, `viewer_can_read_document`, `viewer_can_read_media`, and `viewer_passes_mosaic_gate` stay callable because policies run them as the signed-in user. They only report the caller's own access.
 
-**Current repository fact:** Mosaic signs in only with Google, and every existing account uses Google. The Email provider is turned off in Supabase Auth (a dashboard setting outside this repository), so password accounts can't be created. The leaked-password advisor still appears because it checks that setting independently; it doesn't apply while email sign-in is off.
+**Current repository fact:** Google remains enabled for existing users. Email and phone OTP must be enabled on the hosted Supabase project (see `supabase/README.md`). Local development uses Mailpit and `[auth.sms.test_otp]` in `config.toml`.
 
 ## Visiting another person's boards
 
@@ -74,7 +81,17 @@ Media caches are separated by viewer and owner. A manifest associates filenames 
 
 The app reports the visited Mosaic when it opens and each Pursuit page the visitor can open, once per visit. Reports run in the background and failures are ignored. A Circle bubble reads `circle_visits` with the device's time zone alongside its people list. Until the migration is applied, or when the read fails, Daily Visits shows a dash.
 
-**Reversible choice:** `supabase/migrations/` is the first versioned backend SQL in this repository. The live project's earlier migrations (`backend_skeleton` through `accept_request_follows`) are not in it yet.
+**Decision:** Multi-device document conflicts keep the server revision on screen and retain the device’s conflicting local document as a recoverable conflict copy (Keep this version / Discard). See [ADR 0003](../decisions/0003-sync-conflict-and-media-queue.md).
+
+**Current repository fact:** The conflict banner from ADR 0003 is not built yet. Until it is, a genuine conflict still saves this phone's version, but first writes the server's version to `conflicts/<board id>-r<revision>.json` in the account folder so it can be recovered. A conflict whose server content already matches the phone (a save whose reply was lost) simply adopts the server's revision. Pushes only send boards whose content changed since their last save (tracked as `pushedHashes` in `sync-state.json`), which is what keeps genuine conflicts rare. **Open question:** when the banner ships, whether existing conflict copies are offered in it.
+
+**Current repository fact:** One push runs at a time; edits made during a push are sent right after it in the same run, and a newer edit never cancels a push already in flight. A failed push (offline, server error) keeps its snapshot and retries after 5, 15, 45, and 120 seconds, again when the app returns to the foreground, and an edit still waiting when the app moves to the background is sent at once under a background task. The chosen Mosaic id is recorded before the first save, so a lost first reply can't lock a new account out of syncing. Remote deletion only removes boards this phone has synced before (it has a revision for them) and no longer has; boards another device created are left alone. Nodes and scrapbook pages without a parent (held only by a cut clipboard) are not sent. A media file that fails every upload attempt on three pushes in a row is skipped until relaunch, so Save doesn't fail forever on one file; videos larger than the bucket limit are never read into memory. GIFs and PNGs under the limit upload their original bytes first.
+
+**Current repository fact:** A restore no longer stops when a widget points to a board the server doesn't have (for example after a push that failed partway). That board is created empty, so the widget opens, edits are kept, and the next push recreates the row.
+
+**Decision:** The unused `media_jobs` processing queue is retired for the current client-prepared media path; bucket limits and finalize quotas replace it until a real worker is justified. See [ADR 0003](../decisions/0003-sync-conflict-and-media-queue.md).
+
+**Current repository fact:** `supabase/migrations/20261012180000_baseline.sql` is a squashed schema baseline captured from Mosaic-dev so `supabase db reset` can recreate the contract locally. Earlier partial files live in `supabase/migrations_archive/`. A hosted staging project remains deferred.
 
 **Decision:** Visit rows are kept for 90 days, so future visit analytics have history to draw on. Only today's count is read now. Each recorded visit deletes rows older than 90 days, so no scheduled job is needed.
 
@@ -96,7 +113,7 @@ To verify after applying the migration, use two accounts. Visiting the other acc
 
 **Current repository fact:** This restores a fresh or starter-only account installation. It is not continuous multi-device synchronization: an established local copy is not replaced on every login, and automatic merging of conflicting offline edits is not implemented.
 
-**Current repository fact:** GIFs play in media and carousel blocks, the photo viewer, board backgrounds, banners, and Pursuit widget backgrounds. An imported GIF keeps its `.gif` filename and original bytes, so it uploads as `image/gif`; its display and thumbnail copies are still JPEGs. Playback decodes frames at most 540 pixels on the long edge and thins frames for long GIFs, keeping about 32 MB per GIF while preserving the total duration. GIFs imported earlier were saved as `.jpg`: they play on the owner's device, but visitors see a still. Content card covers and the Pursuit editor's preview stay still.
+**Current repository fact:** A single photo is stored at most 2560 pixels on the long edge (as JPEG, or as PNG when a PNG is already within that size), and boards decode stills at most 2400 pixels, so photo-heavy boards stay within memory. GIFs play in media and carousel blocks, the photo viewer, board backgrounds, banners, and Pursuit widget backgrounds. An imported GIF keeps its `.gif` filename and original bytes, so it uploads as `image/gif`; its display and thumbnail copies are still JPEGs. Playback decodes frames at most 540 pixels on the long edge and thins frames for long GIFs, keeping about 32 MB per GIF while preserving the total duration. GIFs imported earlier were saved as `.jpg`: they play on the owner's device, but visitors see a still. Content card covers and the Pursuit editor's preview stay still.
 
 **Open question:** Whether the Supabase `media` bucket's allowed MIME types include `image/gif` is configured outside this repository.
 
@@ -106,7 +123,7 @@ Only media uploaded and referenced by a cloud asset can be restored. Files that 
 
 - Before downloading, the restore looks for each missing file in older copies of the boards on the phone (the `.before-restore-*` folders and the pre-account Documents folder) and copies it back. A recovered file that has no cloud copy is uploaded by the next sync.
 - A loading spinner shows only while a copy is on its way: during a restore, while the owner's download of that file is pending, or before and during a visited board's media fetch. Otherwise a missing or unreadable photo or video shows "Photo unavailable" or "Video unavailable" in media blocks, carousel cards, and the full-screen viewer. When the owner selects the block in edit mode, the placeholder offers Replace, which opens the photo library for that block. A failed replacement keeps the block. The placeholder is the only signal; there is no banner for missing media. Any media block, including one inside a group, can also be replaced from its media menu: Replace (two arrows) sits beside crop, beyond it from the menu icon. A replacement keeps the frame shape and resets zoom and pan; cropping or trimming keeps them.
-- A file that can't be read or uploaded keeps no cloud asset, so every later sync tries it again.
+- A file that can't be read or uploaded keeps no cloud asset, so later syncs try it again (up to three failed pushes per app session).
 
 ## Verification
 

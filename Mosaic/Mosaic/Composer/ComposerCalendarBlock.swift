@@ -76,6 +76,17 @@ enum CalendarMonthModel {
         let parts = calendar.dateComponents([.year, .month, .day], from: now)
         return parts.year == day.year && parts.month == day.month && parts.day == day.day
     }
+
+    /// Entries are saved as year/month/day numbers, so they must always be Gregorian numbers.
+    /// A Buddhist or Japanese device calendar would otherwise save years another device misreads.
+    /// The user's locale, time zone, and first weekday still apply.
+    static func entryCalendar(from current: Calendar = .current) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = current.locale
+        calendar.timeZone = current.timeZone
+        calendar.firstWeekday = current.firstWeekday
+        return calendar
+    }
 }
 
 struct ComposerCalendarCanvasBlock: View {
@@ -87,12 +98,14 @@ struct ComposerCalendarCanvasBlock: View {
     let isViewing: Bool
 
     @Environment(\.composerPaperPage) private var onPaper
-    @State private var year = Calendar.current.component(.year, from: .now)
-    @State private var month = Calendar.current.component(.month, from: .now)
+    @State private var year = CalendarMonthModel.entryCalendar().component(.year, from: .now)
+    @State private var month = CalendarMonthModel.entryCalendar().component(.month, from: .now)
     @State private var showsYear = false
     @State private var selectedDay: CalendarMonthModel.Day?
+    /// Bumped at midnight so the "today" circle moves without waiting for another redraw.
+    @State private var dayTick = 0
 
-    private var calendar: Calendar { .current }
+    private var calendar: Calendar { CalendarMonthModel.entryCalendar() }
     private var metric: CGFloat { max(0.45, scale * livePinchScale) }
     private var width: CGFloat { 332 * metric }
     private var canTap: Bool { !isLifted && !isRelocating }
@@ -102,6 +115,7 @@ struct ComposerCalendarCanvasBlock: View {
     }
 
     var body: some View {
+        let _ = dayTick
         VStack(spacing: 10 * metric) {
             header
             if showsYear {
@@ -135,6 +149,9 @@ struct ComposerCalendarCanvasBlock: View {
                     save(entry)
                 }
             )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            Task { @MainActor in dayTick += 1 }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Calendar")

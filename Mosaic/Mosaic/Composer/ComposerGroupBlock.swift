@@ -9,6 +9,11 @@ struct ComposerBlockFrameKey: PreferenceKey {
 }
 
 enum ComposerGroupMath {
+    /// The banner pins to the top and the tabs bar filters the whole page, so neither can sit inside a group.
+    static func canGroup(_ kind: BlockKind) -> Bool {
+        kind != .banner && kind != .tabs
+    }
+
     static func groupedBlock(
         members: [ComposerBlock],
         frames: [ComposerBlockID: CGRect],
@@ -17,7 +22,7 @@ enum ComposerGroupMath {
         tabID: String?
     ) -> ComposerBlock? {
         let chosen = members.compactMap { block -> (ComposerBlock, CGRect)? in
-            guard let frame = frames[block.id], frame.width > 1, frame.height > 1 else { return nil }
+            guard canGroup(block.kind), let frame = frames[block.id], frame.width > 1, frame.height > 1 else { return nil }
             return (block, frame)
         }
         guard chosen.count >= 2, canvasWidth > 1, layoutHeight > 1 else { return nil }
@@ -68,20 +73,24 @@ enum ComposerGroupMath {
         }
     }
 
+    /// Uses the same limits as pinching or corner-resizing that piece on its own,
+    /// so an ungrouped member never lands at a size the board would then snap back.
     static func bake(_ scale: Double, into block: inout ComposerBlock) {
         guard abs(scale - 1) > 0.001 else { return }
         switch block.kind {
         case .text, .heading, .list:
-            block.style.fontSize = min(max(block.style.fontSize * scale, 12), 160)
+            block.style.fontSize = min(max(block.style.fontSize * scale, 12), 80)
         case .graph:
-            block.graphWidthScale *= scale
-            block.graphHeightScale *= scale
+            block.graphWidthScale = ComposerGraphStretch.clamped(block.graphWidthScale * scale)
+            block.graphHeightScale = ComposerGraphStretch.clamped(block.graphHeightScale * scale)
         case .banner:
             block.bannerHeight *= scale
         case .group:
             block.style.scale *= scale
+        case .carousel:
+            block.style.scale = min(max(block.style.scale * scale, CarouselLayout.minimumScale), 3.2)
         default:
-            block.style.scale *= scale
+            block.style.scale = min(max(block.style.scale * scale, 0.45), 3.2)
         }
     }
 }
@@ -108,7 +117,7 @@ struct ComposerGroupCanvasBlock: View {
     var onStyleMenuChange: (Bool) -> Void = { _ in }
     var onClaimFormatTap: () -> Void = {}
     var onActivate: () -> Void = {}
-    var onUngroup: () -> Void
+    var onUngroup: (() -> Void)?
 
     @Environment(ComposerStore.self) private var store
     @FocusState private var childFocus: ComposerBlockID?
@@ -136,7 +145,7 @@ struct ComposerGroupCanvasBlock: View {
         .frame(width: baseWidth * scale, height: baseHeight * scale, alignment: .topLeading)
         .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
-            if isSelected, !isLifted, !isViewing {
+            if let onUngroup, isSelected, !isLifted, !isViewing {
                 Button(action: onUngroup) {
                     Text("Ungroup")
                         .font(.caption.weight(.semibold))
@@ -207,7 +216,7 @@ struct ComposerGroupCanvasBlock: View {
                 onEditCarousel: { onEditCarousel(id) },
                 onSelectTabs: { activate(id) },
                 onEditSocial: { onEditSocial(id) },
-                onUngroup: {},
+                onUngroup: nil,
                 onPresentMedia: isViewing ? onPresentMedia : nil,
                 onBodyTap: mediaBodyTap(id),
                 onOpenSocial: socialOpen(member),

@@ -348,6 +348,7 @@ struct PursuitWidgetEditor: View {
     @State private var pickedImage: PhotosPickerItem?
     @State private var dragOrigin: (x: Double, y: Double)?
     @State private var pinchOrigin: Double = 1
+    @State private var loadingImage = false
     @State private var nameTyping = false
     @State private var typingTextID: String?
     @State private var textSizes: [String: CGSize] = [:]
@@ -427,6 +428,7 @@ struct PursuitWidgetEditor: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done", action: commit)
                         .fontWeight(.semibold)
+                        .disabled(loadingImage)
                 }
             }
         }
@@ -440,6 +442,8 @@ struct PursuitWidgetEditor: View {
         }
         .onChange(of: pickedImage) { _, item in
             guard let item else { return }
+            // Done waits for the load, so a quick Done can't drop the photo that was just picked.
+            loadingImage = true
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     imageData = data
@@ -447,8 +451,14 @@ struct PursuitWidgetEditor: View {
                         ComposerAnimatedImage.image(data: data)
                     }.value
                     removeImage = false
+                    // The old framing belongs to the old photo.
+                    imageZoom = 1
+                    imagePanX = 0
+                    imagePanY = 0
+                    pinchOrigin = 1
                 }
                 pickedImage = nil
+                loadingImage = false
             }
         }
     }
@@ -789,6 +799,7 @@ struct PursuitWidgetEditor: View {
                     imageZoom = 1
                     imagePanX = 0
                     imagePanY = 0
+                    pinchOrigin = 1
                 } label: {
                     toolLabel("Remove photo", systemImage: "xmark", isActive: false)
                 }
@@ -1078,14 +1089,35 @@ struct PursuitWidgetEditor: View {
     }
 
     private func commit() {
+        // Labels are only clamped when dragged, so a shape change can leave them outside the
+        // new widget. Pull every label back inside the current stage before saving.
+        var nameOrigin = (textX, textY)
+        var keptTexts = texts.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if stageFrame.width > 1, stageFrame.height > 1 {
+            let travel = stageFrame.size
+            nameOrigin = PursuitTextBounds.clampedOrigin(
+                x: textX, y: textY,
+                size: textSizes[PursuitTextDrag.nameID] ?? CGSize(width: 48, height: 24),
+                in: travel
+            )
+            for index in keptTexts.indices {
+                let clamped = PursuitTextBounds.clampedOrigin(
+                    x: keptTexts[index].x, y: keptTexts[index].y,
+                    size: textSizes[keptTexts[index].id] ?? CGSize(width: 48, height: 24),
+                    in: travel
+                )
+                keptTexts[index].x = clamped.0
+                keptTexts[index].y = clamped.1
+            }
+        }
         onDone(PursuitWidgetEdits(
             name: name,
             nameStyle: nameStyle,
-            textX: textX,
-            textY: textY,
+            textX: nameOrigin.0,
+            textY: nameOrigin.1,
             layout: layout,
             frameAspect: Double(frameAspect),
-            texts: texts.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+            texts: keptTexts,
             imageZoom: imageZoom,
             imagePanX: imagePanX,
             imagePanY: imagePanY,

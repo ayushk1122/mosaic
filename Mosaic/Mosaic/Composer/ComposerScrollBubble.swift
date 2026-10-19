@@ -77,6 +77,8 @@ struct ComposerScrollBubble: View {
     @State private var held = false
     /// Where on the bubble the finger landed, so the bubble doesn't jump to center under it.
     @State private var grab: CGFloat = 0
+    /// Resets on its own when the drag is cancelled, which `onEnded` doesn't report.
+    @GestureState private var dragging = false
 
     private let bubbleHeight = ComposerAddMenuMetrics.topControl
     private let trackSpace = "composer.scrollBubbleTrack"
@@ -102,6 +104,7 @@ struct ComposerScrollBubble: View {
                 .gesture(
                     // Measured against the still track: the bubble itself moves under the finger.
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(trackSpace))
+                        .updating($dragging) { _, active, _ in active = true }
                         .onChanged { value in
                             if !held {
                                 held = true
@@ -120,6 +123,10 @@ struct ComposerScrollBubble: View {
                 )
         }
         .coordinateSpace(name: trackSpace)
+        .onChange(of: dragging) { _, active in
+            if !active { release() }
+        }
+        .onDisappear { release() }
         .accessibilityElement()
         .accessibilityLabel("Scroll board")
         .accessibilityValue("\(Int((rail.metrics.progress * 100).rounded())) percent")
@@ -129,6 +136,13 @@ struct ComposerScrollBubble: View {
             rail.finish()
         }
         .accessibilityIdentifier("composer.scrollBubble")
+    }
+
+    /// The board's own pan stays off while held, so an interrupted hold must hand it back.
+    private func release() {
+        guard held else { return }
+        held = false
+        rail.finish()
     }
 
     /// One grey bubble that brightens and swells on a soft spring while held.

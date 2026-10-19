@@ -167,11 +167,21 @@ struct ComposerGraphCanvasBlock: View {
     }
 
     private var plotRect: CGRect {
-        CGRect(x: 18 * metric, y: 44 * metric, width: width - 32 * metric, height: height - 62 * metric)
+        CGRect(x: 18 * metric, y: 44 * metric, width: max(width - 32 * metric, 1), height: max(height - 62 * metric, 1))
     }
 
+    /// Insets never exceed half the plot, so a very short graph doesn't produce a null rect
+    /// (whose infinite origin would send every point off screen).
     private func canvasPoint(_ placedPoint: ComposerLineGraph.Placed) -> CGPoint {
-        let rect = plotRect.insetBy(dx: 10 * metric, dy: 18 * metric)
+        let plot = plotRect
+        let insetX = min(10 * metric, plot.width / 2)
+        let insetY = min(18 * metric, plot.height / 2)
+        let rect = CGRect(
+            x: plot.minX + insetX,
+            y: plot.minY + insetY,
+            width: max(plot.width - 2 * insetX, 0),
+            height: max(plot.height - 2 * insetY, 0)
+        )
         return CGPoint(
             x: rect.minX + placedPoint.nx * rect.width,
             y: rect.maxY - placedPoint.ny * rect.height
@@ -185,6 +195,7 @@ private struct GraphPointEditor: View {
 
     @State private var draftDate = Date.now
     @State private var draftY = ""
+    @State private var draftProblem: String?
 
     private var orderedPoints: [ComposerGraphPoint] {
         let order = ComposerLineGraph.placed(block.graphPoints).map(\.id)
@@ -243,6 +254,12 @@ private struct GraphPointEditor: View {
                             .datePickerStyle(.compact)
                         TextField(yName, text: $draftY, prompt: Text("0").foregroundStyle(.white.opacity(0.35)))
                             .keyboardType(.numbersAndPunctuation)
+                            .onChange(of: draftY) { _, _ in draftProblem = nil }
+                        if let draftProblem {
+                            Text(draftProblem)
+                                .font(.caption)
+                                .foregroundStyle(Color(red: 1, green: 0.55, blue: 0.5))
+                        }
                         Button {
                             addPoint()
                         } label: {
@@ -266,8 +283,14 @@ private struct GraphPointEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
+                    Button("Done") {
+                        // A typed value that wasn't added yet is kept, not silently dropped.
+                        if !draftY.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            guard addPoint() else { return }
+                        }
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -290,11 +313,29 @@ private struct GraphPointEditor: View {
         }
     }
 
-    private func addPoint() {
-        let trimmed = draftY.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let y = Int(trimmed) else { return }
-        block.graphPoints.append(ComposerGraphPoint(x: draftDate, y: y))
+    @discardableResult
+    private func addPoint() -> Bool {
+        guard let y = ComposerGraphValue.parse(draftY) else {
+            draftProblem = "Enter a whole number, like 72 or 1,000."
+            return false
+        }
+        block.graphPoints.append(ComposerGraphPoint(x: ComposerLineGraph.day(draftDate), y: y))
         draftY = ""
+        draftProblem = nil
+        return true
+    }
+}
+
+enum ComposerGraphValue {
+    /// Whole numbers within ±1 trillion. Thousands separators and spaces are allowed.
+    static func parse(_ text: String) -> Int? {
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "_", with: "")
+        guard let value = Int(cleaned), (-1_000_000_000_000...1_000_000_000_000).contains(value) else { return nil }
+        return value
     }
 }
 

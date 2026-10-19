@@ -55,18 +55,16 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
         if let direct = URL(string: trimmed),
            let scheme = direct.scheme?.lowercased(),
            scheme == "http" || scheme == "https" {
-            if validatesProfileLinks {
-                return validatedProfileURL(from: direct)
-            }
-            return direct
+            return validatedProfileURL(from: direct)
         }
         if trimmed.contains("."), !trimmed.contains(" "), !trimmed.hasPrefix("@") {
             let candidate = trimmed.hasPrefix("//") ? "https:\(trimmed)" : "https://\(trimmed)"
-            guard let url = URL(string: candidate) else { return nil }
-            if validatesProfileLinks {
-                return validatedProfileURL(from: url)
+            if let url = URL(string: candidate), let link = validatedProfileURL(from: url) {
+                return link
             }
-            return url
+            // "maria.studio" is an Instagram name, not a website. Only the platform's own
+            // host is treated as a link; anything else falls through to a username.
+            if validatesProfileLinks || trimmed.contains("/") { return nil }
         }
         var handle = trimmed
         if handle.hasPrefix("@") {
@@ -121,8 +119,38 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
         case .spotify: return Self.spotifyUserProfileURL(from: url)
         case .appleMusic: return Self.appleMusicProfileURL(from: url)
         case .soundcloud: return Self.soundcloudProfileURL(from: url)
-        default: return url
+        default: return platformLink(from: url)
         }
+    }
+
+    /// Hosts a visitor can be sent to from this platform's logo.
+    private var allowedHosts: Set<String> {
+        switch self {
+        case .instagram: ["instagram.com"]
+        case .tiktok: ["tiktok.com"]
+        case .twitter: ["twitter.com", "x.com"]
+        case .youtube: ["youtube.com", "youtu.be"]
+        case .twitch: ["twitch.tv"]
+        case .spotify, .appleMusic, .soundcloud: []
+        }
+    }
+
+    /// An https link on the platform's own host (www. and m. allowed), with no login, port, or fragment.
+    /// Anything else could send visitors to a lookalike site.
+    private func platformLink(from url: URL) -> URL? {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https" || parts.scheme?.lowercased() == "http",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let rawHost = parts.host?.lowercased() else { return nil }
+        var host = rawHost
+        for prefix in ["www.", "m."] where host.hasPrefix(prefix) {
+            host.removeFirst(prefix.count)
+        }
+        guard allowedHosts.contains(host) else { return nil }
+        parts.scheme = "https"
+        parts.host = rawHost
+        parts.fragment = nil
+        return parts.url
     }
 
     /// `open.spotify.com/user/<id>` only — artist pages are Content, not Social.
@@ -220,7 +248,7 @@ enum ComposerSocialPlatform: String, Codable, CaseIterable, Identifiable, Sendab
     ])
 
     /// Second path segment that still means “this user’s profile”, not a track/playlist.
-    private static let soundCloudProfileTabs = Set([
+    static let soundCloudProfileTabs = Set([
         "tracks", "popular-tracks", "albums", "sets", "reposts", "likes",
         "comments", "followers", "following"
     ])
@@ -524,7 +552,10 @@ struct ComposerSocialLinkField: View {
 struct ComposerSocialEditor: View {
     @State private var platform: ComposerSocialPlatform
     @State private var link: String
+    @State private var resolving = false
+    @State private var problem: String?
     var onCancel: () -> Void
+    /// Only called with a link the platform accepts, so the board and carousel save the same thing.
     var onSave: (ComposerSocialPlatform, String) -> Void
 
     init(
@@ -544,6 +575,15 @@ struct ComposerSocialEditor: View {
             VStack(alignment: .leading, spacing: 18) {
                 ComposerSocialPlatformPicker(platforms: ComposerSocialPlatform.allCases, platform: $platform)
                 ComposerSocialLinkField(placeholder: "Profile link or username", link: $link)
+                if resolving {
+                    ProgressView("Opening SoundCloud link…")
+                        .font(.caption)
+                        .tint(.white)
+                } else if let problem {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.65))
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -556,13 +596,44 @@ struct ComposerSocialEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        onSave(platform, link)
+                        Task { await finish() }
                     }
+                    .disabled(resolving || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
+        .onChange(of: link) { _, _ in problem = nil }
+        .onChange(of: platform) { _, _ in problem = nil }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func finish() async {
+        problem = nil
+        // A SoundCloud share link is opaque: follow it first, so a track's short link can't be
+        // saved as a profile, and the board keeps the real profile address.
+        if platform == .soundcloud, let share = ComposerSoundCloudPreview.shareLink(from: link) {
+            resolving = true
+            let resolved = await ComposerSoundCloudPreview.resolveShareLink(share)
+            resolving = false
+            guard let resolved else {
+                problem = "Couldn’t open that SoundCloud link. Paste the full soundcloud.com profile link instead."
+                return
+            }
+            if let profile = platform.profileURL(from: resolved.absoluteString) {
+                onSave(platform, profile.absoluteString)
+            } else if ComposerContentPlatform.parse(resolved.absoluteString) != nil {
+                problem = "That link opens a SoundCloud track or playlist. Add it as Content instead."
+            } else {
+                problem = "That doesn’t look like a SoundCloud profile."
+            }
+            return
+        }
+        guard let profile = platform.profileURL(from: link) else {
+            problem = "That doesn’t look like a \(platform.title) username or profile link."
+            return
+        }
+        onSave(platform, profile.absoluteString)
     }
 }
 
@@ -638,6 +709,12 @@ struct ComposerCornerCatcher: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: ComposerCornerCatcherView, coordinator: Coordinator) {
         uiView.releaseScroll()
+        // A handle removed mid-drag (block deleted, view mode, undo) never reports an end otherwise,
+        // which would leave the board's resize lock on.
+        if let translation = uiView.activeTranslation {
+            let finish = coordinator.onEnded
+            DispatchQueue.main.async { finish(translation) }
+        }
         coordinator.onEnded = { _ in }
         coordinator.onChanged = { _ in }
     }
@@ -651,6 +728,7 @@ struct ComposerCornerCatcher: UIViewRepresentable {
 final class ComposerCornerCatcherView: UIView, UIGestureRecognizerDelegate {
     weak var coordinator: ComposerCornerCatcher.Coordinator?
     private var lockedScroll: UIScrollView?
+    private(set) var activeTranslation: CGSize?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -687,8 +765,10 @@ final class ComposerCornerCatcherView: UIView, UIGestureRecognizerDelegate {
         switch pan.state {
         case .began, .changed:
             lockScroll()
+            activeTranslation = size
             coordinator?.onChanged(size)
         case .ended, .cancelled, .failed:
+            activeTranslation = nil
             coordinator?.onEnded(size)
             releaseScroll()
         default:
