@@ -181,7 +181,16 @@ struct MosaicTabShell: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let failure = downloads.failure, !downloads.isLoading {
+            if store.saveFailed {
+                Text("Your latest changes couldn’t be saved on this phone. Free up storage — Mosaic keeps trying.")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.36, green: 0.18, blue: 0.18))
+                    .accessibilityIdentifier("mosaic.saveStatus")
+            } else if let failure = downloads.failure, !downloads.isLoading {
                 HStack(spacing: 10) {
                     Text(failure)
                         .font(.caption)

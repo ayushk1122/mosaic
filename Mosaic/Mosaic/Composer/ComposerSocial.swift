@@ -552,7 +552,10 @@ struct ComposerSocialLinkField: View {
 struct ComposerSocialEditor: View {
     @State private var platform: ComposerSocialPlatform
     @State private var link: String
+    @State private var resolving = false
+    @State private var problem: String?
     var onCancel: () -> Void
+    /// Only called with a link the platform accepts, so the board and carousel save the same thing.
     var onSave: (ComposerSocialPlatform, String) -> Void
 
     init(
@@ -572,6 +575,15 @@ struct ComposerSocialEditor: View {
             VStack(alignment: .leading, spacing: 18) {
                 ComposerSocialPlatformPicker(platforms: ComposerSocialPlatform.allCases, platform: $platform)
                 ComposerSocialLinkField(placeholder: "Profile link or username", link: $link)
+                if resolving {
+                    ProgressView("Opening SoundCloud link…")
+                        .font(.caption)
+                        .tint(.white)
+                } else if let problem {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.65))
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -584,13 +596,44 @@ struct ComposerSocialEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        onSave(platform, link)
+                        Task { await finish() }
                     }
+                    .disabled(resolving || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
+        .onChange(of: link) { _, _ in problem = nil }
+        .onChange(of: platform) { _, _ in problem = nil }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func finish() async {
+        problem = nil
+        // A SoundCloud share link is opaque: follow it first, so a track's short link can't be
+        // saved as a profile, and the board keeps the real profile address.
+        if platform == .soundcloud, let share = ComposerSoundCloudPreview.shareLink(from: link) {
+            resolving = true
+            let resolved = await ComposerSoundCloudPreview.resolveShareLink(share)
+            resolving = false
+            guard let resolved else {
+                problem = "Couldn’t open that SoundCloud link. Paste the full soundcloud.com profile link instead."
+                return
+            }
+            if let profile = platform.profileURL(from: resolved.absoluteString) {
+                onSave(platform, profile.absoluteString)
+            } else if ComposerContentPlatform.parse(resolved.absoluteString) != nil {
+                problem = "That link opens a SoundCloud track or playlist. Add it as Content instead."
+            } else {
+                problem = "That doesn’t look like a SoundCloud profile."
+            }
+            return
+        }
+        guard let profile = platform.profileURL(from: link) else {
+            problem = "That doesn’t look like a \(platform.title) username or profile link."
+            return
+        }
+        onSave(platform, profile.absoluteString)
     }
 }
 

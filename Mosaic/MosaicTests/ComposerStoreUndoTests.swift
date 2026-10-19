@@ -162,6 +162,21 @@ struct ComposerStoreUndoTests {
     }
 
     @Test
+    func boardBackgroundChangesCanBeUndone() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        store.addBlock(.text, to: nil)
+        var dark = ComposerBoardBackground.solid(ComposerRGBColor(red: 0.1, green: 0.1, blue: 0.1))
+        store.setBoardBackground(dark, for: nil)
+        dark.color = ComposerRGBColor(red: 0.2, green: 0.2, blue: 0.2)
+        store.setBoardBackground(dark, for: nil)
+
+        // The two quick changes are one step; Undo returns to the default and keeps the text block.
+        store.undo(in: nil)
+        #expect(store.boardBackground(for: nil) == nil)
+        #expect(store.blocks(for: nil).count == 1)
+    }
+
+    @Test
     func anUnreadableSnapshotIsKeptAsABackup() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let location = ComposerStorageLocation(root: root)

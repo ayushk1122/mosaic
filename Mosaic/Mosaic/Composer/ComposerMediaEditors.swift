@@ -210,6 +210,8 @@ struct ComposerVideoTrimEditor: UIViewControllerRepresentable {
         let editor = UIVideoEditorController()
         editor.videoPath = url.path
         editor.videoMaximumDuration = max(maximumDuration, 1)
+        // The editor re-encodes on save and defaults to medium quality, which visibly softens the clip.
+        editor.videoQuality = .typeHigh
         editor.delegate = context.coordinator
         return editor
     }

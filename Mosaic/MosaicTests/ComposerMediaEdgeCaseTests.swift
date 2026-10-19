@@ -34,6 +34,16 @@ struct ComposerMediaEdgeCaseTests {
     }
 
     @Test
+    func soundCloudShareLinksStillOpenFromOlderSocialBlocks() {
+        // The editor now expands short links before saving; ones saved earlier still open.
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "https://on.soundcloud.com/WIad4iCKWBgkct046F") != nil)
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(
+            from: "https://soundcloud.com/user-957201700?ref=clipboard&utm_source=clipboard"
+        )?.absoluteString == "https://soundcloud.com/user-957201700")
+        #expect(ComposerSocialPlatform.soundcloud.profileURL(from: "https://soundcloud.com/artist/a-track") == nil)
+    }
+
+    @Test
     func boardPhotosAreStoredAtABoundedSize() throws {
         let big = try #require(Self.png(width: 4000, height: 3000))
         let stored = ComposerImagePreparation.boardImage(from: big)

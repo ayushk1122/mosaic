@@ -14,6 +14,8 @@ final class ComposerStore {
     private(set) var snapshot: ComposerSnapshot
     private(set) var isRestoringDocuments = false
     private(set) var mediaVersions: [String: Int] = [:]
+    /// True while the latest edit could not be written to this phone (usually a full disk).
+    private(set) var saveFailed = false
     private var undoStacks: [String: [ComposerUndoEntry]] = [:]
     private var undoCoalesce: ComposerUndoCoalesce?
     private var isApplyingUndo = false
@@ -114,6 +116,7 @@ final class ComposerStore {
         mutateBlocks(for: documentID) { blocks in
             blocks = entry.blocks
         }
+        applyBackground(entry.background, for: documentID)
         if let clipboard, clipboard.isCut, containsBlockAnywhere(clipboard.block.id) {
             // The cut was undone, so its block is back on a board; pasting must not duplicate it.
             self.clipboard?.isCut = false
@@ -172,12 +175,24 @@ final class ComposerStore {
 
     func setBoardBackground(_ background: ComposerBoardBackground?, for documentID: ComposerDocumentID?) {
         if let documentID {
+            guard snapshot.pursuits.contains(where: { $0.id == documentID }) else { return }
+        }
+        guard boardBackground(for: documentID) != background else { return }
+        // Dragging a color or gradient merges into one step, like typing in a block.
+        captureUndo(in: documentID, coalesce: Self.backgroundUndoKey)
+        applyBackground(background, for: documentID)
+        persist()
+    }
+
+    private static let backgroundUndoKey = ComposerBlockID(rawValue: "board-background")
+
+    private func applyBackground(_ background: ComposerBoardBackground?, for documentID: ComposerDocumentID?) {
+        if let documentID {
             guard let index = snapshot.pursuits.firstIndex(where: { $0.id == documentID }) else { return }
             snapshot.pursuits[index].background = background
         } else {
             snapshot.mosaicBackground = background
         }
-        persist()
     }
 
     func layoutHeight(for documentID: ComposerDocumentID?) -> Double? {
@@ -880,7 +895,8 @@ final class ComposerStore {
         stack.append(
             ComposerUndoEntry(
                 blocks: blocks(for: documentID),
-                pursuits: includePursuits ? snapshot.pursuits : nil
+                pursuits: includePursuits ? snapshot.pursuits : nil,
+                background: boardBackground(for: documentID)
             )
         )
         if stack.count > 40 {
@@ -1020,9 +1036,11 @@ final class ComposerStore {
             try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: url, options: .atomic)
+            if saveFailed { saveFailed = false }
             onPersisted?()
         } catch {
-            // Local-only persistence; surface in a later iteration.
+            // Edits stay in memory and every later edit tries again; the shell tells the person.
+            saveFailed = true
         }
     }
 
@@ -1043,6 +1061,8 @@ final class ComposerStore {
     private struct ComposerUndoEntry {
         var blocks: [ComposerBlock]
         var pursuits: [ComposerPursuit]?
+        /// Every background change records its own step, so restoring this is always correct.
+        var background: ComposerBoardBackground?
     }
 
     private struct ComposerUndoCoalesce {

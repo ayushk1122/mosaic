@@ -379,7 +379,9 @@ struct MosaicComposerView: View {
                 isPresented: $showMediaPicker,
                 selection: $pickedMediaItems,
                 maxSelectionCount: mediaPickLimit,
-                matching: .any(of: [.images, .videos])
+                matching: .any(of: [.images, .videos]),
+                // The original recording, not a converted "compatible" copy that loses quality.
+                preferredItemEncoding: .current
             )
             .sheet(item: $carouselEditRequest, onDismiss: removeCarouselIfEmpty) { request in
                 ComposerCarouselEditor(documentID: documentID, blockID: request.blockID)
@@ -2011,9 +2013,7 @@ struct MosaicComposerView: View {
                     return
                 }
                 current.socialPlatform = platform.rawValue
-                // Persist the resolved profile URL when we can, so mobile hosts / tabs still open.
-                current.linkURL = platform.profileURL(from: link)?.absoluteString
-                    ?? link.trimmingCharacters(in: .whitespacesAndNewlines)
+                current.linkURL = link
                 store.updateBlock(current, in: documentID)
                 socialEditRequest = nil
             }

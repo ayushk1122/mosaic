@@ -623,7 +623,9 @@ struct ComposerCarouselEditor: View {
             isPresented: $showPicker,
             selection: $pickerItems,
             maxSelectionCount: replacingID == nil ? 12 : 1,
-            matching: .any(of: [.images, .videos])
+            matching: .any(of: [.images, .videos]),
+            // The original recording, not a converted "compatible" copy that loses quality.
+            preferredItemEncoding: .current
         )
         .onChange(of: pickerItems) { _, picked in
             guard !picked.isEmpty else { return }
