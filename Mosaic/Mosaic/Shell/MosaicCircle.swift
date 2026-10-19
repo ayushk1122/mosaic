@@ -35,6 +35,8 @@ struct MosaicCirclePerson: Identifiable, Equatable, Sendable {
     var hasMosaic = false
     /// Their Mosaic can be followed now, without a request.
     var canFollow = false
+    /// When they followed (or asked). Nil only for rows from an older server.
+    var followedAt: Date?
 
     /// The single follow button beside a person, Instagram style.
     enum FollowButton: Equatable, Sendable {
@@ -52,6 +54,16 @@ struct MosaicCirclePerson: Identifiable, Equatable, Sendable {
 
     var id: String { "\(kind.rawValue)-\(requestID?.uuidString ?? personID.uuidString)" }
     var name: String { displayName.isEmpty ? username : displayName }
+
+    /// Matches the display name or username, ignoring case, accents, and a leading "@".
+    func matches(_ query: String) -> Bool {
+        var needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        while needle.hasPrefix("@") { needle.removeFirst() }
+        guard !needle.isEmpty else { return true }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        return displayName.range(of: needle, options: options) != nil
+            || username.range(of: needle, options: options) != nil
+    }
     var asResult: MosaicPersonResult {
         MosaicPersonResult(id: personID, username: username, displayName: displayName, avatarPath: avatarPath)
     }
@@ -85,8 +97,69 @@ struct MosaicCirclePerson: Identifiable, Equatable, Sendable {
         var follower = request
         follower.kind = .follower
         follower.requestID = nil
+        follower.followedAt = .now
         next.insert(follower, at: next.firstIndex(where: { $0.kind == .follower }) ?? next.endIndex)
         return next
+    }
+}
+
+/// How a circle's follower list is ordered or narrowed. One applies at a time, per circle.
+enum MosaicFollowerFilter: String, CaseIterable, Identifiable, Sendable {
+    case latest
+    case earliest
+    case following
+    case notFollowing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .latest: "Latest"
+        case .earliest: "Earliest"
+        case .following: "Following"
+        case .notFollowing: "Not following"
+        }
+    }
+
+    /// The chosen one stands in for the filter button itself.
+    var systemImage: String {
+        switch self {
+        case .latest: "arrow.down"
+        case .earliest: "arrow.up"
+        case .following: "person.crop.circle.badge.checkmark"
+        case .notFollowing: "person.crop.circle.badge.xmark"
+        }
+    }
+
+    /// Bare arrows read heavier than circled symbols at the same size, so the button draws them smaller.
+    var isBareSymbol: Bool { self == .latest || self == .earliest }
+
+    /// Latest and Earliest reorder everyone by follow date. Following and Not following keep
+    /// newest first and show only people the owner does, or doesn't, follow back.
+    func apply(to followers: [MosaicCirclePerson]) -> [MosaicCirclePerson] {
+        let newestFirst = followers.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.followedAt, rhs.element.followedAt) {
+            case let (l?, r?) where l != r: return l > r
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+        switch self {
+        case .latest: return newestFirst
+        case .earliest: return newestFirst.reversed()
+        case .following: return newestFirst.filter(\.iFollow)
+        case .notFollowing: return newestFirst.filter { !$0.iFollow }
+        }
+    }
+
+    /// Shown when the filter leaves nobody (before any search narrows it further).
+    var emptyMessage: String {
+        switch self {
+        case .latest, .earliest: "No one follows this yet."
+        case .following: "You don’t follow any of these followers yet."
+        case .notFollowing: "You follow every one of these followers."
+        }
     }
 }
 
@@ -349,9 +422,22 @@ struct MosaicCircleClient: Sendable {
                 iFollow: row["i_follow"] as? Bool ?? false,
                 iRequested: row["i_requested"] as? Bool ?? false,
                 hasMosaic: row["has_mosaic"] as? Bool ?? false,
-                canFollow: row["can_follow"] as? Bool ?? false
+                canFollow: row["can_follow"] as? Bool ?? false,
+                followedAt: (row["created_at"] as? String).flatMap(Self.timestamp(from:))
             )
         }
+    }
+
+    /// PostgREST timestamps, with or without fractional seconds.
+    static func timestamp(from text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: text) { return date }
+        // Postgres sends microseconds; drop the fraction if the formatter refuses six digits.
+        let trimmed = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+        return formatter.date(from: trimmed)
     }
 
     private func rpc(_ name: String, body: [String: Any], accessToken: String) async throws -> Data {
@@ -603,12 +689,23 @@ struct MosaicCircleBubbleView: View {
     @State private var busy: String?
     @State private var visiting: MosaicVisitTarget?
     @State private var dailyVisits: Int?
+    @State private var followerQuery = ""
+    /// Nil until the person picks one; the list is newest first and the button shows the plain filter icon.
+    @State private var chosenFilter: MosaicFollowerFilter?
+    @State private var showsFilters = false
+    @FocusState private var searchFocused: Bool
+
+    private var followerFilter: MosaicFollowerFilter { chosenFilter ?? .latest }
+    /// The sliders and the arrows have no circle, so they are drawn a size smaller.
+    private var filterIconIsBare: Bool { chosenFilter?.isBareSymbol ?? true }
 
     private let muted = Color.white.opacity(0.55)
     private let field = Color.white.opacity(0.08)
 
     private var requests: [MosaicCirclePerson] { people.filter { $0.kind == .request } }
     private var followers: [MosaicCirclePerson] { people.filter { $0.kind == .follower } }
+    private var filteredFollowers: [MosaicCirclePerson] { followerFilter.apply(to: followers) }
+    private var shownFollowers: [MosaicCirclePerson] { filteredFollowers.filter { $0.matches(followerQuery) } }
 
     private var heading: String {
         if bubble.isMosaic { return "Mosaic" }
@@ -635,13 +732,30 @@ struct MosaicCircleBubbleView: View {
                             }
                         }
                     }
-                    section("Followers", count: followers.count) {
+                    section("Followers", count: followers.count, trailing: {
+                        if !followers.isEmpty {
+                            HStack(spacing: 8) {
+                                followerFilterMenu
+                                followerSearch
+                            }
+                        }
+                    }) {
                         if followers.isEmpty {
                             Text("No one follows this yet.")
                                 .font(.footnote)
                                 .foregroundStyle(muted)
+                        } else if filteredFollowers.isEmpty {
+                            Text(followerFilter.emptyMessage)
+                                .font(.footnote)
+                                .foregroundStyle(muted)
+                                .padding(.vertical, 8)
+                        } else if shownFollowers.isEmpty {
+                            Text("No followers match “\(followerQuery.trimmingCharacters(in: .whitespacesAndNewlines))”.")
+                                .font(.footnote)
+                                .foregroundStyle(muted)
+                                .padding(.vertical, 8)
                         } else {
-                            ForEach(followers) { person in
+                            ForEach(shownFollowers) { person in
                                 followerRow(person)
                             }
                         }
@@ -711,6 +825,15 @@ struct MosaicCircleBubbleView: View {
         count: Int,
         @ViewBuilder content: () -> Content
     ) -> some View {
+        section(title, count: count, trailing: { EmptyView() }, content: content)
+    }
+
+    private func section<Trailing: View, Content: View>(
+        _ title: String,
+        count: Int,
+        @ViewBuilder trailing: () -> Trailing,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(title)
@@ -719,11 +842,105 @@ struct MosaicCircleBubbleView: View {
                 Text("\(count)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(muted)
+                Spacer(minLength: 12)
+                trailing()
             }
             VStack(spacing: 0) {
                 content()
             }
         }
+    }
+
+    /// Sort or narrow this circle's followers. Once one is picked, its icon replaces the filter icon.
+    private var followerFilterMenu: some View {
+        Button {
+            showsFilters = true
+        } label: {
+            Image(systemName: chosenFilter?.systemImage ?? "slider.horizontal.3")
+                .font(filterIconIsBare ? .body.weight(.semibold) : .title3)
+                .foregroundStyle(chosenFilter == nil ? muted : .white)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showsFilters, arrowEdge: .top) {
+            followerFilterOptions
+                .presentationCompactAdaptation(.popover)
+        }
+        .accessibilityLabel("Filter followers")
+        .accessibilityValue(followerFilter.title)
+        .accessibilityIdentifier("circle.followerFilter")
+    }
+
+    /// Only as wide as the longest option.
+    private var followerFilterOptions: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(MosaicFollowerFilter.allCases) { filter in
+                Button {
+                    // Tapping the chosen filter again clears it, back to the unfiltered list.
+                    chosenFilter = chosenFilter == filter ? nil : filter
+                    showsFilters = false
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: filter.systemImage)
+                            .font(.footnote)
+                            .frame(width: 18)
+                        Text(filter.title)
+                            .font(.footnote)
+                        Spacer(minLength: 10)
+                        Image(systemName: "checkmark")
+                            .font(.caption2.weight(.bold))
+                            .opacity(filter == chosenFilter ? 1 : 0)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(filter == chosenFilter ? .isSelected : [])
+                .accessibilityHint(filter == chosenFilter ? "Clears the filter" : "")
+            }
+        }
+        .padding(.vertical, 4)
+        .fixedSize()
+        // No background of its own: the popover's system glass shows through, like the menu did.
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// A small field at the far right of the Followers title; it filters the list as you type.
+    private var followerSearch: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(muted)
+            TextField("", text: $followerQuery, prompt: Text("Search").foregroundStyle(muted))
+                .font(.footnote)
+                .foregroundStyle(.white)
+                .tint(.white)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
+                .accessibilityIdentifier("circle.followerSearch")
+            if !followerQuery.isEmpty {
+                Button {
+                    followerQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(width: 150, height: 30)
+        .background(field, in: Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Search followers")
     }
 
     /// Opens the person's Mosaic. A private one shows its lock and a request button there.

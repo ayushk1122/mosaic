@@ -547,6 +547,13 @@ private final class ScrapbookTurnView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
+    /// A page turn replaces this view before its pan reports an end, which would leave the
+    /// page unable to scroll; hand scrolling back whenever the view leaves the screen.
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil { releaseScroll() }
+    }
+
     private func lockScroll() {
         guard lockedScroll == nil, let scroll = enclosingScrollView() else { return }
         lockedScroll = scroll

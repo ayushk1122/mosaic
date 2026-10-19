@@ -203,15 +203,15 @@ struct MosaicComposerView: View {
     }
 
     /// Grows to fit a block that moves downward, and does not shrink when that block moves back up.
-    /// A journal page keeps a fixed paper length: it scrolls, but its top and bottom are hard edges.
+    /// Journal pages grow the same way, so there is always room to keep writing below.
     private var canvasHeight: CGFloat {
-        if isBookPage { return layoutHeight }
-        return max(grownCanvasHeight, neededCanvasHeight)
+        max(grownCanvasHeight, neededCanvasHeight)
     }
 
-    /// Height items are held inside. Zero means the board has no bottom edge.
+    /// Height items are held inside. Zero means no top or bottom edge (boards). Journal pages keep
+    /// their side and top edges but have no bottom, which an unbounded height expresses.
     private var pageViewportHeight: CGFloat {
-        isBookPage ? layoutHeight : 0
+        isBookPage ? .infinity : 0
     }
 
     var body: some View {
