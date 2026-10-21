@@ -1,7 +1,7 @@
 # Account restoration and sync
 
 **Owner:** Engineering
-**Status:** Current repository fact — implemented behavior, not a complete multi-device sync design
+**Status:** Current repository fact — implemented behavior, not an automatic-merge design
 
 ## Current structure
 
@@ -14,7 +14,8 @@
 - `Mosaic/Mosaic/Composer/Sync/ComposerBackgroundRestore.swift`: remaining board and media downloads, retry, and progress.
 - `Mosaic/Mosaic/Composer/ComposerMediaAvailability.swift`: refreshes individual media views when files arrive, and tells them which missing files are still coming.
 - `Mosaic/Mosaic/Composer/Sync/SupabaseDocumentSync.swift`: authenticated document reads and writes.
-- `Mosaic/Mosaic/Composer/Sync/ComposerRemoteSync.swift`: debounced uploads and revision bookkeeping.
+- `Mosaic/Mosaic/Composer/Sync/ComposerRemoteSync.swift`: debounced uploads, pulls of other devices' edits, conflict copies, and revision bookkeeping.
+- `Mosaic/Mosaic/Composer/Sync/ComposerPull.swift`: merging boards changed on another device into this device's copy.
 - `Mosaic/Mosaic/Shell/`: navigation, discovery, visits, circle, profile, and sharing UI.
 
 ## Login behavior
@@ -83,7 +84,13 @@ The app reports the visited Mosaic when it opens and each Pursuit page the visit
 
 **Decision:** Multi-device document conflicts keep the server revision on screen and retain the device’s conflicting local document as a recoverable conflict copy (Keep this version / Discard). See [ADR 0003](../decisions/0003-sync-conflict-and-media-queue.md).
 
-**Current repository fact:** The conflict banner from ADR 0003 is not built yet. Until it is, a genuine conflict still saves this phone's version, but first writes the server's version to `conflicts/<board id>-r<revision>.json` in the account folder so it can be recovered. A conflict whose server content already matches the phone (a save whose reply was lost) simply adopts the server's revision. Pushes only send boards whose content changed since their last save (tracked as `pushedHashes` in `sync-state.json`), which is what keeps genuine conflicts rare. **Open question:** when the banner ships, whether existing conflict copies are offered in it.
+**Current repository fact:** Sync is two-way. A signed-in device checks for boards changed on another device when the app opens, when it returns to the foreground, and every 60 seconds while it is open. The check reads only each board's `id` and `revision`, then downloads just the boards whose revision is newer than this device last saw, plus boards it has never seen. A pull runs before any waiting push. Boards not edited on this device since their last save are replaced in place, and their undo history is cleared, so Undo can't bring back the older version and push it over the newer one. New boards are added. Boards deleted on another device are removed, including their pages and nodes. Photos on pulled boards download through the same background downloader as a restore. Saved stickers ("Your stickers") merge from both devices instead of conflicting. A device with `pendingRestore` doesn't pull; its restore brings the boards in. **Reversible choice:** the 60-second interval while the app is open.
+
+**Current repository fact:** A board changed on both devices before they synced is a conflict, handled as ADR 0003 describes. It is detected either by a pull (the board has unsynced edits here and the server's content differs) or by a push (`revision conflict` / `P0001`). The server's version goes on screen, and this device's version is kept in `conflicts/pending.json` in the account folder, so it survives a relaunch. A banner offers **Keep my version**, which puts this device's copy back and pushes it as the newest revision, or **Discard**, which drops the copy. A push never overwrites a newer server version. A conflict whose server content already matches this device (a save whose reply was lost) adopts the server's revision without a banner. Pushes only send boards whose content changed since their last save (tracked as `pushedHashes` in `sync-state.json`), which keeps conflicts rare. A restore records the downloaded boards' hashes too. Only a real revision conflict counts as one; other 409 responses, such as a parent board that isn't on the server yet, are ordinary failures retried later. A board saved before this device recorded hashes counts as edited here, so if it differs from the server it shows a conflict rather than being replaced.
+
+**Reversible choice:** ADR 0003 doesn't cover a board deleted on one device and edited on the other. The same rule is applied: the deletion is shown, and the edited board is kept as a conflict copy, with the boards inside it and the piece that opened it. Keep my version puts all of them back, and the next push recreates them on the server. A deleted board not edited here is removed without a banner.
+
+**Open question:** Earlier builds saved this device's version on a conflict and wrote the server's version to `conflicts/<board id>-r<revision>.json`. Those files are left on disk and aren't offered in the banner.
 
 **Current repository fact:** One push runs at a time; edits made during a push are sent right after it in the same run, and a newer edit never cancels a push already in flight. A failed push (offline, server error) keeps its snapshot and retries after 5, 15, 45, and 120 seconds, again when the app returns to the foreground, and an edit still waiting when the app moves to the background is sent at once under a background task. The chosen Mosaic id is recorded before the first save, so a lost first reply can't lock a new account out of syncing. Remote deletion only removes boards this phone has synced before (it has a revision for them) and no longer has; boards another device created are left alone. Nodes and scrapbook pages without a parent (held only by a cut clipboard) are not sent. A media file that fails every upload attempt on three pushes in a row is skipped until relaunch, so Save doesn't fail forever on one file; videos larger than the bucket limit are never read into memory. GIFs and PNGs under the limit upload their original bytes first.
 
@@ -111,13 +118,13 @@ To verify after applying the migration, use two accounts. Visiting the other acc
 
 ## Limits
 
-**Current repository fact:** This restores a fresh or starter-only account installation. It is not continuous multi-device synchronization: an established local copy is not replaced on every login, and automatic merging of conflicting offline edits is not implemented.
+**Current repository fact:** Restore covers a fresh or starter-only account installation; an established local copy is updated by pulls instead. Conflicting edits are not merged automatically: a whole board is either the server's version or this device's version.
 
 **Current repository fact:** A single photo is stored at most 2560 pixels on the long edge (as JPEG, or as PNG when a PNG is already within that size), and boards decode stills at most 2400 pixels, so photo-heavy boards stay within memory. GIFs play in media and carousel blocks, the photo viewer, board backgrounds, banners, and Pursuit widget backgrounds. An imported GIF keeps its `.gif` filename and original bytes, so it uploads as `image/gif`; its display and thumbnail copies are still JPEGs. Playback decodes frames at most 540 pixels on the long edge and thins frames for long GIFs, keeping about 32 MB per GIF while preserving the total duration. GIFs imported earlier were saved as `.jpg`: they play on the owner's device, but visitors see a still. Content card covers and the Pursuit editor's preview stay still.
 
 **Open question:** Whether the Supabase `media` bucket's allowed MIME types include `image/gif` is configured outside this repository.
 
-Only media uploaded and referenced by a cloud asset can be restored. Files that never reached Supabase cannot be recovered from it. Boards stay usable. Already established local boards are not refreshed from other devices by this downloader.
+Only media uploaded and referenced by a cloud asset can be restored. Files that never reached Supabase cannot be recovered from it. Boards stay usable. Boards changed on other devices arrive through pulls, which then hand any missing files to this downloader.
 
 **Current repository fact:** A board is saved before its new media uploads, so a board can reference a file the cloud never received, for example when an upload fails, or the phone's copy is lost before an upload succeeds. The app handles that case without failing silently:
 
@@ -126,6 +133,8 @@ Only media uploaded and referenced by a cloud asset can be restored. Files that 
 - A file that can't be read or uploaded keeps no cloud asset, so later syncs try it again (up to three failed pushes per app session).
 
 ## Verification
+
+`ComposerTwoWaySyncTests` runs two devices against an in-memory stand-in for Supabase that keeps revisions and returns real revision conflicts. It covers an edit arriving without being pushed back, undo cleared on replaced boards, new and deleted boards, conflicts from a pull and from a push, Keep my version, Discard, conflicts surviving a relaunch, a deleted board edited on the other device, and saved stickers merging.
 
 `ComposerAccountRestoreTests` covers landing-board-first opening, delayed children and media, saved revisions, pagination, account filtering, failed downloads, relaunch/resume, edits and undo during downloads, upload gating, media refresh identities, starter recognition, UUID casing, and malformed responses. Network responses are mocked; tests do not modify a live Supabase project.
 
@@ -139,11 +148,11 @@ Run the Mosaic unit tests on an installed iPhone simulator. For a manual check, 
 
 ## Drawings
 
-**Current repository fact:** The Draw piece (`drawing` kind) stores its PencilKit strokes in `drawingData` inside the board document, so undo, copy and paste, and sync work like any other piece and no media upload is involved. `drawingWidth` and `drawingHeight` are the drawing area in its own points; `style.scale` resizes the strokes with the piece. A drawing stops taking new strokes past 1 MB of stroke data, and all drawings on one board share a 1.2 MB budget (about 1.6 MB once base64-encoded), which keeps the board under the server's 2,000,000-byte body limit; pasting a drawing that would exceed it is refused. If a board is still rejected, the push continues with the other boards and media and retries that one later. Ink edits are saved locally in a short batch rather than on every stroke. No backend schema change is required.
+**Current repository fact:** The Draw piece (`drawing` kind) stores its PencilKit strokes in `drawingData` inside the board document, so undo, copy and paste, and sync work like any other piece and no media upload is involved. `drawingWidth` and `drawingHeight` are the drawing area in its own points; `style.scale` resizes the strokes with the piece. A drawing stops taking new strokes past 1 MB of stroke data, and all drawings on one board share a 1.2 MB budget (about 1.6 MB once base64-encoded), which keeps the board under the server's 2,000,000-byte body limit; pasting a drawing that would exceed it is refused. If a board is still rejected, the push continues with the other boards and media and retries that one later. A board the server refuses as too large (`document body too large`) isn't counted as a failed push: the app shows which board is too large, doesn't upload that same content again until it changes, and Settings can still save. Ink edits are saved locally in a short batch rather than on every stroke. No backend schema change is required.
 
 ## Stickers
 
-**Current repository fact:** A sticker (`sticker` kind) is a transparent PNG in `mediaFileName`, so it uses the normal media catalog, upload, restore, and visitor-download flow. `stickerWidth`, `stickerHeight`, and `stickerBorder` are saved only on stickers; the white border is drawn on the device, not stored in the file. Cutouts come from Vision's foreground instance masks on the device and are saved at most 2048 pixels on the long side. Visitors download a PNG's original rather than its JPEG display copy, because the display copy has no transparency. Builds from before the drawing update can't read boards that contain stickers. An emoji sticker has no file; its emoji is the block's `text`.
+**Current repository fact:** A sticker (`sticker` kind) is a transparent PNG in `mediaFileName`, so it uses the normal media catalog, upload, restore, and visitor-download flow. `stickerWidth`, `stickerHeight`, and `stickerBorder` are saved only on stickers; the white border is drawn on the device, not stored in the file. Cutouts come from Vision's foreground instance masks on the device and are saved at most 2048 pixels on the long side. Visitors download a sticker's original rather than its JPEG display copy, because the display copy has no transparency; other PNGs use the smaller display copy. The visitor media cache moved to `Visits-v3`, and the old `Visits-v2` folder is deleted once, so no sticker keeps an earlier JPEG copy. Builds from before the drawing update can't read boards that contain stickers. An emoji sticker has no file; its emoji is the block's `text`.
 
 **Current repository fact:** "Your stickers" (saved cutouts) is `stickerLibrary` in the snapshot and in the Mosaic board's body only, so it syncs and restores with the account. Its files upload with the Mosaic board and are listed in that board's `mediaAssets` for the owner's devices. `viewer_board_body` drops `stickerLibrary` from visitors' copy (`20261021150000_private_sticker_library.sql`), so a file only the list mentions isn't readable by visitors; a sticker placed on a board is a block and is visible as usual. Removing a sticker from the list doesn't remove copies already placed.
 
