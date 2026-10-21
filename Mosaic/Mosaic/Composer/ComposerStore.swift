@@ -19,6 +19,7 @@ final class ComposerStore {
     private var undoStacks: [String: [ComposerUndoEntry]] = [:]
     private var undoCoalesce: ComposerUndoCoalesce?
     private var isApplyingUndo = false
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
     private let fileManager: FileManager
     private let persistToDisk: Bool
@@ -353,7 +354,16 @@ final class ComposerStore {
 
     func updateBlock(_ block: ComposerBlock, in documentID: ComposerDocumentID?) {
         guard let current = self.block(with: block.id, in: documentID), current != block else { return }
-        captureUndo(in: documentID, coalesce: block.id)
+        var inkChanged = current
+        inkChanged.drawingData = block.drawingData
+        let isInkOnly = block.kind == .drawing && inkChanged == block
+        // The first ink on a just-placed drawing joins the step that placed it, so Undo never
+        // brings back an empty drawing box.
+        let joinsPlacement = isInkOnly && current.drawingData == nil
+            && undoStacks[Self.undoKey(documentID)]?.last?.blocks == blocks(for: documentID).filter { $0.id != block.id }
+        if !joinsPlacement {
+            captureUndo(in: documentID, coalesce: block.id)
+        }
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(block.id, in: &blocks) { current in
                 current = block
@@ -364,7 +374,54 @@ final class ComposerStore {
            let pursuitIndex = snapshot.pursuits.firstIndex(where: { $0.id == pursuitID }) {
             snapshot.pursuits[pursuitIndex].title = block.pursuitDisplayName
         }
+        // Strokes come quickly and the whole snapshot is rewritten each save, so ink saves in a batch.
+        if isInkOnly {
+            persistSoon()
+        } else {
+            persist()
+        }
+    }
+
+    /// Removes a drawing whose ink was all erased, without an undo step of its own: Undo then
+    /// returns to the drawing as it was before the last erase. A drawing placed and never drawn
+    /// in goes away with the step that placed it.
+    func discardEmptyDrawing(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
+        guard let block = blocks(for: documentID).first(where: { $0.id == blockID }),
+              block.kind == .drawing, block.drawingData == nil else { return }
+        let key = Self.undoKey(documentID)
+        let remaining = blocks(for: documentID).filter { $0.id != blockID }
+        if undoStacks[key]?.last?.blocks == remaining {
+            undoStacks[key]?.removeLast()
+        }
+        undoCoalesce = nil
+        mutateBlocks(for: documentID) { $0 = remaining }
         persist()
+    }
+
+    /// Changes a drawing's box (and shifts its strokes to match) outside the undo history: the ink
+    /// stays where it is on the board, so there is nothing for Undo to take back.
+    func reshapeDrawing(_ block: ComposerBlock, in documentID: ComposerDocumentID?) {
+        guard block.kind == .drawing,
+              let current = blocks(for: documentID).first(where: { $0.id == block.id }), current != block else { return }
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(block.id, in: &blocks) { $0 = block }
+        }
+        persist()
+    }
+
+    /// Writes a batched save now, for example when drawing ends or the app leaves the screen.
+    func flushPendingSave() {
+        guard pendingSave != nil else { return }
+        persist()
+    }
+
+    private func persistSoon() {
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            self?.persist()
+        }
     }
 
     func deleteBlock(_ blockID: ComposerBlockID, in documentID: ComposerDocumentID?) {
@@ -752,6 +809,10 @@ final class ComposerStore {
         let isJournalPage = documentID.flatMap { id in snapshot.pursuits.first(where: { $0.id == id })?.role } == .page
         guard Self.allowsPlacement(of: clipboard.block, onMosaic: documentID == nil, onJournalPage: isJournalPage)
         else { return nil }
+        // Drawings are saved inside the board; past the budget it would be too large to sync.
+        let pastedInk = ComposerDrawingMetrics.bytes(in: [clipboard.block])
+        guard pastedInk == 0 || ComposerDrawingMetrics.bytes(in: page) + pastedInk <= ComposerDrawingMetrics.boardBudget
+        else { return nil }
 
         let placedBlock: ComposerBlock
         let documents: [ComposerPursuit]
@@ -817,7 +878,7 @@ final class ComposerStore {
         if onMosaic {
             allowed = ![.scrapbook, .calendar, .graph, .table].contains(block.kind)
         } else if onJournalPage {
-            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar].contains(block.kind)
+            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar, .drawing].contains(block.kind)
         } else {
             allowed = true
         }
@@ -1007,6 +1068,10 @@ final class ComposerStore {
             if block.kind == .pursuit || block.kind == .node, let pursuitID = block.pursuitID {
                 ids.append(pursuitID)
             }
+            if block.kind == .unsupported {
+                let mentioned = block.preservedStrings
+                ids.append(contentsOf: snapshot.pursuits.map(\.id).filter { mentioned.contains($0.rawValue) })
+            }
             for id in ids where seen.insert(id.rawValue).inserted {
                 guard let document = snapshot.pursuits.first(where: { $0.id == id }) else { continue }
                 result.append(document)
@@ -1073,6 +1138,8 @@ final class ComposerStore {
     }
 
     private func persist() {
+        pendingSave?.cancel()
+        pendingSave = nil
         guard persistToDisk else { return }
         do {
             let url = location.snapshotURL

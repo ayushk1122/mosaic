@@ -158,6 +158,10 @@ struct ComposerCanvasBlockView: View {
     var cornerResizing: Binding<Bool> = .constant(false)
     var mediaMenuBlockID: ComposerBlockID? = nil
     var pinsTabsToPageEdges: Bool = true
+    var isDrawing: Bool = false
+    var drawingByteLimit: Int = ComposerDrawingMetrics.maximumBytes
+    var onDrawingFullChange: (Bool) -> Void = { _ in }
+    var inkSession: ComposerInkSession?
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
@@ -168,12 +172,12 @@ struct ComposerCanvasBlockView: View {
     var body: some View {
         canvasContent
         .frame(
-            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook ? nil : 280,
+            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
+            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing || block.kind == .unsupported,
             editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
             isViewing: isViewing,
             onTap: actions.onBeginEditing,
@@ -345,6 +349,19 @@ struct ComposerCanvasBlockView: View {
                 }
             case .node, .pursuit:
                 pursuitView
+            case .drawing:
+                ComposerDrawingCanvasBlock(
+                    block: $block,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isDrawing: isDrawing,
+                    isViewing: isViewing,
+                    byteLimit: drawingByteLimit,
+                    onFullChange: onDrawingFullChange,
+                    inkSession: inkSession
+                )
+            case .unsupported:
+                EmptyView()
         }
     }
 

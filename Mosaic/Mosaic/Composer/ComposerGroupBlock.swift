@@ -20,6 +20,40 @@ struct ComposerGroupMemberSizesKey: PreferenceKey {
     }
 }
 
+/// A piece that can be tapped while choosing what to group.
+struct ComposerGroupingTarget {
+    var id: ComposerBlockID
+    /// The piece's untilted box on the board.
+    var frame: CGRect
+    var rotation: Double = 0
+    /// For drawings, the areas around the ink in the piece's own points (already scaled), so a
+    /// tap through empty parts of a drawing reaches the piece underneath.
+    var inkRects: [CGRect]?
+
+    init(block: ComposerBlock, frame: CGRect) {
+        self.id = block.id
+        self.frame = frame
+        self.rotation = block.rotation
+        guard block.kind == .drawing, block.drawingData != nil else { return }
+        let scale = CGFloat(max(block.style.scale, 0.05))
+        let rects = ComposerDrawingMetrics.touchRects(of: ComposerDrawingMetrics.drawing(from: block.drawingData))
+        inkRects = rects.map { $0.applying(CGAffineTransform(scaleX: scale, y: scale)) }
+    }
+
+    func contains(_ point: CGPoint) -> Bool {
+        guard let inkRects else { return frame.insetBy(dx: -4, dy: -4).contains(point) }
+        // Undo the tilt around the center, then test in the drawing's own coordinates.
+        let radians = -rotation * .pi / 180
+        let dx = point.x - frame.midX
+        let dy = point.y - frame.midY
+        let local = CGPoint(
+            x: dx * CGFloat(cos(radians)) - dy * CGFloat(sin(radians)) + frame.width / 2,
+            y: dx * CGFloat(sin(radians)) + dy * CGFloat(cos(radians)) + frame.height / 2
+        )
+        return inkRects.contains { $0.contains(local) }
+    }
+}
+
 enum ComposerGroupMath {
     /// The banner pins to the top and the tabs bar filters the whole page, so neither can sit inside a group.
     static func canGroup(_ kind: BlockKind) -> Bool {
@@ -124,6 +158,8 @@ enum ComposerGroupMath {
             block.style.scale *= scale
         case .carousel:
             block.style.scale = min(max(block.style.scale * scale, CarouselLayout.minimumScale), 3.2)
+        case .drawing:
+            block.style.scale = min(max(block.style.scale * scale, ComposerDrawingMetrics.minimumScale), 3.2)
         default:
             block.style.scale = min(max(block.style.scale * scale, 0.45), 3.2)
         }
@@ -324,7 +360,9 @@ struct ComposerGroupCanvasBlock: View {
             guard let member = block.groupMembers.first(where: { $0.id == id }) else { return }
             if isViewing {
                 guard let name = member.mediaFileName, !name.isEmpty else { return }
-                onPresentMedia?(store.mediaURL(for: name), ComposerMediaCrop(block: member))
+                var crop = ComposerMediaCrop(block: member)
+                crop.markup = ComposerMediaMarkup.data(for: member, in: block, memberSizes: memberSizes)
+                onPresentMedia?(store.mediaURL(for: name), crop)
             } else if playingMediaIDs.contains(id) {
                 playingMediaIDs.remove(id)
             } else {

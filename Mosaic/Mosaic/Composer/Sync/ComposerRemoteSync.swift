@@ -290,8 +290,16 @@ final class ComposerRemoteSync {
                 document.parentID != nil || document.role == .mosaic || document.role == .pursuit
             }
             let documents = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets)
+            // One board the server refuses (too large, say) mustn't hold back every other board
+            // and the media; it's retried with the next push.
+            var anySaveFailed = false
             for document in documents {
-                try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                do {
+                    try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                } catch {
+                    if Task.isCancelled { return false }
+                    anySaveFailed = true
+                }
             }
 
             let liveIDs = Set(documents.map(\.id))
@@ -317,7 +325,7 @@ final class ComposerRemoteSync {
                     saveState(state)
                 }
             }
-            guard let mediaFile else { return true }
+            guard let mediaFile else { return !anySaveFailed }
             let references = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID)
             state.mediaAssets = await uploadMedia(
                 references: references,
@@ -330,7 +338,12 @@ final class ComposerRemoteSync {
             saveState(state)
             let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets)
             for document in restamped {
-                try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                do {
+                    try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                } catch {
+                    if Task.isCancelled { return false }
+                    anySaveFailed = true
+                }
             }
             // Readable local files without a cloud asset are not finished syncing yet,
             // unless they have already failed too often to be retried this session.
@@ -340,7 +353,7 @@ final class ComposerRemoteSync {
                 return FileManager.default.fileExists(atPath: mediaFile(reference.fileName).path)
             }
             lastPushLeftMediaPending = unfinished
-            return !unfinished
+            return !unfinished && !anySaveFailed
         } catch {
             return false
         }

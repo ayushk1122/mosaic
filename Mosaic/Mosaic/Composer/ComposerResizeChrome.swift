@@ -89,15 +89,6 @@ struct ComposerResizeCornerFrames: Equatable {
         }?.0
     }
 
-    mutating func update(_ corner: ComposerResizeCorner, to frame: CGRect) {
-        switch corner {
-        case .topLeft where topLeft != frame: topLeft = frame
-        case .topRight where topRight != frame: topRight = frame
-        case .bottomLeft where bottomLeft != frame: bottomLeft = frame
-        case .bottomRight where bottomRight != frame: bottomRight = frame
-        default: break
-        }
-    }
 }
 
 struct ComposerResizeCornerFrameKey: PreferenceKey {
@@ -132,8 +123,20 @@ struct ComposerResizeChrome: View {
     var onChanged: (ComposerResizeCorner, CGSize) -> Void
     var onEnded: (ComposerResizeCorner, CGSize) -> Void
 
-    @State private var cornerFrames = ComposerResizeCornerFrames()
+    @State private var topLeftFrame = CGRect.zero
+    @State private var topRightFrame = CGRect.zero
+    @State private var bottomLeftFrame = CGRect.zero
+    @State private var bottomRightFrame = CGRect.zero
     @Environment(\.composerCoordinateSpace) private var composerSpace
+
+    private var cornerFrames: ComposerResizeCornerFrames {
+        ComposerResizeCornerFrames(
+            topLeft: topLeftFrame,
+            topRight: topRightFrame,
+            bottomLeft: bottomLeftFrame,
+            bottomRight: bottomRightFrame
+        )
+    }
 
     var body: some View {
         let bounds = CGRect(origin: .zero, size: layout)
@@ -157,23 +160,24 @@ struct ComposerResizeChrome: View {
                     onEnded: { onEnded(corner, $0) }
                 )
                 .frame(width: hitSide, height: hitSide)
-                .position(corner.grabPoint(in: bounds, pull: grabPull))
+                // Measured before `.position`, which fills the whole box: each corner reports only
+                // its own catcher, so taps elsewhere in the box reach the piece.
                 .onGeometryChange(for: CGRect.self) { item in
                     item.frame(in: .named(composerSpace))
                 } action: { frame in
                     guard frame.width.isFinite, frame.height.isFinite, frame.width > 1, frame.height > 1 else { return }
-                    let current: CGRect
-                    switch corner {
-                    case .topLeft: current = cornerFrames.topLeft
-                    case .topRight: current = cornerFrames.topRight
-                    case .bottomLeft: current = cornerFrames.bottomLeft
-                    case .bottomRight: current = cornerFrames.bottomRight
+                    // Recorded after this layout pass: when the box resizes, the second measurement
+                    // in the same pass was dropped and the corners stayed where the old box was.
+                    Task { @MainActor in
+                        switch corner {
+                        case .topLeft: topLeftFrame = frame
+                        case .topRight: topRightFrame = frame
+                        case .bottomLeft: bottomLeftFrame = frame
+                        case .bottomRight: bottomRightFrame = frame
+                        }
                     }
-                    guard abs(current.minX - frame.minX) > 0.5
-                        || abs(current.minY - frame.minY) > 0.5
-                        || abs(current.width - frame.width) > 0.5 else { return }
-                    cornerFrames.update(corner, to: frame)
                 }
+                .position(corner.grabPoint(in: bounds, pull: grabPull))
             }
         }
         .frame(width: max(layout.width, 1), height: max(layout.height, 1))

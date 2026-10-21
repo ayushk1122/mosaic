@@ -86,6 +86,14 @@ enum ComposerBoardSync {
                     else { continue }
                     walkBlocks(document.blocks)
                 }
+                // A piece from a newer version may own boards this version can't name; any board
+                // it mentions is kept.
+                if block.kind == .unsupported {
+                    for document in snapshot.pursuits
+                    where block.preservedStrings.contains(document.id.rawValue) && seen.insert(document.id.rawValue).inserted {
+                        walkBlocks(document.blocks)
+                    }
+                }
                 walkBlocks(block.groupMembers)
             }
         }

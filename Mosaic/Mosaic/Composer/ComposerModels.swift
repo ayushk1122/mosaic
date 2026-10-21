@@ -34,6 +34,14 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
     case table
     case social
     case pursuit
+    case drawing
+    /// A piece from a newer version of the app. It is kept exactly as saved and not shown.
+    case unsupported
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = BlockKind(rawValue: raw) ?? .unsupported
+    }
 }
 
 enum BlockMenuOption: String, CaseIterable, Identifiable {
@@ -41,6 +49,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case text
     case heading
     case list
+    case drawing
     case media
     case carousel
     case calendar
@@ -64,6 +73,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "Text"
         case .heading: "Heading"
         case .list: "List"
+        case .drawing: "Draw"
         case .media: "Media"
         case .carousel: "Carousel"
         case .calendar: "Calendar"
@@ -87,6 +97,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "textformat"
         case .heading: "textformat.size.larger"
         case .list: "list.bullet"
+        case .drawing: "scribble.variable"
         case .media: "photo"
         case .carousel: "rectangle.stack"
         case .calendar: "calendar"
@@ -110,6 +121,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "T"
         case .heading: "H"
         case .list: "•"
+        case .drawing: "✎"
         case .media: "▣"
         case .carousel: "◎"
         case .calendar: "▦"
@@ -133,6 +145,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: .text
         case .heading: .heading
         case .list: .list
+        case .drawing: .drawing
         case .media: .media
         case .carousel: .carousel
         case .calendar: .calendar
@@ -156,6 +169,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .text: "text paragraph write"
         case .heading: "heading title headline"
         case .list: "list bullet number numbered checkbox todo task dash letter"
+        case .drawing: "draw drawing sketch pencil pen ink arrow circle underline annotate markup"
         case .media: "media photo image picture"
         case .carousel: "carousel carosoul slider"
         case .calendar: "calendar date day month year schedule"
@@ -188,7 +202,10 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         includingBackground: Bool = true
     ) -> [BlockMenuOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var ordered = Array(allCases.reversed())
+        // Alphabetical by the name people see, in every composer, so pieces are easy to find.
+        var ordered = allCases.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
         // Plain Link is retired from every composer; Content covers URL embeds.
         ordered.removeAll { $0 == .link }
         if !includingPursuit {
@@ -1217,11 +1234,11 @@ extension ComposerBlock {
     /// and the tabs bar and banner are pinned to the page.
     var canRotate: Bool {
         switch kind {
-        case .media, .text, .heading, .list, .social, .pursuit, .node, .carousel, .scrapbook, .group:
+        case .media, .text, .heading, .list, .social, .pursuit, .node, .carousel, .scrapbook, .group, .drawing:
             true
         case .link:
             isContent
-        case .calendar, .graph, .tabs, .banner, .table:
+        case .calendar, .graph, .tabs, .banner, .table, .unsupported:
             false
         }
     }
@@ -1293,9 +1310,16 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var rotation: Double
     /// A locked piece can't be moved, resized, rotated, or deleted; its content can still be edited.
     var isLocked: Bool
+    /// PencilKit strokes, in the drawing's own points. Empty until something is drawn.
+    var drawingData: Data?
+    /// The drawing area's size before `style.scale`, so resizing scales the strokes with it.
+    var drawingWidth: Double
+    var drawingHeight: Double
+    /// The saved form of an `.unsupported` piece, written back unchanged so newer content survives.
+    var preserved: ComposerJSONValue?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked, drawingData, drawingWidth, drawingHeight
     }
 
     init(
@@ -1353,7 +1377,10 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         scrapbookPageIDs: [ComposerDocumentID] = [],
         scrapbookIndex: Int = 0,
         rotation: Double = 0,
-        isLocked: Bool = false
+        isLocked: Bool = false,
+        drawingData: Data? = nil,
+        drawingWidth: Double = 0,
+        drawingHeight: Double = 0
     ) {
         self.id = id
         self.kind = kind
@@ -1410,12 +1437,32 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.scrapbookIndex = scrapbookIndex
         self.rotation = rotation
         self.isLocked = isLocked
+        self.drawingData = drawingData
+        self.drawingWidth = drawingWidth
+        self.drawingHeight = drawingHeight
+        self.preserved = nil
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(ComposerBlockID.self, forKey: .id)
-        kind = try container.decode(BlockKind.self, forKey: .kind)
+        let id = try container.decode(ComposerBlockID.self, forKey: .id)
+        let kind = try container.decode(BlockKind.self, forKey: .kind)
+        if kind == .unsupported {
+            var block = ComposerBlock(
+                id: id,
+                kind: .unsupported,
+                text: "",
+                style: .bodyDefault,
+                position: ((try? container.decodeIfPresent(BlockPosition.self, forKey: .position)) ?? nil)
+                    ?? BlockPosition(x: 0, y: 0),
+                tabID: (try? container.decodeIfPresent(String.self, forKey: .tabID)) ?? nil
+            )
+            block.preserved = try ComposerJSONValue(from: decoder)
+            self = block
+            return
+        }
+        self.id = id
+        self.kind = kind
         text = try container.decode(String.self, forKey: .text)
         style = try container.decode(TextBlockStyle.self, forKey: .style)
         position = try container.decodeIfPresent(BlockPosition.self, forKey: .position)
@@ -1470,9 +1517,104 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         scrapbookIndex = try container.decodeIfPresent(Int.self, forKey: .scrapbookIndex) ?? 0
         rotation = try container.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
         isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
+        drawingData = try container.decodeIfPresent(Data.self, forKey: .drawingData)
+        drawingWidth = try container.decodeIfPresent(Double.self, forKey: .drawingWidth) ?? 0
+        drawingHeight = try container.decodeIfPresent(Double.self, forKey: .drawingHeight) ?? 0
+        preserved = nil
         if kind == .table {
             ComposerTable.ensure(&self)
         }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        if kind == .unsupported, let preserved {
+            try preservedWithBoardChanges(preserved).encode(to: encoder)
+            return
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(text, forKey: .text)
+        try container.encode(style, forKey: .style)
+        try container.encode(position, forKey: .position)
+        try container.encodeIfPresent(mediaFileName, forKey: .mediaFileName)
+        try container.encode(mediaShape, forKey: .mediaShape)
+        try container.encodeIfPresent(mediaWarp, forKey: .mediaWarp)
+        try container.encode(mediaZoom, forKey: .mediaZoom)
+        try container.encode(mediaPanX, forKey: .mediaPanX)
+        try container.encode(mediaPanY, forKey: .mediaPanY)
+        try container.encodeIfPresent(linkURL, forKey: .linkURL)
+        try container.encodeIfPresent(pursuitID, forKey: .pursuitID)
+        try container.encode(pursuitShape, forKey: .pursuitShape)
+        try container.encode(pursuitLayout, forKey: .pursuitLayout)
+        try container.encode(pursuitFrameAspect, forKey: .pursuitFrameAspect)
+        try container.encode(pursuitTextX, forKey: .pursuitTextX)
+        try container.encode(pursuitTextY, forKey: .pursuitTextY)
+        try container.encode(pursuitTexts, forKey: .pursuitTexts)
+        try container.encode(pursuitImageZoom, forKey: .pursuitImageZoom)
+        try container.encode(pursuitImagePanX, forKey: .pursuitImagePanX)
+        try container.encode(pursuitImagePanY, forKey: .pursuitImagePanY)
+        try container.encodeIfPresent(pursuitFill, forKey: .pursuitFill)
+        try container.encodeIfPresent(pursuitImageFileName, forKey: .pursuitImageFileName)
+        try container.encode(carouselItems, forKey: .carouselItems)
+        try container.encode(carouselIndex, forKey: .carouselIndex)
+        try container.encode(calendarEntries, forKey: .calendarEntries)
+        try container.encode(listItems, forKey: .listItems)
+        try container.encode(listMarker, forKey: .listMarker)
+        try container.encode(graphTitle, forKey: .graphTitle)
+        try container.encode(graphKind, forKey: .graphKind)
+        try container.encode(graphXAxis, forKey: .graphXAxis)
+        try container.encode(graphYAxis, forKey: .graphYAxis)
+        try container.encode(graphXUnitName, forKey: .graphXUnitName)
+        try container.encode(graphYUnitName, forKey: .graphYUnitName)
+        try container.encode(graphPoints, forKey: .graphPoints)
+        try container.encode(graphWidthScale, forKey: .graphWidthScale)
+        try container.encode(graphHeightScale, forKey: .graphHeightScale)
+        try container.encode(tabs, forKey: .tabs)
+        try container.encodeIfPresent(selectedTabID, forKey: .selectedTabID)
+        try container.encodeIfPresent(tabID, forKey: .tabID)
+        try container.encode(mediaFrameAspect, forKey: .mediaFrameAspect)
+        try container.encode(bannerHeight, forKey: .bannerHeight)
+        try container.encode(tableColumns, forKey: .tableColumns)
+        try container.encode(tableRows, forKey: .tableRows)
+        try container.encode(tableEntries, forKey: .tableEntries)
+        try container.encodeIfPresent(selectedTableEntryID, forKey: .selectedTableEntryID)
+        try container.encode(socialPlatform, forKey: .socialPlatform)
+        try container.encode(groupMembers, forKey: .groupMembers)
+        try container.encode(groupWidth, forKey: .groupWidth)
+        try container.encode(groupHeight, forKey: .groupHeight)
+        try container.encode(scrapbookPageIDs, forKey: .scrapbookPageIDs)
+        try container.encode(scrapbookIndex, forKey: .scrapbookIndex)
+        try container.encode(rotation, forKey: .rotation)
+        try container.encode(isLocked, forKey: .isLocked)
+        try container.encodeIfPresent(drawingData, forKey: .drawingData)
+        // Only drawings have a drawing area; leaving it off other pieces keeps their saved form unchanged.
+        if kind == .drawing {
+            try container.encode(drawingWidth, forKey: .drawingWidth)
+            try container.encode(drawingHeight, forKey: .drawingHeight)
+        }
+    }
+
+    /// The board can still move a newer piece (ungrouping) or change its tab (deleting the tabs
+    /// bar), so those two fields are written over the saved form; everything else stays as saved.
+    private func preservedWithBoardChanges(_ preserved: ComposerJSONValue) -> ComposerJSONValue {
+        guard case .object(var fields) = preserved else { return preserved }
+        let movedFromSaved = fields["position"] != nil || position != BlockPosition(x: 0, y: 0)
+        if movedFromSaved {
+            fields["position"] = .object(["x": .number(position.x), "y": .number(position.y)])
+        }
+        if let tabID {
+            fields["tabID"] = .string(tabID)
+        } else {
+            fields["tabID"] = nil
+        }
+        return .object(fields)
+    }
+
+    /// Every text value inside a newer piece. Ids of boards and media it uses are among them, so
+    /// cleanup keeps those instead of treating them as unused.
+    var preservedStrings: Set<String> {
+        preserved?.strings ?? []
     }
 
     static func make(kind: BlockKind, position: BlockPosition) -> ComposerBlock {
@@ -1605,6 +1747,24 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
             )
         case .pursuit:
             newFolderBlock(kind: .pursuit, placeholder: "Pursuit", at: position)
+        case .drawing:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .drawing,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                drawingWidth: Double(ComposerDrawingMetrics.defaultSize.width),
+                drawingHeight: Double(ComposerDrawingMetrics.defaultSize.height)
+            )
+        case .unsupported:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .unsupported,
+                text: "",
+                style: .bodyDefault,
+                position: position
+            )
         }
     }
 
@@ -1770,6 +1930,54 @@ extension ComposerBlock {
             .lazy
             .map { ComposerTitle.singleLine($0.text) }
             .first { !$0.isEmpty } ?? ""
+    }
+}
+
+/// Any JSON value, kept as decoded so it can be written back unchanged.
+nonisolated enum ComposerJSONValue: Codable, Equatable, Sendable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([ComposerJSONValue])
+    case object([String: ComposerJSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([ComposerJSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: ComposerJSONValue].self))
+        }
+    }
+
+    var strings: Set<String> {
+        switch self {
+        case .string(let value): [value]
+        case .array(let values): values.reduce(into: []) { $0.formUnion($1.strings) }
+        case .object(let fields): fields.values.reduce(into: []) { $0.formUnion($1.strings) }
+        case .null, .bool, .number: []
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
     }
 }
 

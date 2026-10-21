@@ -175,9 +175,12 @@ struct MosaicTabShell: View {
                     // A push that failed while offline goes out once the app is back.
                     remoteSync.resumeIfNeeded(account: account)
                 }
-            } else if phase == .background, let account {
+            } else if phase == .background {
+                store.flushPendingSave()
                 // An edit still in its short pause would otherwise wait until the next launch.
-                remoteSync.flushNow(account: account)
+                if let account {
+                    remoteSync.flushNow(account: account)
+                }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
