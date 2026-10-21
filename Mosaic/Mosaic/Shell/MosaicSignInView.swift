@@ -264,12 +264,15 @@ struct MosaicSignInView: View {
                     )
                     .accessibilityIdentifier("account.codeEntry")
                 MosaicAuthPrimaryButton(title: "Verify", disabled: busy || code.count < 6, action: verify)
-                if canResend {
-                    Button("Resend code", action: resend)
-                } else {
-                    Text("Resend available in \(resendSeconds)s")
-                        .font(.footnote)
-                        .foregroundStyle(MosaicBrand.inkBlack.opacity(0.45))
+                // Redrawn each second, so the countdown moves and the button appears on time.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    if canResend {
+                        Button("Resend code", action: resend)
+                    } else {
+                        Text("Resend available in \(resendSeconds)s")
+                            .font(.footnote)
+                            .foregroundStyle(MosaicBrand.inkBlack.opacity(0.45))
+                    }
                 }
                 if let lastError = account.lastError {
                     Text(lastError)

@@ -185,11 +185,12 @@ struct MosaicVisitClient: Sendable {
     }
 
     /// Storage paths to try for one file, best first. Photos have a display copy;
-    /// a GIF's display copy is a still, so its original is used.
+    /// a GIF's display copy is a still and a PNG's is a JPEG without transparency (a sticker would
+    /// show on a solid box), so their originals are used.
     nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
-        let usesOriginal = ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
+        let usesOriginal = ["mov", "mp4", "m4v", "gif", "png"].contains((fileName as NSString).pathExtension.lowercased())
         return (usesOriginal ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
     }
 
@@ -575,6 +576,18 @@ struct MosaicVisitView: View {
             .environment(\.colorScheme, .dark)
             .toolbar(.hidden, for: .navigationBar)
             .task(id: loadAttempt) { await load() }
+            .onAppear {
+                // Back from a Pursuit opened inside the visit: follows and unfollows reload again.
+                if case .ready(_, _, let visit, _) = phase, visit.onAccessChanged == nil {
+                    visit.onAccessChanged = { loadAttempt += 1 }
+                }
+            }
+            .onDisappear {
+                // The visit's callback holds this screen, which holds the visit: let both go.
+                if case .ready(_, _, let visit, _) = phase {
+                    visit.onAccessChanged = nil
+                }
+            }
     }
 
     @ViewBuilder
@@ -852,10 +865,12 @@ struct MosaicVisitView: View {
             async let pursuitsCall = client.pursuits(ownerID: found.userID, accessToken: token)
             let pursuits = try await pursuitsCall
             let documents = MosaicVisit.authorizedDocuments(try await boardsCall, pursuits: pursuits)
-            guard let snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
+            guard var snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
                 phase = .failed
                 return
             }
+            // The server leaves saved stickers out of visitors' copy; never keep them if one slips in.
+            snapshot.stickerLibrary = []
 
             try Task.checkCancellation()
             guard account.session?.userID == viewerID else { throw CancellationError() }

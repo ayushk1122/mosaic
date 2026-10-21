@@ -61,6 +61,10 @@ enum ComposerMediaCatalog {
         }
         add(snapshot.mosaicBackground?.mediaFileName, documentID: mosaicID)
         walk(snapshot.mosaicBlocks, documentID: mosaicID)
+        // Saved stickers upload with the Mosaic board so every device can restore them.
+        for sticker in snapshot.stickerLibrary {
+            add(sticker.fileName, documentID: mosaicID)
+        }
         for pursuit in snapshot.pursuits {
             guard let documentID = ComposerBoardSync.uuid(pursuit.id) else { continue }
             add(pursuit.background?.mediaFileName, documentID: documentID)
@@ -115,6 +119,7 @@ enum ComposerMediaCatalog {
             names.insert(name)
         }
         walk(body.blocks)
+        names.formUnion((body.stickerLibrary ?? []).map(\.fileName))
         return names
     }
 }

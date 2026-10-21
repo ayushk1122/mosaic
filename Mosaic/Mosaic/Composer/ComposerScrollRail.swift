@@ -230,21 +230,4 @@ extension UIView {
 
 enum ComposerCanvasScrollMark {
     static let id = "composer.canvas.scroll"
-    private static var syncKey: UInt8 = 0
-
-    static func installSync(on scroll: UIScrollView, _ onOffset: @escaping (CGFloat) -> Void) {
-        objc_setAssociatedObject(scroll, &syncKey, ComposerCanvasScrollSync(onOffset), .OBJC_ASSOCIATION_RETAIN)
-    }
-
-    static func report(_ scroll: UIScrollView, offset: CGFloat) {
-        (objc_getAssociatedObject(scroll, &syncKey) as? ComposerCanvasScrollSync)?.onOffset(offset)
-    }
-}
-
-private final class ComposerCanvasScrollSync: NSObject {
-    let onOffset: (CGFloat) -> Void
-
-    init(_ onOffset: @escaping (CGFloat) -> Void) {
-        self.onOffset = onOffset
-    }
 }

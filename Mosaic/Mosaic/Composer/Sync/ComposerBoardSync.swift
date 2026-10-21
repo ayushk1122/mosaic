@@ -26,6 +26,8 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
     var pursuitPagesBlanked: Bool?
     /// Local file name to the private Storage asset. Blocks keep their file names.
     var mediaAssets: [String: String]?
+    /// Only on the Mosaic board. The server drops it from visitors' copy (`viewer_board_body`).
+    var stickerLibrary: [ComposerSavedSticker]?
 
     init(
         blocks: [ComposerBlock],
@@ -33,8 +35,10 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
         background: ComposerBoardBackground?,
         mosaicTitlePlaced: Bool?,
         pursuitPagesBlanked: Bool?,
-        mediaAssets: [String: String]? = nil
+        mediaAssets: [String: String]? = nil,
+        stickerLibrary: [ComposerSavedSticker]? = nil
     ) {
+        self.stickerLibrary = stickerLibrary
         self.blocks = blocks
         self.layoutHeight = layoutHeight
         self.background = background
@@ -44,7 +48,19 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case blocks, layoutHeight, background, mosaicTitlePlaced, pursuitPagesBlanked, mediaAssets
+        case blocks, layoutHeight, background, mosaicTitlePlaced, pursuitPagesBlanked, mediaAssets, stickerLibrary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blocks = try container.decode([ComposerBlock].self, forKey: .blocks)
+        layoutHeight = try container.decodeIfPresent(Double.self, forKey: .layoutHeight)
+        background = try container.decodeIfPresent(ComposerBoardBackground.self, forKey: .background)
+        mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced)
+        pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked)
+        mediaAssets = try container.decodeIfPresent([String: String].self, forKey: .mediaAssets)
+        let library = ComposerSavedSticker.lenientList(from: container, forKey: .stickerLibrary)
+        stickerLibrary = container.contains(.stickerLibrary) ? library : nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -55,6 +71,7 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
         try container.encodeIfPresent(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
         try container.encodeIfPresent(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
         try container.encodeIfPresent(mediaAssets, forKey: .mediaAssets)
+        try container.encodeIfPresent(stickerLibrary, forKey: .stickerLibrary)
     }
 }
 
@@ -89,8 +106,10 @@ enum ComposerBoardSync {
                 // A piece from a newer version may own boards this version can't name; any board
                 // it mentions is kept.
                 if block.kind == .unsupported {
+                    // Ids are matched without regard to case: the server stores them lowercase.
+                    let mentioned = Set(block.preservedStrings.map { $0.lowercased() })
                     for document in snapshot.pursuits
-                    where block.preservedStrings.contains(document.id.rawValue) && seen.insert(document.id.rawValue).inserted {
+                    where mentioned.contains(document.id.rawValue.lowercased()) && seen.insert(document.id.rawValue).inserted {
                         walkBlocks(document.blocks)
                     }
                 }
@@ -168,7 +187,8 @@ enum ComposerBoardSync {
                     layoutHeight: snapshot.mosaicLayoutHeight,
                     background: snapshot.mosaicBackground,
                     mosaicTitlePlaced: snapshot.mosaicTitlePlaced,
-                    pursuitPagesBlanked: snapshot.pursuitPagesBlanked
+                    pursuitPagesBlanked: snapshot.pursuitPagesBlanked,
+                    stickerLibrary: snapshot.stickerLibrary.isEmpty ? nil : snapshot.stickerLibrary
                 )
             )
         ]
@@ -260,7 +280,8 @@ enum ComposerBoardSync {
             mosaicTitlePlaced: mosaic.body.mosaicTitlePlaced ?? false,
             pursuitPagesBlanked: mosaic.body.pursuitPagesBlanked ?? false,
             mosaicLayoutHeight: mosaic.body.layoutHeight,
-            mosaicBackground: mosaic.body.background
+            mosaicBackground: mosaic.body.background,
+            stickerLibrary: mosaic.body.stickerLibrary ?? []
         )
     }
 
@@ -327,6 +348,11 @@ enum ComposerBoardSync {
         }
         if block.kind == .scrapbook,
            block.scrapbookPageIDs.contains(where: { uuid($0) == target }) {
+            return true
+        }
+        // A piece from a newer version may own boards; one it mentions is placed under it.
+        if block.kind == .unsupported,
+           block.preservedStrings.contains(where: { UUID(uuidString: $0) == target }) {
             return true
         }
         return block.groupMembers.contains { references($0, target: target) }

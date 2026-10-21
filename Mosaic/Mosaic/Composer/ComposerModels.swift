@@ -35,6 +35,8 @@ enum BlockKind: String, Codable, CaseIterable, Sendable {
     case social
     case pursuit
     case drawing
+    /// A picture with no background, such as a subject cut out of a photo. The file is `mediaFileName`.
+    case sticker
     /// A piece from a newer version of the app. It is kept exactly as saved and not shown.
     case unsupported
 
@@ -50,6 +52,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
     case heading
     case list
     case drawing
+    case sticker
     case media
     case carousel
     case calendar
@@ -74,6 +77,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .heading: "Heading"
         case .list: "List"
         case .drawing: "Draw"
+        case .sticker: "Sticker"
         case .media: "Media"
         case .carousel: "Carousel"
         case .calendar: "Calendar"
@@ -98,6 +102,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .heading: "textformat.size.larger"
         case .list: "list.bullet"
         case .drawing: "scribble.variable"
+        case .sticker: "wand.and.stars"
         case .media: "photo"
         case .carousel: "rectangle.stack"
         case .calendar: "calendar"
@@ -122,6 +127,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .heading: "H"
         case .list: "•"
         case .drawing: "✎"
+        case .sticker: "✦"
         case .media: "▣"
         case .carousel: "◎"
         case .calendar: "▦"
@@ -146,6 +152,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .heading: .heading
         case .list: .list
         case .drawing: .drawing
+        case .sticker: .sticker
         case .media: .media
         case .carousel: .carousel
         case .calendar: .calendar
@@ -170,6 +177,7 @@ enum BlockMenuOption: String, CaseIterable, Identifiable {
         case .heading: "heading title headline"
         case .list: "list bullet number numbered checkbox todo task dash letter"
         case .drawing: "draw drawing sketch pencil pen ink arrow circle underline annotate markup"
+        case .sticker: "sticker cutout cut out subject lift remove background stamp"
         case .media: "media photo image picture"
         case .carousel: "carousel carosoul slider"
         case .calendar: "calendar date day month year schedule"
@@ -1234,7 +1242,7 @@ extension ComposerBlock {
     /// and the tabs bar and banner are pinned to the page.
     var canRotate: Bool {
         switch kind {
-        case .media, .text, .heading, .list, .social, .pursuit, .node, .carousel, .scrapbook, .group, .drawing:
+        case .media, .text, .heading, .list, .social, .pursuit, .node, .carousel, .scrapbook, .group, .drawing, .sticker:
             true
         case .link:
             isContent
@@ -1317,9 +1325,22 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var drawingHeight: Double
     /// The saved form of an `.unsupported` piece, written back unchanged so newer content survives.
     var preserved: ComposerJSONValue?
+    /// How see-through the whole piece is, from `ComposerPieceLook.minimumOpacity` to 1.
+    var opacity: Double
+    var shadow: ComposerPieceShadow
+    var shadowColor: ComposerShadowColor
+    /// A sticker's size before `style.scale`, in points, in the picture's own shape.
+    var stickerWidth: Double
+    var stickerHeight: Double
+    /// The white border around a sticker's outline.
+    var stickerBorder: Bool
+    /// Decoration around a photo or video: Polaroid, tape, or torn paper.
+    var frameStyle: ComposerFrameStyle
+    /// Handwritten line under a Polaroid.
+    var frameCaption: String
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked, drawingData, drawingWidth, drawingHeight
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked, drawingData, drawingWidth, drawingHeight, opacity, shadow, shadowColor, stickerWidth, stickerHeight, stickerBorder, frameStyle, frameCaption
     }
 
     init(
@@ -1380,7 +1401,15 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         isLocked: Bool = false,
         drawingData: Data? = nil,
         drawingWidth: Double = 0,
-        drawingHeight: Double = 0
+        drawingHeight: Double = 0,
+        opacity: Double = 1,
+        shadow: ComposerPieceShadow = .none,
+        shadowColor: ComposerShadowColor = .black,
+        stickerWidth: Double = 0,
+        stickerHeight: Double = 0,
+        stickerBorder: Bool = true,
+        frameStyle: ComposerFrameStyle = .none,
+        frameCaption: String = ""
     ) {
         self.id = id
         self.kind = kind
@@ -1441,6 +1470,14 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.drawingWidth = drawingWidth
         self.drawingHeight = drawingHeight
         self.preserved = nil
+        self.opacity = opacity
+        self.shadow = shadow
+        self.shadowColor = shadowColor
+        self.stickerWidth = stickerWidth
+        self.stickerHeight = stickerHeight
+        self.stickerBorder = stickerBorder
+        self.frameStyle = frameStyle
+        self.frameCaption = frameCaption
     }
 
     init(from decoder: Decoder) throws {
@@ -1520,6 +1557,22 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         drawingData = try container.decodeIfPresent(Data.self, forKey: .drawingData)
         drawingWidth = try container.decodeIfPresent(Double.self, forKey: .drawingWidth) ?? 0
         drawingHeight = try container.decodeIfPresent(Double.self, forKey: .drawingHeight) ?? 0
+        opacity = ComposerPieceLook.clampedOpacity(((try? container.decodeIfPresent(Double.self, forKey: .opacity)) ?? nil) ?? 1)
+        // A shadow style from a newer version shows as none here rather than failing the board.
+        shadow = (try? container.decodeIfPresent(String.self, forKey: .shadow))
+            .flatMap { $0 }
+            .flatMap(ComposerPieceShadow.init(rawValue:)) ?? .none
+        shadowColor = (try? container.decodeIfPresent(String.self, forKey: .shadowColor))
+            .flatMap { $0 }
+            .flatMap(ComposerShadowColor.init(rawValue:)) ?? .black
+        stickerWidth = try container.decodeIfPresent(Double.self, forKey: .stickerWidth) ?? 0
+        stickerHeight = try container.decodeIfPresent(Double.self, forKey: .stickerHeight) ?? 0
+        stickerBorder = try container.decodeIfPresent(Bool.self, forKey: .stickerBorder) ?? true
+        // A frame from a newer version shows as none here rather than failing the board.
+        frameStyle = (try? container.decodeIfPresent(String.self, forKey: .frameStyle))
+            .flatMap { $0 }
+            .flatMap(ComposerFrameStyle.init(rawValue:)) ?? .none
+        frameCaption = try container.decodeIfPresent(String.self, forKey: .frameCaption) ?? ""
         preserved = nil
         if kind == .table {
             ComposerTable.ensure(&self)
@@ -1592,6 +1645,27 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         if kind == .drawing {
             try container.encode(drawingWidth, forKey: .drawingWidth)
             try container.encode(drawingHeight, forKey: .drawingHeight)
+        }
+        // Written only when changed, so pieces that keep the defaults save exactly as before.
+        if opacity < 1 {
+            try container.encode(opacity, forKey: .opacity)
+        }
+        if shadow != .none {
+            try container.encode(shadow.rawValue, forKey: .shadow)
+        }
+        if shadowColor != .black {
+            try container.encode(shadowColor.rawValue, forKey: .shadowColor)
+        }
+        if frameStyle != .none {
+            try container.encode(frameStyle.rawValue, forKey: .frameStyle)
+        }
+        if !frameCaption.isEmpty {
+            try container.encode(frameCaption, forKey: .frameCaption)
+        }
+        if kind == .sticker {
+            try container.encode(stickerWidth, forKey: .stickerWidth)
+            try container.encode(stickerHeight, forKey: .stickerHeight)
+            try container.encode(stickerBorder, forKey: .stickerBorder)
         }
     }
 
@@ -1757,6 +1831,16 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
                 drawingWidth: Double(ComposerDrawingMetrics.defaultSize.width),
                 drawingHeight: Double(ComposerDrawingMetrics.defaultSize.height)
             )
+        case .sticker:
+            ComposerBlock(
+                id: ComposerBlockID(),
+                kind: .sticker,
+                text: "",
+                style: .bodyDefault,
+                position: position,
+                stickerWidth: Double(ComposerStickerArt.placedLongSide),
+                stickerHeight: Double(ComposerStickerArt.placedLongSide)
+            )
         case .unsupported:
             ComposerBlock(
                 id: ComposerBlockID(),
@@ -1865,6 +1949,8 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     /// Vertical scale for block positions on the Mosaic board.
     var mosaicLayoutHeight: Double?
     var mosaicBackground: ComposerBoardBackground?
+    /// "Your stickers": cutouts saved to reuse, newest first. Synced with the account, never shown to visitors.
+    var stickerLibrary: [ComposerSavedSticker] = []
 
     static let empty = ComposerSnapshot(
         mosaicTitle: "My Mosaic",
@@ -1881,8 +1967,10 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         mosaicTitlePlaced: Bool = false,
         pursuitPagesBlanked: Bool = false,
         mosaicLayoutHeight: Double? = nil,
-        mosaicBackground: ComposerBoardBackground? = nil
+        mosaicBackground: ComposerBoardBackground? = nil,
+        stickerLibrary: [ComposerSavedSticker] = []
     ) {
+        self.stickerLibrary = stickerLibrary
         self.mosaicTitle = mosaicTitle
         self.mosaicBlocks = mosaicBlocks
         self.pursuits = pursuits
@@ -1893,7 +1981,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked, mosaicLayoutHeight, mosaicBackground
+        case mosaicTitle, mosaicBlocks, pursuits, mosaicTitlePlaced, pursuitPagesBlanked, mosaicLayoutHeight, mosaicBackground, stickerLibrary
     }
 
     init(from decoder: Decoder) throws {
@@ -1905,6 +1993,7 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked) ?? false
         mosaicLayoutHeight = try container.decodeIfPresent(Double.self, forKey: .mosaicLayoutHeight)
         mosaicBackground = try container.decodeIfPresent(ComposerBoardBackground.self, forKey: .mosaicBackground)
+        stickerLibrary = ComposerSavedSticker.lenientList(from: container, forKey: .stickerLibrary)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1916,6 +2005,37 @@ struct ComposerSnapshot: Codable, Equatable, Sendable {
         try container.encode(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
         try container.encodeIfPresent(mosaicLayoutHeight, forKey: .mosaicLayoutHeight)
         try container.encodeIfPresent(mosaicBackground, forKey: .mosaicBackground)
+        if !stickerLibrary.isEmpty {
+            try container.encode(stickerLibrary, forKey: .stickerLibrary)
+        }
+    }
+}
+
+/// A cutout saved to "Your stickers".
+struct ComposerSavedSticker: Codable, Equatable, Identifiable, Sendable {
+    var fileName: String
+    /// The sticker's starting size on a board, in points.
+    var width: Double
+    var height: Double
+
+    var id: String { fileName }
+
+    /// Kept short so the list stays a small part of the Mosaic board's saved data.
+    static let limit = 200
+
+    /// Entries that can't be read are skipped one by one, so a single bad entry can't empty the
+    /// list (which would then sync as empty).
+    static func lenientList<Key: CodingKey>(from container: KeyedDecodingContainer<Key>, forKey key: Key) -> [ComposerSavedSticker] {
+        guard let entries = try? container.decodeIfPresent([LenientEntry].self, forKey: key) else { return [] }
+        return entries.compactMap(\.sticker)
+    }
+
+    private struct LenientEntry: Decodable {
+        let sticker: ComposerSavedSticker?
+
+        init(from decoder: Decoder) throws {
+            sticker = try? ComposerSavedSticker(from: decoder)
+        }
     }
 }
 
@@ -1930,6 +2050,69 @@ extension ComposerBlock {
             .lazy
             .map { ComposerTitle.singleLine($0.text) }
             .first { !$0.isEmpty } ?? ""
+    }
+}
+
+/// A drop shadow under a piece, for depth.
+enum ComposerPieceShadow: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case soft
+    case lifted
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .soft: "Soft"
+        case .lifted: "Lifted"
+        }
+    }
+}
+
+/// Decoration around a photo or video. The crop shape (rounded, circle) is separate: `mediaShape`.
+enum ComposerFrameStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case polaroid
+    case tape
+    case torn
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .polaroid: "Polaroid"
+        case .tape: "Tape"
+        case .torn: "Torn"
+        }
+    }
+
+    static let captionLimit = 40
+}
+
+/// Black reads as depth on light boards; white reads as a glow on dark ones.
+enum ComposerShadowColor: String, Codable, CaseIterable, Identifiable, Sendable {
+    case black
+    case white
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .black: "Black"
+        case .white: "White"
+        }
+    }
+}
+
+enum ComposerPieceLook {
+    /// Never fully invisible, so a faded piece can still be found and selected.
+    static let minimumOpacity = 0.1
+
+    static func clampedOpacity(_ value: Double) -> Double {
+        guard value.isFinite else { return 1 }
+        return min(max(value, minimumOpacity), 1)
     }
 }
 

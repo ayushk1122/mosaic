@@ -48,6 +48,16 @@ struct MosaicComposerView: View {
     @State private var drawingBlockID: ComposerBlockID?
     @State private var drawingIsFull = false
     @State private var inkSession = ComposerInkSession()
+    /// The long-press menu is showing opacity and shadow instead of its icons.
+    @State private var clipboardMenuShowsLook = false
+    @State private var showsCutoutPicker = false
+    @State private var showsStickerSheet = false
+    @State private var captionEditBlockID: ComposerBlockID?
+    @State private var captionDraft = ""
+    /// "From a photo" in the Sticker sheet: the photo picker opens once the sheet has closed.
+    @State private var opensCutoutPickerAfterSheet = false
+    @State private var cutoutPickerItem: PhotosPickerItem?
+    @State private var cutoutRequest: ComposerCutoutRequest?
     @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
     @State private var showMediaPicker = false
@@ -310,8 +320,12 @@ struct MosaicComposerView: View {
             }
     }
 
-    private var measuredComposer: some View {
-        composerBody
+    private var measuredComposer: AnyView {
+        AnyView(measuredComposerContent)
+    }
+
+    private var measuredComposerContent: some View {
+        AnyView(composerBody)
             .coordinateSpace(name: composerSpace)
             .environment(\.composerCoordinateSpace, composerSpace)
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -366,7 +380,19 @@ struct MosaicComposerView: View {
             .onChange(of: neededCanvasHeight) { _, needed in
                 grownCanvasHeight = max(grownCanvasHeight, needed)
             }
+            .onChange(of: clipboardMenuBlockID) { _, _ in
+                // A new menu opens on its icons; closing one saves any slider change now.
+                clipboardMenuShowsLook = false
+                store.flushPendingSave()
+            }
             .onChange(of: selectedBlockID) { _, selected in
+                // Moving to another piece closes the menus of the one before.
+                if let menuID = clipboardMenuBlockID, menuID != selected {
+                    clipboardMenuBlockID = nil
+                }
+                if let menuID = styleMenuBlockID, menuID != selected {
+                    styleMenuBlockID = nil
+                }
                 // Selecting anything else, tapping the board, Undo removing the drawing, or
                 // switching to view mode all finish drawing.
                 if let drawingBlockID, selected != drawingBlockID {
@@ -401,7 +427,7 @@ struct MosaicComposerView: View {
     }
 
     private var composerBody: some View {
-        coveredBoard
+        AnyView(coveredBoard)
             .photosPicker(
                 isPresented: $showMediaPicker,
                 selection: $pickedMediaItems,
@@ -429,6 +455,71 @@ struct MosaicComposerView: View {
             }
             .fullScreenCover(item: $mediaEditRequest) { request in
                 mediaEditor(for: request)
+            }
+            .sheet(isPresented: $showsStickerSheet, onDismiss: {
+                if opensCutoutPickerAfterSheet {
+                    opensCutoutPickerAfterSheet = false
+                    showsCutoutPicker = true
+                }
+            }) {
+                ComposerStickerSheet(
+                    saved: store.snapshot.stickerLibrary,
+                    mediaURL: { store.mediaURL(for: $0) },
+                    onFromPhoto: {
+                        opensCutoutPickerAfterSheet = true
+                        showsStickerSheet = false
+                    },
+                    onPlaceSaved: { sticker in
+                        showsStickerSheet = false
+                        placeSavedSticker(sticker)
+                    },
+                    onPlaceEmoji: { emoji in
+                        showsStickerSheet = false
+                        placeEmojiSticker(emoji)
+                    },
+                    onRemove: { store.removeFromStickerLibrary($0.fileName) },
+                    onClose: { showsStickerSheet = false }
+                )
+                .presentationDetents([.medium, .large])
+            }
+            .alert("Polaroid caption", isPresented: Binding(
+                get: { captionEditBlockID != nil },
+                set: { if !$0 { captionEditBlockID = nil } }
+            )) {
+                TextField("Caption", text: $captionDraft)
+                Button("Save") {
+                    if let blockID = captionEditBlockID {
+                        store.setLook(
+                            frameCaption: captionDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+                            for: blockID,
+                            in: documentID
+                        )
+                    }
+                    captionEditBlockID = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    captionEditBlockID = nil
+                }
+            } message: {
+                Text("Up to \(ComposerFrameStyle.captionLimit) characters, written under the photo.")
+            }
+            .photosPicker(isPresented: $showsCutoutPicker, selection: $cutoutPickerItem, matching: .images)
+            .onChange(of: cutoutPickerItem) { _, item in
+                guard let item else { return }
+                cutoutPickerItem = nil
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          let photo = UIImage(data: data) else { return }
+                    cutoutRequest = ComposerCutoutRequest(photo: photo, anchor: nil)
+                }
+            }
+            .fullScreenCover(item: $cutoutRequest) { request in
+                ComposerCutoutEditor(photo: request.photo) {
+                    cutoutRequest = nil
+                } onDone: { png, pixelSize in
+                    placeSticker(png, pixelSize: pixelSize, anchor: request.anchor)
+                    cutoutRequest = nil
+                }
             }
         .fullScreenCover(item: $pursuitEditRequest) { request in
             pursuitEditor(for: request)
@@ -462,7 +553,7 @@ struct MosaicComposerView: View {
     }
 
     private var coveredBoard: some View {
-        boardColumn
+        AnyView(boardColumn)
             .overlay(alignment: .bottomLeading) {
                 if focusedMedia == nil, openScrapbookID == nil {
                     HStack(alignment: .bottom, spacing: 12) {
@@ -541,12 +632,11 @@ struct MosaicComposerView: View {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
                 .allowsHitTesting(false)
-                ComposerScrollBubbleFinder(rail: scrollBubbleRail)
-                    .frame(width: 0, height: 0)
-                    .allowsHitTesting(false)
                 if showsScrollBubble {
                     ComposerScrollBubble(rail: scrollBubbleRail)
-                        .padding(.top, 12)
+                        // On a journal page the top-right corner turns the page and would take the
+                        // bubble's touches, so the track starts below it.
+                        .padding(.top, isBookPage ? ScrapbookMetrics.turnCorner + 8 : 12)
                         .padding(.trailing, 4)
                         .padding(.bottom, 20 + ComposerAddMenuMetrics.button + 16)
                         .transition(.opacity)
@@ -677,7 +767,7 @@ struct MosaicComposerView: View {
                 .background(ComposerCanvasZoomLock(
                     // While drawing, one finger draws and two fingers move the board.
                     scrollsWithTwoFingers: drawingBlockID != nil,
-                    onOffset: { canvasScrollPosition.scrollTo(y: $0) }
+                    rail: scrollBubbleRail
                 ))
                 .coordinateSpace(name: composerSpace + ".canvas")
                 .modifier(
@@ -698,7 +788,14 @@ struct MosaicComposerView: View {
         }
     }
 
-    private var canvasPage: some View {
+    /// Type-erased, like `blockChrome` and `lookPanel`: the board screen is one large view, and
+    /// without these breaks its fully nested type grew deep enough to overflow the main
+    /// thread's stack on device while SwiftUI resolved it.
+    private var canvasPage: AnyView {
+        AnyView(canvasPageContent)
+    }
+
+    private var canvasPageContent: some View {
         ZStack(alignment: .topLeading) {
             Color.clear
                 .contentShape(Rectangle())
@@ -769,6 +866,12 @@ struct MosaicComposerView: View {
                 )
                 // Measured after rotating, so frames stay the piece's own untilted box.
                 .rotationEffect(angle)
+                // The live drawing canvas draws plain: a faded or shadowed canvas is hard to draw on.
+                .modifier(ComposerPieceLookModifier(
+                    opacity: drawingBlockID == block.id ? 1 : block.opacity,
+                    shadow: drawingBlockID == block.id ? .none : block.shadow,
+                    color: block.shadowColor
+                ))
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -822,8 +925,12 @@ struct MosaicComposerView: View {
 
     /// A piece's controls, drawn in a layer above every piece so overlapping pieces never cover
     /// them. The piece itself stays at its own layer.
+    private func blockChrome(for block: ComposerBlock) -> AnyView {
+        AnyView(blockChromeContent(for: block))
+    }
+
     @ViewBuilder
-    private func blockChrome(for block: ComposerBlock) -> some View {
+    private func blockChromeContent(for block: ComposerBlock) -> some View {
         if let frame = blockFrames[block.id], frame.width > 1, frame.height > 1 {
             let preview = resizePreview?.blockID == block.id ? resizePreview : nil
             let angle = Angle.degrees(liveRotation(for: block))
@@ -1120,6 +1227,12 @@ struct MosaicComposerView: View {
 
     private func beginPlacement(for option: BlockMenuOption) {
         endDrawing()
+        clipboardMenuBlockID = nil
+        if option == .sticker {
+            menuExpanded = false
+            showsStickerSheet = true
+            return
+        }
         if option == .background {
             menuExpanded = false
             showsBackgroundEditor = true
@@ -1134,7 +1247,7 @@ struct MosaicComposerView: View {
         if isBookPage {
             // Journal keeps a smaller set so page editing stays light.
             let journalOptions: Set<BlockMenuOption> = [
-                .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing
+                .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing, .sticker
             ]
             guard journalOptions.contains(option) else { return }
         }
@@ -1198,6 +1311,77 @@ struct MosaicComposerView: View {
         let newID = store.addBlock(.carousel, at: position, to: documentID)
         selectedBlockID = newID
         openCarouselEditor(newID)
+    }
+
+    /// A new cutout is placed and saved to "Your stickers" to use again.
+    private func placeSticker(_ png: Data, pixelSize: CGSize, anchor: CGPoint?) {
+        guard canvasSize.width > 0, let fileName = try? store.saveMediaData(png, fileExtension: "png") else { return }
+        let size = ComposerStickerArt.placedSize(for: pixelSize)
+        store.saveToStickerLibrary(fileName: fileName, size: size)
+        placeStickerPiece(size: size, anchor: anchor) { block in
+            block.mediaFileName = fileName
+        }
+    }
+
+    private func placeSavedSticker(_ sticker: ComposerSavedSticker) {
+        placeStickerPiece(size: CGSize(width: sticker.width, height: sticker.height), anchor: nil) { block in
+            block.mediaFileName = sticker.fileName
+        }
+    }
+
+    private func placeEmojiSticker(_ emoji: String) {
+        let side = ComposerStickerArt.emojiPlacedSide
+        placeStickerPiece(size: CGSize(width: side, height: side), anchor: nil) { block in
+            block.text = emoji
+        }
+    }
+
+    /// Over the photo it came from (a little down and right), or in the middle of the screen.
+    private func placeStickerPiece(size: CGSize, anchor: CGPoint?, configure: @escaping (inout ComposerBlock) -> Void) {
+        guard canvasSize.width > 0 else { return }
+        var origin: CGPoint
+        if let anchor {
+            origin = anchor
+        } else if let visible = visibleCanvasRect {
+            origin = CGPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
+        } else {
+            origin = CGPoint(x: (canvasSize.width - size.width) / 2, y: 120)
+        }
+        origin.x = min(max(origin.x, 8), max(canvasSize.width - size.width - 8, 8))
+        origin.y = max(origin.y, 8)
+        if isBookPage, pageViewportHeight > 1 {
+            origin = ComposerTabEdge.clampedOrigin(
+                origin,
+                size: size,
+                viewportWidth: max(canvasSize.width, 1),
+                viewportHeight: pageViewportHeight
+            )
+        }
+        let newID = store.addBlock(.sticker, at: normalizedPosition(from: origin), to: documentID) { block in
+            block.stickerWidth = Double(size.width)
+            block.stickerHeight = Double(size.height)
+            configure(&block)
+        }
+        selectedBlockID = newID
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Long-press "Cut out subject" on a photo: the photo stays, the sticker lands on top of it.
+    private func cutOutSubject(of blockID: ComposerBlockID) {
+        clipboardMenuBlockID = nil
+        guard let block = store.block(with: blockID, in: documentID),
+              let fileName = block.mediaFileName,
+              let photo = UIImage(contentsOfFile: store.mediaURL(for: fileName).path) else { return }
+        let frame = blockFrames[blockID]
+        cutoutRequest = ComposerCutoutRequest(
+            photo: photo,
+            anchor: frame.map { CGPoint(x: $0.minX + 24, y: $0.minY + 24) }
+        )
+    }
+
+    private func canCutOut(_ block: ComposerBlock) -> Bool {
+        guard block.kind == .media, let name = block.mediaFileName, !name.isEmpty else { return false }
+        return !composerMediaIsVideo(store.mediaURL(for: name))
     }
 
     /// Spans the page with a small margin, centered on the drop, and opens straight into drawing.
@@ -1432,14 +1616,19 @@ struct MosaicComposerView: View {
                 menuExpanded = false
             }
         }
+        // Open menus close on any tap off them, including while text is being edited.
+        clipboardMenuBlockID = nil
+        styleMenuBlockID = nil
+        // Read before dismissing, which clears it: a second tap near the Paste button pastes there.
+        let previousPasteAnchor = pasteAnchor
         if editingBlockID != nil {
             commitTextEditing()
         } else {
             dismissBlockInteraction()
         }
         guard store.clipboard != nil, !chrome.isViewing, !isGrouping else { return }
-        if let pasteAnchor, hypot(point.x - pasteAnchor.x, point.y - pasteAnchor.y) < 72 {
-            performPaste(at: pasteAnchor)
+        if let previousPasteAnchor, hypot(point.x - previousPasteAnchor.x, point.y - previousPasteAnchor.y) < 72 {
+            performPaste(at: previousPasteAnchor)
             return
         }
         pasteAnchor = point
@@ -1487,7 +1676,16 @@ struct MosaicComposerView: View {
     }
 
     /// Copy and cut, then layer order, then lock. The banner is pinned, so it only offers copy and cut.
+    @ViewBuilder
     private func clipboardActionMenu(for blockID: ComposerBlockID) -> some View {
+        if clipboardMenuShowsLook, let block = store.blocks(for: documentID).first(where: { $0.id == blockID }) {
+            lookPanel(for: block)
+        } else {
+            clipboardActionRow(for: blockID)
+        }
+    }
+
+    private func clipboardActionRow(for blockID: ComposerBlockID) -> some View {
         let block = store.blocks(for: documentID).first { $0.id == blockID }
         let arranges = block.map { $0.kind != .banner } ?? false
         let locked = block?.isLocked ?? false
@@ -1500,6 +1698,11 @@ struct MosaicComposerView: View {
                 store.cutBlock(blockID, in: documentID)
                 clearInteraction(with: blockID)
             }
+            if let block, canCutOut(block) {
+                clipboardMenuIcon("wand.and.stars", label: "Cut out subject") {
+                    cutOutSubject(of: blockID)
+                }
+            }
             if arranges {
                 clipboardMenuDivider
                 clipboardMenuIcon("square.3.layers.3d.top.filled", label: "Bring to front") {
@@ -1511,6 +1714,10 @@ struct MosaicComposerView: View {
                     clipboardMenuBlockID = nil
                 }
                 clipboardMenuDivider
+                // Opacity and shadow change how the piece looks, so they stay available when locked.
+                clipboardMenuIcon("circle.lefthalf.filled", label: "Opacity and shadow") {
+                    clipboardMenuShowsLook = true
+                }
                 clipboardMenuIcon(locked ? "lock.open" : "lock", label: locked ? "Unlock" : "Lock") {
                     store.setLocked(!locked, for: blockID, in: documentID)
                     clipboardMenuBlockID = nil
@@ -1522,6 +1729,191 @@ struct MosaicComposerView: View {
         .fixedSize()
         .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    /// Opacity slider and shadow choices, shown in place of the long-press menu.
+    private func lookPanel(for block: ComposerBlock) -> AnyView {
+        AnyView(lookPanelContent(for: block))
+    }
+
+    private func lookPanelContent(for block: ComposerBlock) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .accessibilityHidden(true)
+                Slider(
+                    value: Binding(
+                        get: { block.opacity },
+                        set: { store.setLook(opacity: $0, for: block.id, in: documentID) }
+                    ),
+                    in: ComposerPieceLook.minimumOpacity...1
+                )
+                .tint(.white)
+                .frame(width: 150)
+                .accessibilityLabel("Opacity")
+                .accessibilityIdentifier("composer.look.opacity")
+                Text("\(Int((block.opacity * 100).rounded()))%")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .frame(width: 38, alignment: .trailing)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "square.filled.on.square")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+                ForEach(ComposerPieceShadow.allCases) { option in
+                    let chosen = block.shadow == option
+                    Button {
+                        store.setLook(shadow: option, for: block.id, in: documentID)
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    } label: {
+                        Text(option.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(chosen ? MosaicBrand.inkBlack : .white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(chosen ? Color.white : Color.white.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Shadow \(option.title)")
+                    .accessibilityAddTraits(chosen ? .isSelected : [])
+                }
+                Rectangle()
+                    .fill(Color.white.opacity(0.16))
+                    .frame(width: 1, height: 18)
+                    .padding(.horizontal, 2)
+                ForEach(ComposerShadowColor.allCases) { tint in
+                    shadowColorSwatch(tint, for: block)
+                }
+            }
+            if block.kind == .media {
+                lookRow(icon: "photo.artframe") {
+                    ForEach(ComposerFrameStyle.allCases) { style in
+                        lookChip(style.title, chosen: block.frameStyle == style, label: "Frame \(style.title)") {
+                            store.setLook(frameStyle: style, for: block.id, in: documentID)
+                        }
+                    }
+                }
+                lookRow(icon: "circle.square") {
+                    ForEach(ComposerPhotoShapeChoice.allCases) { choice in
+                        lookChip(choice.title, chosen: choice.matches(block.mediaShape), label: "Shape \(choice.title)") {
+                            guard !choice.matches(block.mediaShape) else { return }
+                            store.setLook(photoShape: choice.shape, for: block.id, in: documentID)
+                        }
+                    }
+                }
+                if block.frameStyle == .polaroid {
+                    // A prompt rather than a field in the panel: the board's own touch handling
+                    // kept an inline field from taking the keyboard.
+                    lookRow(icon: "character.cursor.ibeam") {
+                        Button {
+                            captionDraft = block.frameCaption
+                            captionEditBlockID = block.id
+                        } label: {
+                            Text(block.frameCaption.isEmpty ? "Caption (optional)" : block.frameCaption)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(block.frameCaption.isEmpty ? 0.7 : 1))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: 220, alignment: .leading)
+                                .background(Color.white.opacity(0.1), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Caption")
+                        .accessibilityIdentifier("composer.look.caption")
+                    }
+                }
+            }
+            if block.kind == .sticker {
+                HStack(spacing: 6) {
+                    Image(systemName: "seal")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+                    ForEach([true, false], id: \.self) { on in
+                        let chosen = block.stickerBorder == on
+                        Button {
+                            store.setLook(stickerBorder: on, for: block.id, in: documentID)
+                            UISelectionFeedbackGenerator().selectionChanged()
+                        } label: {
+                            Text(on ? "Border" : "No border")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(chosen ? MosaicBrand.inkBlack : .white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(chosen ? Color.white : Color.white.opacity(0.1), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(on ? "Sticker border" : "No sticker border")
+                        .accessibilityAddTraits(chosen ? .isSelected : [])
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .fixedSize()
+        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func lookRow<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.75))
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            content()
+        }
+    }
+
+    private func lookChip(_ title: String, chosen: Bool, label: String, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(chosen ? MosaicBrand.inkBlack : .white)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(chosen ? Color.white : Color.white.opacity(0.1), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+
+    /// Picking a color with no shadow yet turns on Soft, so the choice is visible right away.
+    private func shadowColorSwatch(_ tint: ComposerShadowColor, for block: ComposerBlock) -> some View {
+        let chosen = block.shadowColor == tint
+        return Button {
+            store.setLook(
+                shadow: block.shadow == .none ? .soft : nil,
+                shadowColor: tint,
+                for: block.id,
+                in: documentID
+            )
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            Circle()
+                .fill(tint == .white ? Color.white : Color.black)
+                .frame(width: 18, height: 18)
+                .overlay(Circle().stroke(Color.white.opacity(tint == .black ? 0.45 : 0), lineWidth: 1))
+                .padding(3)
+                .overlay(Circle().stroke(Color.white.opacity(chosen ? 0.95 : 0), lineWidth: 1.5))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(tint.title) shadow")
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 
     private func clipboardMenuIcon(
@@ -1831,7 +2223,14 @@ struct MosaicComposerView: View {
         tappedPencil: Bool
     ) {
         let isTap = distance < 12 && elapsed < 0.32
+        if isTap, let menuID = clipboardMenuBlockID {
+            clipboardMenuBlockID = nil
+            // A tap on the piece whose menu is open just closes the menu; a tap on another
+            // piece closes it and carries on to that piece.
+            if menuID == block.id { return }
+        }
         if didMove {
+            clipboardMenuBlockID = nil
             editingBlockID = nil
             focusedTextBlockID = nil
             styleMenuBlockID = nil
@@ -1868,6 +2267,8 @@ struct MosaicComposerView: View {
             openScrapbook(block)
         } else if isTap, block.kind == .tabs || block.kind == .table || block.kind == .group {
             selectedBlockID = block.id
+        } else if isTap, block.kind == .sticker {
+            selectedBlockID = block.id
         } else if isTap, block.kind == .drawing {
             // Like text: a tap opens it for drawing. Done leaves it selected to resize or turn.
             beginDrawing(block.id)
@@ -1903,7 +2304,7 @@ struct MosaicComposerView: View {
                     current.graphWidthScale = ComposerGraphStretch.clamped(width)
                     current.graphHeightScale = ComposerGraphStretch.clamped(height)
                     current.style.scale = 1
-                } else if current.isContent || current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook || current.kind == .drawing {
+                } else if current.isContent || current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook || current.kind == .drawing || current.kind == .sticker {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, minimumScale(for: current)), 3.2)
                 } else {
@@ -1921,6 +2322,11 @@ struct MosaicComposerView: View {
         guard var rect = scrollBubbleRail.metrics.visibleContentRect(width: canvasSize.width) else { return nil }
         if !chrome.isViewing {
             rect.size.height = max(rect.height - (ComposerAddMenuMetrics.button + 28), 1)
+        }
+        // A journal page's top corners turn the page and take touches, so controls stay below them.
+        if isBookPage {
+            rect.origin.y += ScrapbookMetrics.turnCorner
+            rect.size.height = max(rect.height - ScrapbookMetrics.turnCorner, 1)
         }
         return rect
     }
@@ -2298,7 +2704,7 @@ struct MosaicComposerView: View {
         guard textDragVisual.blockID != block.id || !textDragVisual.isMoving else { return false }
         guard drawingBlockID != block.id else { return false }
         switch block.kind {
-        case .text, .heading, .list, .media, .pursuit, .node, .carousel, .calendar, .graph, .tabs, .table, .group, .scrapbook, .drawing:
+        case .text, .heading, .list, .media, .pursuit, .node, .carousel, .calendar, .graph, .tabs, .table, .group, .scrapbook, .drawing, .sticker:
             return true
         case .link:
             return block.isContent
@@ -2481,7 +2887,7 @@ struct MosaicComposerView: View {
     }
 
     private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
-        isTextLikeKind(kind) || kind == .media || isFolder(kind) || kind == .carousel || kind == .calendar || kind == .graph || kind == .tabs || kind == .table || kind == .social || kind == .group || kind == .scrapbook || kind == .drawing
+        isTextLikeKind(kind) || kind == .media || isFolder(kind) || kind == .carousel || kind == .calendar || kind == .graph || kind == .tabs || kind == .table || kind == .social || kind == .group || kind == .scrapbook || kind == .drawing || kind == .sticker
     }
 
     private func beginCarouselEdit(_ blockID: ComposerBlockID) {
@@ -3042,6 +3448,46 @@ private struct TwistVisual: Equatable {
     static let inactive = TwistVisual(blockID: nil, degrees: 0)
 }
 
+/// The quick shape choices next to frames. The crop editor still offers every shape.
+private enum ComposerPhotoShapeChoice: String, CaseIterable, Identifiable {
+    case plain
+    case rounded
+    case circle
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .plain: "Plain"
+        case .rounded: "Rounded"
+        case .circle: "Circle"
+        }
+    }
+
+    var shape: MediaFrameShape {
+        switch self {
+        case .plain: .rectangle
+        case .rounded: .roundedRectangle
+        case .circle: .circle
+        }
+    }
+
+    func matches(_ shape: MediaFrameShape) -> Bool {
+        switch self {
+        case .plain: shape == .rectangle || shape == .square
+        case .rounded: shape == .roundedRectangle || shape == .rounded
+        case .circle: shape == .circle
+        }
+    }
+}
+
+private struct ComposerCutoutRequest: Identifiable {
+    let id = UUID()
+    let photo: UIImage
+    /// Where the sticker's top-left lands on the board; nil places it mid-screen.
+    let anchor: CGPoint?
+}
+
 private struct FocusedComposerMedia: Identifiable, Equatable {
     let url: URL
     var crop: ComposerMediaCrop?
@@ -3151,7 +3597,9 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
 /// Keeps the composer page at its normal scale. Pinching a block must not zoom the scroll view.
 private struct ComposerCanvasZoomLock: UIViewRepresentable {
     var scrollsWithTwoFingers = false
-    var onOffset: (CGFloat) -> Void
+    /// Told about this board's own scroll view, so the scroll bubble always moves this board,
+    /// never another one on screen (a journal sits over its Pursuit's board).
+    var rail: ComposerScrollBubbleRail
 
     func makeUIView(context: Context) -> ComposerCanvasZoomLockView {
         let view = ComposerCanvasZoomLockView()
@@ -3161,15 +3609,15 @@ private struct ComposerCanvasZoomLock: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ComposerCanvasZoomLockView, context: Context) {
-        uiView.onOffset = onOffset
         uiView.scrollsWithTwoFingers = scrollsWithTwoFingers
+        uiView.rail = rail
         uiView.lockEnclosingScrollView()
     }
 }
 
 private final class ComposerCanvasZoomLockView: UIView {
-    var onOffset: (CGFloat) -> Void = { _ in }
     var scrollsWithTwoFingers = false
+    weak var rail: ComposerScrollBubbleRail?
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -3186,7 +3634,9 @@ private final class ComposerCanvasZoomLockView: UIView {
         while let view = current {
             if let scrollView = view as? UIScrollView {
                 scrollView.accessibilityIdentifier = ComposerCanvasScrollMark.id
-                ComposerCanvasScrollMark.installSync(on: scrollView, onOffset)
+                if rail?.scroll !== scrollView {
+                    rail?.scroll = scrollView
+                }
                 scrollView.minimumZoomScale = 1
                 scrollView.maximumZoomScale = 1
                 scrollView.bouncesZoom = false

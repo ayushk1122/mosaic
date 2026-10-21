@@ -303,7 +303,11 @@ final class ComposerRemoteSync {
             }
 
             let liveIDs = Set(documents.map(\.id))
-            if let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
+            // Deleting removed boards waits for a push where every board saved: a board whose
+            // save failed may be the new home of a node, and deleting its old parent would take
+            // the node's server copy with it.
+            if !anySaveFailed,
+               let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
                 // Only boards this phone has synced before and has since removed. A board another
                 // device created is unknown here, not dead.
                 let dead = ComposerBoardSync.deadIDs(

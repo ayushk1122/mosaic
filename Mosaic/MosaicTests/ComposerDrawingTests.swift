@@ -171,6 +171,42 @@ struct ComposerDrawingTests {
     }
 
     @Test
+    func groupedDrawingsLineUpWithAFramedPhoto() throws {
+        // A Polaroid photo 200 wide: the member is measured with its frame around it.
+        var photo = ComposerBlock.make(kind: .media, position: BlockPosition(x: 0, y: 0))
+        photo.frameStyle = .polaroid
+        let inner = CGSize(width: 200, height: 150)
+        let insets = ComposerPhotoFrameModifier.insets(for: .polaroid, width: inner.width)
+        let padded = CGSize(width: inner.width + 2 * insets.side, height: inner.height + insets.top + insets.bottom)
+        let solved = ComposerPhotoFrameModifier.mediaFrame(inPadded: padded, style: .polaroid)
+        #expect(abs(solved.width - inner.width) < 0.01)
+        #expect(abs(solved.height - inner.height) < 0.01)
+        #expect(abs(solved.minX - insets.side) < 0.01 && abs(solved.minY - insets.top) < 0.01)
+
+        // A stroke over the middle of the photo itself lands in the middle of the viewer's photo.
+        var drawing = ComposerBlock.make(kind: .drawing, position: BlockPosition(x: 0, y: 0))
+        drawing.drawingWidth = Double(padded.width)
+        drawing.drawingHeight = Double(padded.height)
+        let middle = CGPoint(x: insets.side + inner.width / 2, y: insets.top + inner.height / 2)
+        drawing.drawingData = ComposerDrawingMetrics.data(for: PKDrawing(strokes: [
+            stroke(from: CGPoint(x: middle.x - 10, y: middle.y), to: CGPoint(x: middle.x + 10, y: middle.y))
+        ]))
+        var group = ComposerBlock.make(kind: .group, position: BlockPosition(x: 0, y: 0))
+        group.groupWidth = Double(padded.width)
+        group.groupHeight = Double(padded.height)
+        group.groupMembers = [photo, drawing]
+        let data = try #require(ComposerMediaMarkup.data(
+            for: photo,
+            in: group,
+            memberSizes: [photo.id: padded, drawing.id: padded]
+        ))
+        let bounds = ComposerDrawingMetrics.drawing(from: data).bounds
+        let reference = ComposerMediaMarkup.referenceWidth
+        #expect(abs(bounds.midX - reference / 2) < 6)
+        #expect(abs(bounds.midY - reference * inner.height / inner.width / 2) < 6)
+    }
+
+    @Test
     func drawingsRenderAsAnImage() {
         let drawing = PKDrawing(strokes: [stroke(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 100, y: 80))])
         let image = ComposerDrawingMetrics.image(of: drawing, size: CGSize(width: 320, height: 280), scale: 2)
@@ -240,12 +276,12 @@ struct ComposerDrawingTests {
     func unknownPiecesInsideAGroupSurvive() throws {
         let empty = ComposerBlock.make(kind: .group, position: BlockPosition(x: 0, y: 0))
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(empty)) as? [String: Any])
-        json["groupMembers"] = [["id": ["rawValue": "future"], "kind": "sticker", "emoji": "⛳️"]]
+        json["groupMembers"] = [["id": ["rawValue": "future"], "kind": "confetti", "emoji": "⛳️"]]
         let group = try JSONDecoder().decode(ComposerBlock.self, from: JSONSerialization.data(withJSONObject: json))
         #expect(group.groupMembers.first?.kind == .unsupported)
         let saved = try JSONSerialization.jsonObject(with: JSONEncoder().encode(group)) as? [String: Any]
         let member = (saved?["groupMembers"] as? [[String: Any]])?.first
-        #expect(member?["kind"] as? String == "sticker")
+        #expect(member?["kind"] as? String == "confetti")
         #expect(member?["emoji"] as? String == "⛳️")
     }
 }

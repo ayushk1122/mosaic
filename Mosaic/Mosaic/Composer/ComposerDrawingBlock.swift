@@ -111,6 +111,16 @@ enum ComposerDrawingMetrics {
         return max(min(maximumBytes, boardBudget - others), 0)
     }
 
+    /// Longest side of a drawing's rendered image, in pixels. A big drawing pinched large would
+    /// otherwise render hundreds of megabytes; past this it's scaled up on screen instead.
+    static let maximumRenderPixels: CGFloat = 4096
+
+    static func pixelScale(for size: CGSize, scale: CGFloat) -> CGFloat {
+        let longest = max(size.width, size.height)
+        guard longest > 0 else { return scale }
+        return min(scale, maximumRenderPixels / longest)
+    }
+
     /// Drawn as light-mode ink, so a black pen stays black on every board and in dark mode.
     static func image(of drawing: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage? {
         guard !drawing.strokes.isEmpty, size.width > 0, size.height > 0 else { return nil }
@@ -142,15 +152,21 @@ enum ComposerMediaMarkup {
         memberSizes: [ComposerBlockID: CGSize]
     ) -> Data? {
         guard let mediaIndex = group.groupMembers.firstIndex(where: { $0.id == media.id }),
-              let mediaSize = memberSizes[media.id], mediaSize.width > 1, mediaSize.height > 1 else { return nil }
+              let measured = memberSizes[media.id], measured.width > 1, measured.height > 1 else { return nil }
         let base = CGSize(width: max(group.groupWidth, 1), height: max(group.groupHeight, 1))
-        let mediaCenter = CGPoint(
-            x: CGFloat(media.position.x) * base.width + mediaSize.width / 2,
-            y: CGFloat(media.position.y) * base.height + mediaSize.height / 2
+        // The member is measured with its frame (Polaroid, torn paper); the viewer shows the photo alone.
+        let photo = ComposerPhotoFrameModifier.mediaFrame(inPadded: measured, style: media.frameStyle)
+        let mediaSize = photo.size
+        let memberCenter = CGPoint(
+            x: CGFloat(media.position.x) * base.width + measured.width / 2,
+            y: CGFloat(media.position.y) * base.height + measured.height / 2
         )
-        let toMarkup = CGAffineTransform(translationX: -mediaCenter.x, y: -mediaCenter.y)
+        let toMarkup = CGAffineTransform(translationX: -memberCenter.x, y: -memberCenter.y)
             .concatenating(CGAffineTransform(rotationAngle: -radians(media.rotation)))
-            .concatenating(CGAffineTransform(translationX: mediaSize.width / 2, y: mediaSize.height / 2))
+            .concatenating(CGAffineTransform(
+                translationX: measured.width / 2 - photo.minX,
+                y: measured.height / 2 - photo.minY
+            ))
             .concatenating(CGAffineTransform(scaleX: referenceWidth / mediaSize.width, y: referenceWidth / mediaSize.width))
         let frame = CGRect(x: 0, y: 0, width: referenceWidth, height: referenceWidth * mediaSize.height / mediaSize.width)
 
@@ -273,9 +289,19 @@ struct ComposerDrawingCanvasBlock: View {
         .allowsHitTesting(!isViewing)
         .accessibilityElement()
         .accessibilityLabel("Drawing")
-        .task(id: ComposerDrawingRenderKey(data: block.drawingData, size: base, pixelScale: scale * displayScale)) {
+        .task(id: ComposerDrawingRenderKey(
+            data: isDrawing ? nil : block.drawingData,
+            size: base,
+            pixelScale: isDrawing ? 0 : ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
+        )) {
+            // The live canvas shows the ink while drawing; render once drawing ends, not per stroke.
+            guard !isDrawing else { return }
             let drawing = ComposerDrawingMetrics.drawing(from: block.drawingData)
-            rendered = ComposerDrawingMetrics.image(of: drawing, size: base, scale: scale * displayScale)
+            rendered = ComposerDrawingMetrics.image(
+                of: drawing,
+                size: base,
+                scale: ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
+            )
             touchRects = ComposerDrawingMetrics.touchRects(of: drawing)
         }
     }
@@ -297,7 +323,9 @@ struct ComposerInkHitShape: Shape {
         var path = Path()
         let transform = CGAffineTransform(scaleX: scale, y: scale)
         for area in rects {
-            path.addRect(area.applying(transform).intersection(rect))
+            let clipped = area.applying(transform).intersection(rect)
+            guard !clipped.isNull, !clipped.isEmpty else { continue }
+            path.addRect(clipped)
         }
         return path
     }

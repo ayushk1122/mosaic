@@ -107,6 +107,12 @@ struct ComposerMediaCanvasBlock: View {
                         .allowsHitTesting(false)
                 }
             }
+            .modifier(ComposerPhotoFrameModifier(
+                style: block.frameStyle,
+                caption: block.frameCaption,
+                seed: ComposerPhotoFrameModifier.seed(for: block.id),
+                width: displayWidth
+            ))
             .contentShape(Rectangle())
             .modifier(MediaBodyTapModifier(isEnabled: onBodyTap != nil, action: { onBodyTap?() }))
     }

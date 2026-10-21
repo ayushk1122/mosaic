@@ -212,6 +212,7 @@ struct ComposerGroupCanvasBlock: View {
                         memberSizes[member.id] = size
                     }
                     .rotationEffect(.degrees(member.rotation))
+                    .composerPieceLook(member)
                     .offset(
                         x: CGFloat(member.position.x) * baseWidth,
                         y: CGFloat(member.position.y) * baseHeight

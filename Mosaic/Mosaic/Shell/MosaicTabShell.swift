@@ -122,7 +122,9 @@ struct MosaicTabShell: View {
         }
         .task {
             guard let account else { return }
-            store.onPersisted = { [weak store] in
+            // Captures only what it uses: holding the view (and through it the store) would keep
+            // the old store alive after signing out.
+            store.onPersisted = { [weak store, remoteSync, account] in
                 guard let store else { return }
                 remoteSync.schedule(
                     snapshot: store.snapshot,
@@ -140,7 +142,11 @@ struct MosaicTabShell: View {
         }
         .task(id: downloadAttempt) {
             guard let account, let owner = account.session?.userID,
-                  ComposerBackgroundRestore.needsWork(store: store) else { return }
+                  ComposerBackgroundRestore.needsWork(store: store) else {
+                // Nothing left to download (the missing piece may have been deleted): clear an old failure.
+                downloads.failure = nil
+                return
+            }
             do {
                 guard let config = SupabaseSyncConfig.current(), let token = await account.accessToken(),
                       account.session?.userID == owner else { throw SupabaseDocumentSyncError.requestFailed }
@@ -175,6 +181,9 @@ struct MosaicTabShell: View {
                     // A push that failed while offline goes out once the app is back.
                     remoteSync.resumeIfNeeded(account: account)
                 }
+            } else if phase == .inactive {
+                // Swiping the app away from the switcher may never reach the background phase.
+                store.flushPendingSave()
             } else if phase == .background {
                 store.flushPendingSave()
                 // An edit still in its short pause would otherwise wait until the next launch.

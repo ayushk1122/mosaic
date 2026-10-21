@@ -409,6 +409,26 @@ final class ComposerStore {
         persist()
     }
 
+    /// Adds a cutout to "Your stickers", newest first. Not an undo step: the list isn't a board.
+    func saveToStickerLibrary(fileName: String, size: CGSize) {
+        guard !fileName.isEmpty else { return }
+        var library = snapshot.stickerLibrary.filter { $0.fileName != fileName }
+        library.insert(
+            ComposerSavedSticker(fileName: fileName, width: Double(size.width), height: Double(size.height)),
+            at: 0
+        )
+        snapshot.stickerLibrary = Array(library.prefix(ComposerSavedSticker.limit))
+        persist()
+    }
+
+    /// Takes a sticker out of "Your stickers". Copies already placed on boards stay.
+    func removeFromStickerLibrary(_ fileName: String) {
+        let library = snapshot.stickerLibrary.filter { $0.fileName != fileName }
+        guard library.count != snapshot.stickerLibrary.count else { return }
+        snapshot.stickerLibrary = library
+        persist()
+    }
+
     /// Writes a batched save now, for example when drawing ends or the app leaves the screen.
     func flushPendingSave() {
         guard pendingSave != nil else { return }
@@ -678,6 +698,48 @@ final class ComposerStore {
         finishEdit(edit)
     }
 
+    /// Opacity and shadow. A slider drag arrives as many small changes; they join one undo step
+    /// and save in a batch.
+    func setLook(
+        opacity: Double? = nil,
+        shadow: ComposerPieceShadow? = nil,
+        shadowColor: ComposerShadowColor? = nil,
+        stickerBorder: Bool? = nil,
+        frameStyle: ComposerFrameStyle? = nil,
+        frameCaption: String? = nil,
+        photoShape: MediaFrameShape? = nil,
+        for blockID: ComposerBlockID,
+        in documentID: ComposerDocumentID?
+    ) {
+        guard var block = self.block(with: blockID, in: documentID) else { return }
+        let current = block
+        if block.kind == .media {
+            if let frameStyle { block.frameStyle = frameStyle }
+            if let frameCaption { block.frameCaption = String(frameCaption.prefix(ComposerFrameStyle.captionLimit)) }
+            if let photoShape, photoShape != block.mediaShape {
+                // A circle is round only on a square frame. Leaving one returns to the photo's own
+                // shape, rather than keeping it square.
+                if photoShape == .circle {
+                    block.mediaFrameAspect = 1
+                } else if block.mediaShape == .circle {
+                    block.mediaFrameAspect = 0
+                }
+                block.mediaShape = photoShape
+                block.mediaWarp = nil
+            }
+        }
+        if let opacity { block.opacity = ComposerPieceLook.clampedOpacity(opacity) }
+        if let shadow { block.shadow = shadow }
+        if let shadowColor { block.shadowColor = shadowColor }
+        if let stickerBorder, block.kind == .sticker { block.stickerBorder = stickerBorder }
+        guard block != current else { return }
+        captureUndo(in: documentID, coalesce: blockID)
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { $0 = block }
+        }
+        persistSoon()
+    }
+
     func moveBlock(_ blockID: ComposerBlockID, direction: MoveDirection, in documentID: ComposerDocumentID?) {
         let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
@@ -878,7 +940,7 @@ final class ComposerStore {
         if onMosaic {
             allowed = ![.scrapbook, .calendar, .graph, .table].contains(block.kind)
         } else if onJournalPage {
-            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar, .drawing].contains(block.kind)
+            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar, .drawing, .sticker].contains(block.kind)
         } else {
             allowed = true
         }
@@ -1069,8 +1131,8 @@ final class ComposerStore {
                 ids.append(pursuitID)
             }
             if block.kind == .unsupported {
-                let mentioned = block.preservedStrings
-                ids.append(contentsOf: snapshot.pursuits.map(\.id).filter { mentioned.contains($0.rawValue) })
+                let mentioned = Set(block.preservedStrings.map { $0.lowercased() })
+                ids.append(contentsOf: snapshot.pursuits.map(\.id).filter { mentioned.contains($0.rawValue.lowercased()) })
             }
             for id in ids where seen.insert(id.rawValue).inserted {
                 guard let document = snapshot.pursuits.first(where: { $0.id == id }) else { continue }

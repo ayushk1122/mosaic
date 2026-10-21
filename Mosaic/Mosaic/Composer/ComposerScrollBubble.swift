@@ -59,9 +59,13 @@ struct ComposerScrollBubbleMetrics: Equatable, Sendable {
 final class ComposerScrollBubbleRail {
     var metrics = ComposerScrollBubbleMetrics()
     @ObservationIgnored weak var scroll: UIScrollView?
+    /// The scroll view whose pan `begin()` turned off, so `finish()` turns that same one back on
+    /// even if the board's scroll view was replaced mid-drag.
+    @ObservationIgnored private weak var heldScroll: UIScrollView?
 
     /// The board's own pan would also follow the finger and pull the other way.
     func begin() {
+        heldScroll = scroll
         scroll?.panGestureRecognizer.isEnabled = false
     }
 
@@ -75,11 +79,13 @@ final class ComposerScrollBubbleRail {
         CATransaction.commit()
     }
 
-    /// Hands the final offset back to SwiftUI's scroll position.
+    /// Gives the board its own pan back. The offset isn't handed to SwiftUI's scroll position:
+    /// SwiftUI follows the scroll view's offset itself, and its scroll position clamps short of
+    /// the bottom, which jumped the board back up when the bubble was let go.
     func finish() {
-        guard let scroll else { return }
-        scroll.panGestureRecognizer.isEnabled = true
-        ComposerCanvasScrollMark.report(scroll, offset: scroll.contentOffset.y)
+        heldScroll?.panGestureRecognizer.isEnabled = true
+        scroll?.panGestureRecognizer.isEnabled = true
+        heldScroll = nil
     }
 }
 
@@ -166,50 +172,5 @@ struct ComposerScrollBubble: View {
             .scaleEffect(x: held ? 1.35 : 1, y: held ? 1.12 : 1)
             .shadow(color: .black.opacity(held ? 0.28 : 0.18), radius: held ? 6 : 3, y: 2)
             .animation(.spring(response: 0.32, dampingFraction: 0.5), value: held)
-    }
-}
-
-/// Finds the board's scroll view for the bubble. It sits beside the scroll view, so the nearest tagged one is this board's.
-struct ComposerScrollBubbleFinder: UIViewRepresentable {
-    var rail: ComposerScrollBubbleRail
-
-    func makeUIView(context: Context) -> FinderView {
-        let view = FinderView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ uiView: FinderView, context: Context) {
-        uiView.rail = rail
-        uiView.resolve()
-    }
-
-    final class FinderView: UIView {
-        weak var rail: ComposerScrollBubbleRail?
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            resolve()
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            resolve()
-        }
-
-        func resolve() {
-            guard let rail, rail.scroll?.window == nil else { return }
-            var ancestor: UIView? = superview
-            var depth = 0
-            while let view = ancestor, depth < 16 {
-                if let found = view.firstTaggedCanvasScroll() {
-                    rail.scroll = found
-                    return
-                }
-                ancestor = view.superview
-                depth += 1
-            }
-        }
     }
 }
