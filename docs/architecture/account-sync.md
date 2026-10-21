@@ -133,6 +133,14 @@ Visitor tests also cover per-board media requests, repeat-visit cache reuse, fai
 
 Run the Mosaic unit tests on an installed iPhone simulator. For a manual check, use an account with known uploaded boards and media on a fresh app installation: sign in and use the main board while the download banner is present; edit some text, open a pending Pursuit, and verify the content appears without losing your edit. Check photos/videos as they arrive, retry after a failed connection, and verify an interrupted download resumes after relaunch. Existing cached boards should also open offline. Keep the old installation until cloud restoration is confirmed.
 
+## Piece types from newer versions
+
+**Current repository fact:** A board piece whose `kind` this version doesn't recognize decodes as `unsupported` instead of making the whole board unreadable. It isn't shown or editable, and it is written back as it was saved, including fields this version doesn't know, so editing the board on an older build doesn't drop it locally or in sync; only its `position` and `tabID` are updated, because ungrouping or deleting the tabs bar can still change them. Any board id or file-like name it mentions is treated as in use, so cleanup doesn't delete boards or media it may own. Builds made before this change still reject a board containing an unknown kind, so the first new kind (`drawing`) needs every device to update, and visitors on older builds don't see boards that contain drawings.
+
+## Drawings
+
+**Current repository fact:** The Draw piece (`drawing` kind) stores its PencilKit strokes in `drawingData` inside the board document, so undo, copy and paste, and sync work like any other piece and no media upload is involved. `drawingWidth` and `drawingHeight` are the drawing area in its own points; `style.scale` resizes the strokes with the piece. A drawing stops taking new strokes past 1 MB of stroke data, and all drawings on one board share a 1.2 MB budget (about 1.6 MB once base64-encoded), which keeps the board under the server's 2,000,000-byte body limit; pasting a drawing that would exceed it is refused. If a board is still rejected, the push continues with the other boards and media and retries that one later. Ink edits are saved locally in a short batch rather than on every stroke. No backend schema change is required.
+
 ## Content link cards
 
 **Current repository fact:** Content is available in both Mosaic and Pursuit add menus. It uses the existing `link` block kind with a `content:<platform>` marker in `socialPlatform`, plus `linkURL`, `text`, and `mediaFileName`. Older clients can decode it as a link rather than rejecting an unknown block kind. An older client may display only its title/URL. No backend schema change is required.
