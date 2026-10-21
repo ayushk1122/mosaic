@@ -514,6 +514,9 @@ struct MosaicSettingsClient: Sendable {
 struct MosaicSettingsView: View {
     var account: MosaicAccount
     var store: ComposerStore
+    /// Signs out once Settings has finished closing. Swapping the whole app to the sign-in screen
+    /// while Settings was still closing could leave the log-out half done.
+    var onLogOut: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(ComposerRemoteSync.self) private var remoteSync: ComposerRemoteSync?
@@ -768,9 +771,14 @@ struct MosaicSettingsView: View {
                     .accessibilityIdentifier("settings.logOut")
                     .confirmationDialog("Log out of Mosaic?", isPresented: $confirmsLogOut, titleVisibility: .visible) {
                         Button("Log out", role: .destructive) {
-                            Task {
+                            if let onLogOut {
+                                onLogOut()
                                 dismiss()
-                                await account.signOut()
+                            } else {
+                                Task {
+                                    dismiss()
+                                    await account.signOut()
+                                }
                             }
                         }
                         Button("Cancel", role: .cancel) {}

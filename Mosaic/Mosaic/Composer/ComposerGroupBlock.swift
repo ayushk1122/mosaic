@@ -36,7 +36,7 @@ struct ComposerGroupingTarget {
         self.rotation = block.rotation
         guard block.kind == .drawing, block.drawingData != nil else { return }
         let scale = CGFloat(max(block.style.scale, 0.05))
-        let rects = ComposerDrawingMetrics.touchRects(of: ComposerDrawingMetrics.drawing(from: block.drawingData))
+        let rects = ComposerDrawingMetrics.touchRects(of: block.drawingData)
         inkRects = rects.map { $0.applying(CGAffineTransform(scaleX: scale, y: scale)) }
     }
 

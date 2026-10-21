@@ -143,7 +143,10 @@ struct ComposerPieceLookModifier: ViewModifier {
     func body(content: Content) -> some View {
         let tint: Color = color == .white ? .white : .black
         let (near, far) = layers
+        // Drawn as one layer first, so a framed photo casts one shadow and fades as one sheet
+        // instead of each part (paper, photo, caption) fading and shadowing on its own.
         content
+            .compositingGroup()
             .shadow(color: tint.opacity(min(near.strength, 1)), radius: near.radius, x: 0, y: near.drop)
             .shadow(color: tint.opacity(min(far.strength, 1)), radius: far.radius, x: 0, y: far.drop)
             .opacity(opacity)
@@ -483,6 +486,7 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
+            .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topTrailing) {
                 if let visit, block.kind == .pursuit,

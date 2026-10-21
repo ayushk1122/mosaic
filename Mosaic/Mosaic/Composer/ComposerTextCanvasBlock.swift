@@ -112,6 +112,7 @@ struct ComposerTextCanvasBlock: View {
             }
             .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
             .clipped()
+            .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if showsFormatButton, isSelected, !isRelocating, !isLifted {

@@ -238,6 +238,7 @@ struct ComposerCarouselCanvasBlock: View {
 
     var body: some View {
         face
+            .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isLifted, !isRelocating {

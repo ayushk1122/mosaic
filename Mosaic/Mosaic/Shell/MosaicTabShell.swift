@@ -143,7 +143,7 @@ struct MosaicTabShell: View {
         }
         .task(id: downloadAttempt) {
             guard let account, let owner = account.session?.userID,
-                  ComposerBackgroundRestore.needsWork(store: store) else {
+                  await ComposerBackgroundRestore.needsWork(store: store) else {
                 // Nothing left to download (the missing piece may have been deleted): clear an old failure.
                 downloads.failure = nil
                 return
@@ -184,17 +184,21 @@ struct MosaicTabShell: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 if !downloads.isLoading { downloadAttempt += 1 }
-                // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
-                if let account, remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
-                    remoteSync.schedule(
-                        snapshot: store.snapshot,
-                        account: account,
-                        mediaFile: store.mediaURL(for:),
-                        protectingDocumentIDs: store.syncProtectedDocumentUUIDs
-                    )
-                } else if let account {
-                    // A push that failed while offline goes out once the app is back.
-                    remoteSync.resumeIfNeeded(account: account)
+                if let account {
+                    Task { @MainActor in
+                        // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
+                        if await remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
+                            remoteSync.schedule(
+                                snapshot: store.snapshot,
+                                account: account,
+                                mediaFile: store.mediaURL(for:),
+                                protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+                            )
+                        } else {
+                            // A push that failed while offline goes out once the app is back.
+                            remoteSync.resumeIfNeeded(account: account)
+                        }
+                    }
                 }
             } else if phase == .inactive {
                 // Swiping the app away from the switcher may never reach the background phase.

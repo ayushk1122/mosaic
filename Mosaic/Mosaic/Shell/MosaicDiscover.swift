@@ -146,7 +146,10 @@ struct MosaicPursuitCoverView: View {
             image = nil
             return
         }
-        if let cached = MosaicAvatarCache.image(for: "media/\(first)") {
+        // Decoded at the circle's size, so each size is cached on its own.
+        let pixels = Int(size * 3)
+        let key = "media/\(first)@\(pixels)"
+        if let cached = MosaicAvatarCache.image(for: key) {
             image = cached
             return
         }
@@ -155,11 +158,14 @@ struct MosaicPursuitCoverView: View {
               let token = await account.accessToken()
         else { return }
         let client = MosaicVisitClient(config: config)
+        // Decoded off the main thread, rather than at full size on it when first drawn.
         for path in paths {
             if let data = await client.download(path: path, accessToken: token),
-               let loaded = UIImage(data: data) {
+               let loaded = await Task.detached(priority: .userInitiated, operation: {
+                   MosaicThumbnail.image(data: data, maxPixelSize: pixels)
+               }).value {
                 guard !Task.isCancelled else { return }
-                MosaicAvatarCache.store(loaded, for: "media/\(first)")
+                MosaicAvatarCache.store(loaded, for: key)
                 image = loaded
                 return
             }

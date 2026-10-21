@@ -93,6 +93,7 @@ struct ComposerListCanvasBlock: View {
                 }
             }
             .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
+            .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isViewing, !isRelocating, !isLifted {

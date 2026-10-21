@@ -99,8 +99,17 @@ struct MosaicOnboardingView: View {
                         .tint(MosaicBrand.inkBlack)
                         .foregroundStyle(MosaicBrand.inkBlack)
                 }
-                Button(primaryActionTitle) {
+                Button {
                     Task { await advance() }
+                } label: {
+                    ZStack {
+                        Text(primaryActionTitle)
+                            .opacity(busy ? 0 : 1)
+                        if busy {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(MosaicBrand.inkBlack)
@@ -356,6 +365,10 @@ struct MosaicOnboardingView: View {
     }
 
     private func finish() async {
+        // Set before the first wait, so a second tap can't save twice.
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
         guard let config = SupabaseSyncConfig.current(),
               let token = await account.accessToken(),
               account.session?.userID == userID
@@ -363,8 +376,6 @@ struct MosaicOnboardingView: View {
             problem = "Check your connection and try again."
             return
         }
-        busy = true
-        defer { busy = false }
         guard await account.setPassword(password) else {
             step = .password
             problem = account.lastError ?? "Couldn’t save your password. Try again."

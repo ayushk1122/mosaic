@@ -77,6 +77,18 @@ struct MosaicSignInView: View {
                 }
             }
         }
+        .overlay {
+            if account.isFinishingSignIn {
+                ZStack {
+                    MosaicBrand.cream.opacity(0.7).ignoresSafeArea()
+                    ProgressView("Signing in…")
+                        .tint(MosaicBrand.inkBlack)
+                        .foregroundStyle(MosaicBrand.inkBlack)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: account.isFinishingSignIn)
         .accessibilityIdentifier("account.screen")
     }
 
@@ -97,7 +109,7 @@ struct MosaicSignInView: View {
                     isSecure: true,
                     identifier: "account.signIn.password"
                 )
-                MosaicAuthPrimaryButton(title: "Sign in", disabled: busy || loginIdentifier.isEmpty || password.isEmpty) {
+                MosaicAuthPrimaryButton(title: "Sign in", disabled: loginIdentifier.isEmpty || password.isEmpty, working: busy) {
                     Task { await signInWithPassword() }
                 }
                 .accessibilityIdentifier("account.signIn.submit")
@@ -139,7 +151,7 @@ struct MosaicSignInView: View {
                     .foregroundStyle(MosaicBrand.inkBlack.opacity(0.6))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                MosaicAuthPrimaryButton(title: "Continue", disabled: busy || !signUpEmailValid) {
+                MosaicAuthPrimaryButton(title: "Continue", disabled: !signUpEmailValid, working: busy) {
                     Task { await sendEmailOTP(to: normalizedSignUpEmail, signUp: true) }
                 }
                 .accessibilityIdentifier("account.signUp.submit")
@@ -203,6 +215,8 @@ struct MosaicSignInView: View {
     }
 
     private func signInWithPassword() async {
+        // A second tap queued before the first started would send twice.
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         _ = await account.signInWithPassword(identifier: loginIdentifier, password: password)
@@ -226,7 +240,7 @@ struct MosaicSignInView: View {
                     keyboard: keyboard,
                     identifier: identifier
                 )
-                MosaicAuthPrimaryButton(title: "Send code", disabled: busy || text.wrappedValue.isEmpty, action: send)
+                MosaicAuthPrimaryButton(title: "Send code", disabled: text.wrappedValue.isEmpty, working: busy, action: send)
                 if let lastError = account.lastError {
                     Text(lastError)
                         .font(.footnote)
@@ -263,7 +277,7 @@ struct MosaicSignInView: View {
                             .stroke(MosaicBrand.inkBlack.opacity(0.12), lineWidth: 1)
                     )
                     .accessibilityIdentifier("account.codeEntry")
-                MosaicAuthPrimaryButton(title: "Verify", disabled: busy || code.count < 6, action: verify)
+                MosaicAuthPrimaryButton(title: "Verify", disabled: code.count < 6, working: busy, action: verify)
                 // Redrawn each second, so the countdown moves and the button appears on time.
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     if canResend {
@@ -300,6 +314,7 @@ struct MosaicSignInView: View {
     }
 
     private func sendEmailOTP(to address: String, signUp: Bool) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         await account.sendEmailCode(address, createUser: signUp)
@@ -310,6 +325,7 @@ struct MosaicSignInView: View {
     }
 
     private func verifyEmailOTP(_ address: String, signUp: Bool) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         _ = await account.verifyEmailCode(email: address, code: code)
@@ -325,6 +341,7 @@ struct MosaicSignInView: View {
     }
 
     private func sendPhoneOTP(to number: String, signUp: Bool) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         await account.sendPhoneCode(number, createUser: signUp)
@@ -335,6 +352,7 @@ struct MosaicSignInView: View {
     }
 
     private func verifyPhoneOTP(_ number: String, signUp: Bool) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         _ = await account.verifyPhoneCode(rawPhone: number, code: code)

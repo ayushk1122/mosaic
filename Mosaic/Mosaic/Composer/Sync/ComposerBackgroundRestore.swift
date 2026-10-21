@@ -39,13 +39,29 @@ final class ComposerBackgroundRestore {
         }
     }
 
-    static func needsWork(store: ComposerStore) -> Bool {
+    /// Runs each time the app comes back, so the file checks happen off the main thread.
+    static func needsWork(store: ComposerStore) async -> Bool {
         guard let state = state(at: store.location) else { return false }
-        if state.pendingRestore || !missingMedia(store: store, state: state).isEmpty { return true }
-        let folders = recoveryFolders(for: store.location)
-        return missingFiles(store: store, mosaicID: state.mosaicID).contains { file in
-            folders.contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent(file).path) }
-        }
+        if state.pendingRestore { return true }
+        var seen = Set<String>()
+        let files = ComposerMediaCatalog.references(snapshot: store.snapshot, mosaicID: state.mosaicID)
+            .map(\.fileName)
+            .filter { seen.insert($0).inserted }
+        let inCloud = Set(files.filter { state.mediaAssets[$0] != nil })
+        let media = store.location.mediaDirectory
+        let parent = store.location.root.deletingLastPathComponent()
+        let shared = ComposerStorageLocation.shared().mediaDirectory
+        let prefix = ComposerAccountRestore.backupPrefix
+        return await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            let missing = files.filter { !fileManager.fileExists(atPath: media.appendingPathComponent($0).path) }
+            if missing.contains(where: inCloud.contains) { return true }
+            guard !missing.isEmpty else { return false }
+            let folders = recoveryFolders(parent: parent, own: media, shared: shared, backupPrefix: prefix, fileManager: fileManager)
+            return missing.contains { file in
+                folders.contains { fileManager.fileExists(atPath: $0.appendingPathComponent(file).path) }
+            }
+        }.value
     }
 
     /// Media folders of older copies of these boards left on the phone: folders a restore set aside,
@@ -55,14 +71,29 @@ final class ComposerBackgroundRestore {
         shared: ComposerStorageLocation = .shared(),
         fileManager: FileManager = .default
     ) -> [URL] {
-        let parent = location.root.deletingLastPathComponent()
+        recoveryFolders(
+            parent: location.root.deletingLastPathComponent(),
+            own: location.mediaDirectory,
+            shared: shared.mediaDirectory,
+            backupPrefix: ComposerAccountRestore.backupPrefix,
+            fileManager: fileManager
+        )
+    }
+
+    nonisolated private static func recoveryFolders(
+        parent: URL,
+        own: URL,
+        shared: URL,
+        backupPrefix: String,
+        fileManager: FileManager
+    ) -> [URL] {
         let siblings = (try? fileManager.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? []
         let backups = siblings
-            .filter { $0.lastPathComponent.hasPrefix(ComposerAccountRestore.backupPrefix) }
+            .filter { $0.lastPathComponent.hasPrefix(backupPrefix) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .map { ComposerStorageLocation(root: $0).mediaDirectory }
-        let own = location.mediaDirectory.standardizedFileURL
-        return (backups + [shared.mediaDirectory]).filter { $0.standardizedFileURL != own }
+            .map { $0.appendingPathComponent(ComposerStorageLocation.mediaFolderName, isDirectory: true) }
+        let ownFolder = own.standardizedFileURL
+        return (backups + [shared]).filter { $0.standardizedFileURL != ownFolder }
     }
 
     /// Copies files that are missing here from the first folder that has them. Returns the names copied.

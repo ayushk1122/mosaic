@@ -101,7 +101,7 @@ struct ComposerAccountRestoreTests {
         #expect(state.revisions[mosaic.uuidString.lowercased()] == 7)
         #expect(try Data(contentsOf: store.mediaURL(for: "photo.jpg")) == image)
         #expect(store.mediaVersions["photo.jpg"] == 1)
-        #expect(!ComposerBackgroundRestore.needsWork(store: store))
+        #expect(!(await ComposerBackgroundRestore.needsWork(store: store)))
         #expect(RestoreURLProtocol.state.requests.allSatisfy {
             $0.httpMethod == "GET" || $0.url?.path == "/rest/v1/rpc/own_mosaic_id"
         })
@@ -149,7 +149,7 @@ struct ComposerAccountRestoreTests {
         try await downloads.run(store: reopened, client: client, ownerID: owner, accessToken: "token")
         #expect(RestoreURLProtocol.state.requests.count == count + 1)
         #expect(downloads.failure == nil)
-        #expect(!ComposerBackgroundRestore.needsWork(store: reopened))
+        #expect(!(await ComposerBackgroundRestore.needsWork(store: reopened)))
     }
 
     @Test func failedChildrenResumeAfterRelaunchWithoutReplacingLocalEdits() async throws {

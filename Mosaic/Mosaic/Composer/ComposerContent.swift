@@ -290,6 +290,7 @@ struct ComposerContentCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
+        .compositingGroup()
         .opacity(pieceOpacity)
         .scaleEffect(cardScale, anchor: .topLeading)
         .frame(width: size.width * cardScale, height: size.height * cardScale, alignment: .topLeading)

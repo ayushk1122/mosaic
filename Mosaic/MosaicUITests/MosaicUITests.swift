@@ -88,10 +88,11 @@ final class MosaicUITests: XCTestCase {
         XCTAssertEqual(bubble.value as? String, "0 percent")
         attachScreenshot(app, named: "Scroll bubble at the top")
 
-        // The element spans the whole track; at the top of the board the bubble sits at its top.
+        // VoiceOver's box is the bubble itself, so it's grabbed at its center.
         let frame = bubble.frame
+        XCTAssertLessThan(frame.height, 120, "The accessibility frame is the bubble, not the whole track")
         let origin = app.coordinate(withNormalizedOffset: .zero)
-        let start = origin.withOffset(CGVector(dx: frame.maxX - 18, dy: frame.minY + 18))
+        let start = origin.withOffset(CGVector(dx: frame.midX, dy: frame.midY))
         let end = origin.withOffset(CGVector(dx: frame.midX, dy: app.frame.height - 120))
         start.press(forDuration: 0.1, thenDragTo: end)
         attachScreenshot(app, named: "Scroll bubble dragged to the bottom")
@@ -256,6 +257,12 @@ final class MosaicUITests: XCTestCase {
         attachScreenshot(app, named: "Caption prompt")
         app.alerts.buttons["Save"].tap()
         attachScreenshot(app, named: "Polaroid with caption")
+        // Faded and shadowed, the frame and photo should read as one piece of paper.
+        app.buttons["Shadow Lifted"].tap()
+        app.sliders.firstMatch.adjust(toNormalizedSliderPosition: 0.5)
+        attachScreenshot(app, named: "Polaroid lifted at half opacity")
+        app.sliders.firstMatch.adjust(toNormalizedSliderPosition: 1)
+        app.buttons["Shadow None"].tap()
         app.buttons["Frame Tape"].tap()
         attachScreenshot(app, named: "Tape")
         app.buttons["Frame Torn"].tap()
@@ -273,6 +280,60 @@ final class MosaicUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88)).tap()
         sleep(1)
         attachScreenshot(app, named: "Polaroid on the board")
+
+        let undo = app.buttons["Undo"]
+        for _ in 0..<10 where undo.isEnabled {
+            undo.tap()
+        }
+    }
+
+    /// Needs a video in the simulator's library (`xcrun simctl addmedia`); skipped otherwise.
+    @MainActor
+    func testFadedShadowedVideoStillPlays() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        app.buttons["Add to Mosaic"].tap()
+        let search = app.textFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.tap()
+        search.typeText("media")
+        app.buttons["Media"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).tap()
+
+        let deadline = Date().addingTimeInterval(25)
+        while app.images.count < 3, Date() < deadline { sleep(1) }
+        sleep(1)
+        attachScreenshot(app, named: "Picker")
+        guard app.images.count >= 3 else {
+            throw XCTSkip("No media in this simulator's library")
+        }
+        // The newest item, the added video, is the first cell (below the privacy banner when shown).
+        let banner = app.staticTexts["Private Access to Photos"].exists
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.16, dy: banner ? 0.46 : 0.27)).tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.905, dy: 0.153)).tap()
+        sleep(10)
+        attachScreenshot(app, named: "Video placed")
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.38)).press(forDuration: 0.8)
+        let look = app.buttons["Opacity and shadow"]
+        XCTAssertTrue(look.waitForExistence(timeout: 3))
+        look.tap()
+        app.buttons["Shadow Lifted"].tap()
+        app.sliders.firstMatch.adjust(toNormalizedSliderPosition: 0.5)
+        app.buttons["Frame Polaroid"].tap()
+        let panelTop = app.sliders.firstMatch.frame.minY / app.frame.height
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: panelTop < 0.3 ? 0.44 : 0.34)).tap()
+        XCTAssertTrue(app.sliders.firstMatch.waitForNonExistence(timeout: 2))
+
+        // Selected now; the next tap plays it.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.36)).tap()
+        sleep(1)
+        attachScreenshot(app, named: "Faded video playing 1")
+        sleep(1)
+        attachScreenshot(app, named: "Faded video playing 2")
 
         let undo = app.buttons["Undo"]
         for _ in 0..<10 where undo.isEnabled {

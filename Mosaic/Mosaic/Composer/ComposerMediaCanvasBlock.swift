@@ -50,6 +50,7 @@ struct ComposerMediaCanvasBlock: View {
 
     var body: some View {
         mediaContent
+            .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isLifted, !isRelocating {

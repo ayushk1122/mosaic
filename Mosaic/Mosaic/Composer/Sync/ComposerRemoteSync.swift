@@ -122,17 +122,22 @@ final class ComposerRemoteSync {
     var canUpload: Bool { loadState()?.pendingRestore != true }
 
     /// True when this phone still has files that visitors cannot download yet.
+    /// Runs each time the app comes back, so the file checks happen off the main thread.
     func hasUnmappedLocalMedia(
         snapshot: ComposerSnapshot,
         mediaFile: @escaping @MainActor (String) -> URL
-    ) -> Bool {
+    ) async -> Bool {
         guard let state = loadState(), !state.pendingRestore else { return false }
-        let references = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: state.mosaicID)
-        return references.contains { reference in
-            guard state.mediaAssets[reference.fileName] == nil,
-                  (uploadFailures[reference.fileName] ?? 0) < Self.uploadAttemptLimit else { return false }
-            return FileManager.default.fileExists(atPath: mediaFile(reference.fileName).path)
-        }
+        let paths = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: state.mosaicID)
+            .filter { reference in
+                state.mediaAssets[reference.fileName] == nil
+                    && (uploadFailures[reference.fileName] ?? 0) < Self.uploadAttemptLimit
+            }
+            .map { mediaFile($0.fileName).path }
+        guard !paths.isEmpty else { return false }
+        return await Task.detached(priority: .utility) {
+            paths.contains { FileManager.default.fileExists(atPath: $0) }
+        }.value
     }
 
     /// A push that failed (offline, server error) is retried when the app comes back.

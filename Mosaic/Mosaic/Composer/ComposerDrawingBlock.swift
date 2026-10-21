@@ -12,13 +12,13 @@ enum ComposerDrawingMetrics {
     static let minimumScale = 0.3
     static let pageMargin: CGFloat = 16
     /// Room around each stroke that still picks the drawing up, so thin lines are easy to grab.
-    static let touchPadding: CGFloat = 14
+    nonisolated static let touchPadding: CGFloat = 14
 
     static func baseSize(of block: ComposerBlock) -> CGSize {
         CGSize(width: max(block.drawingWidth, 40), height: max(block.drawingHeight, 40))
     }
 
-    static func drawing(from data: Data?) -> PKDrawing {
+    nonisolated static func drawing(from data: Data?) -> PKDrawing {
         guard let data, let drawing = try? PKDrawing(data: data) else { return PKDrawing() }
         return drawing
     }
@@ -122,7 +122,7 @@ enum ComposerDrawingMetrics {
     }
 
     /// Drawn as light-mode ink, so a black pen stays black on every board and in dark mode.
-    static func image(of drawing: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage? {
+    nonisolated static func image(of drawing: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage? {
         guard !drawing.strokes.isEmpty, size.width > 0, size.height > 0 else { return nil }
         var image: UIImage?
         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
@@ -133,10 +133,33 @@ enum ComposerDrawingMetrics {
 
     /// The areas that pick the drawing up, in its own points: around each stroke, or around all
     /// of them once there are too many to test one by one.
-    static func touchRects(of drawing: PKDrawing) -> [CGRect] {
+    nonisolated static func touchRects(of drawing: PKDrawing) -> [CGRect] {
         let bounds = drawing.strokes.count > 400 ? [drawing.bounds] : drawing.strokes.map(\.renderBounds)
         return bounds.map { $0.insetBy(dx: -touchPadding, dy: -touchPadding) }
     }
+
+    /// The same areas for saved strokes, remembered per drawing so grouping mode, which rebuilds
+    /// its tap targets on every redraw, doesn't decode every drawing each time.
+    static func touchRects(of data: Data?) -> [CGRect] {
+        guard let data else { return [] }
+        let key = data as NSData
+        if let cached = touchRectCache.object(forKey: key) { return cached.rects }
+        let rects = touchRects(of: drawing(from: data))
+        touchRectCache.setObject(TouchRects(rects), forKey: key, cost: data.count)
+        return rects
+    }
+
+    private final class TouchRects {
+        let rects: [CGRect]
+        init(_ rects: [CGRect]) { self.rects = rects }
+    }
+
+    private static let touchRectCache: NSCache<NSData, TouchRects> = {
+        let cache = NSCache<NSData, TouchRects>()
+        // Keyed by the strokes themselves, so the cache holds them too: a few boards' worth.
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
 }
 
 /// Drawings grouped with a photo or video, moved onto that media's frame so the full-screen
@@ -223,11 +246,12 @@ struct ComposerMediaMarkupOverlay: View {
                 guard proxy.size.width > 1, proxy.size.height > 1 else { return }
                 let width = ComposerMediaMarkup.referenceWidth
                 let size = CGSize(width: width, height: width * proxy.size.height / proxy.size.width)
-                rendered = ComposerDrawingMetrics.image(
-                    of: ComposerDrawingMetrics.drawing(from: data),
-                    size: size,
-                    scale: proxy.size.width / width * displayScale
-                )
+                let scale = proxy.size.width / width * displayScale
+                let image = await Task.detached(priority: .userInitiated) {
+                    ComposerDrawingMetrics.image(of: ComposerDrawingMetrics.drawing(from: data), size: size, scale: scale)
+                }.value
+                guard !Task.isCancelled else { return }
+                rendered = image
             }
         }
         .allowsHitTesting(false)

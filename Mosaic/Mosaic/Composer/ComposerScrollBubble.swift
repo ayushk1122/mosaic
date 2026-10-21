@@ -53,6 +53,92 @@ struct ComposerScrollBubbleMetrics: Equatable, Sendable {
     }
 }
 
+/// The part of the board that floating controls must stay inside.
+struct ComposerVisibleArea: Equatable {
+    var width: CGFloat
+    var isViewing: Bool
+    var isBookPage: Bool
+
+    /// The on-screen board in board coordinates, less the bottom row of buttons while editing.
+    func rect(_ metrics: ComposerScrollBubbleMetrics) -> CGRect? {
+        guard var rect = metrics.visibleContentRect(width: width) else { return nil }
+        if !isViewing {
+            rect.size.height = max(rect.height - (ComposerAddMenuMetrics.button + 28), 1)
+        }
+        // A journal page's top corners turn the page and take touches, so controls stay below them.
+        if isBookPage {
+            rect.origin.y += ScrapbookMetrics.turnCorner
+            rect.size.height = max(rect.height - ScrapbookMetrics.turnCorner, 1)
+        }
+        return rect
+    }
+}
+
+/// Offsets a floating control from its piece's top-left so it stays on screen. It reads the scroll
+/// position here rather than in the board, so scrolling moves the control without redrawing the board.
+struct ComposerFloatingPlacement: ViewModifier {
+    var rail: ComposerScrollBubbleRail
+    var area: ComposerVisibleArea
+    var frame: CGRect?
+    var size: CGSize
+    var gap: CGFloat
+    var anchorY: CGFloat?
+    var trailing: Bool
+
+    func body(content: Content) -> some View {
+        content.offset(offset)
+    }
+
+    private var offset: CGSize {
+        guard let frame, frame.width > 1, let visible = area.rect(rail.metrics) else {
+            let x = trailing ? (frame?.width ?? size.width) - size.width : 0
+            return CGSize(width: x, height: -(size.height + gap))
+        }
+        // Trailing controls center over a strip at the piece's right edge, so they line up with it.
+        let around = trailing
+            ? CGRect(x: frame.maxX - size.width, y: frame.minY, width: size.width, height: frame.height)
+            : frame
+        let placement = ComposerChromePlacement.floating(
+            size: size,
+            around: around,
+            visible: visible,
+            gap: gap,
+            anchorY: anchorY
+        )
+        return CGSize(width: placement.origin.x - frame.minX, height: placement.origin.y - frame.minY)
+    }
+}
+
+/// Moves the rotate handle below its piece when its spot above would be off screen. Watches the
+/// scroll position on the board's behalf and reports only when the side changes.
+struct ComposerRotateHandleSide: View {
+    var rail: ComposerScrollBubbleRail
+    var area: ComposerVisibleArea
+    var rotation: Double
+    var frame: CGRect
+    var lift: CGFloat
+    @Binding var below: Bool
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .onChange(of: goesBelow, initial: true) { _, value in
+                if below != value { below = value }
+            }
+    }
+
+    private var goesBelow: Bool {
+        guard let visible = area.rect(rail.metrics) else { return false }
+        let radians = rotation * .pi / 180
+        let reach = frame.height / 2 + lift
+        let handle = CGPoint(
+            x: frame.midX + reach * CGFloat(sin(radians)),
+            y: frame.midY - reach * CGFloat(cos(radians))
+        )
+        return !visible.insetBy(dx: 22, dy: 22).contains(handle)
+    }
+}
+
 /// Shared by the board's scroll view and the bubble, so only the bubble redraws as the board scrolls.
 @MainActor
 @Observable
@@ -140,21 +226,22 @@ struct ComposerScrollBubble: View {
                             rail.finish()
                         }
                 )
+                // On the bubble rather than the whole track, so VoiceOver's box is the control itself.
+                .accessibilityElement()
+                .accessibilityLabel("Scroll board")
+                .accessibilityValue("\(Int((rail.metrics.progress * 100).rounded())) percent")
+                .accessibilityAdjustableAction { direction in
+                    let step: CGFloat = direction == .increment ? 0.1 : -0.1
+                    rail.scroll(toProgress: rail.metrics.progress + step)
+                    rail.finish()
+                }
+                .accessibilityIdentifier("composer.scrollBubble")
         }
         .coordinateSpace(name: trackSpace)
         .onChange(of: dragging) { _, active in
             if !active { release() }
         }
         .onDisappear { release() }
-        .accessibilityElement()
-        .accessibilityLabel("Scroll board")
-        .accessibilityValue("\(Int((rail.metrics.progress * 100).rounded())) percent")
-        .accessibilityAdjustableAction { direction in
-            let step: CGFloat = direction == .increment ? 0.1 : -0.1
-            rail.scroll(toProgress: rail.metrics.progress + step)
-            rail.finish()
-        }
-        .accessibilityIdentifier("composer.scrollBubble")
     }
 
     /// The board's own pan stays off while held, so an interrupted hold must hand it back.

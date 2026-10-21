@@ -327,6 +327,7 @@ struct ComposerSocialCanvasBlock: View {
             }
         }
         .contentShape(Rectangle())
+        .compositingGroup()
         .opacity((isLifted ? 0.92 : 1) * pieceOpacity)
         .overlay(alignment: .bottomTrailing) {
             if isSelected, !isViewing {

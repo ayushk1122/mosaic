@@ -91,10 +91,13 @@ struct MosaicComposerView: View {
     @State private var dragScrollRelay = ComposerDragScrollRelay()
     @State private var composerSpace = UUID().uuidString
     @State private var scrollBubbleRail = ComposerScrollBubbleRail()
+    /// Whether the selected piece's rotate handle sits below it; changes only when the side does.
+    @State private var rotateHandleBelow = false
     @State private var clipboardMenuBlockID: ComposerBlockID?
     @State private var pasteAnchor: CGPoint?
     @State private var clipboardPressTask: Task<Void, Never>?
     @State private var showsSettings = false
+    @State private var signsOutAfterSettings = false
     @State private var profileRefresh = 0
 
     private var blocks: [ComposerBlock] {
@@ -277,9 +280,17 @@ struct MosaicComposerView: View {
                     .environment(chrome)
                     .environment(visit)
             }
-            .fullScreenCover(isPresented: $showsSettings, onDismiss: { profileRefresh += 1 }) {
+            .fullScreenCover(isPresented: $showsSettings, onDismiss: {
+                profileRefresh += 1
+                if signsOutAfterSettings {
+                    signsOutAfterSettings = false
+                    Task { await account?.signOut() }
+                }
+            }) {
                 if let account {
-                    MosaicSettingsView(account: account, store: store)
+                    MosaicSettingsView(account: account, store: store) {
+                        signsOutAfterSettings = true
+                    }
                 }
             }
             .accessibilityIdentifier(documentID == nil ? "mosaic.screen" : "pursuit.screen")
@@ -935,14 +946,14 @@ struct MosaicComposerView: View {
                         .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
                         .fixedSize()
                         .measuredFloating("rotationReadout", into: $floatingSizes)
-                        .offset(floatingOffset("rotationReadout", for: block, fallback: CGSize(width: 48, height: 24), gap: 52))
+                        .modifier(floatingPlacement("rotationReadout", for: block, fallback: CGSize(width: 48, height: 24), gap: 52))
                         .allowsHitTesting(false)
                 }
                 if clipboardMenuBlockID == block.id {
                     clipboardActionMenu(for: block.id)
                         .fixedSize()
                         .measuredFloating("clipboardMenu", into: $floatingSizes)
-                        .offset(floatingOffset(
+                        .modifier(floatingPlacement(
                             "clipboardMenu",
                             for: block,
                             fallback: CGSize(width: 210, height: 34),
@@ -953,7 +964,7 @@ struct MosaicComposerView: View {
                     drawingDoneButton
                         .fixedSize()
                         .measuredFloating("drawingDone", into: $floatingSizes)
-                        .offset(floatingOffset(
+                        .modifier(floatingPlacement(
                             "drawingDone",
                             for: block,
                             fallback: CGSize(width: 64, height: 30),
@@ -965,7 +976,7 @@ struct MosaicComposerView: View {
                     ungroupButton(for: block)
                         .fixedSize()
                         .measuredFloating("ungroup", into: $floatingSizes)
-                        .offset(floatingOffset(
+                        .modifier(floatingPlacement(
                             "ungroup",
                             for: block,
                             fallback: CGSize(width: 76, height: 28),
@@ -1055,7 +1066,7 @@ struct MosaicComposerView: View {
 
     @ViewBuilder
     private func blockView(for block: ComposerBlock) -> some View {
-        if blocks.contains(where: { $0.id == block.id }) {
+        if store.hasTopLevelBlock(block.id, in: documentID) {
             ComposerCanvasBlockView(
                 documentID: documentID,
                 block: blockBinding(for: block.id, fallback: block),
@@ -2304,47 +2315,35 @@ struct MosaicComposerView: View {
             }
     }
 
-    /// The board's on-screen area in board coordinates, less the bottom row of buttons while editing.
-    /// Read only while a control is showing, so scrolling alone doesn't redraw the board.
-    private var visibleCanvasRect: CGRect? {
-        guard var rect = scrollBubbleRail.metrics.visibleContentRect(width: canvasSize.width) else { return nil }
-        if !chrome.isViewing {
-            rect.size.height = max(rect.height - (ComposerAddMenuMetrics.button + 28), 1)
-        }
-        // A journal page's top corners turn the page and take touches, so controls stay below them.
-        if isBookPage {
-            rect.origin.y += ScrapbookMetrics.turnCorner
-            rect.size.height = max(rect.height - ScrapbookMetrics.turnCorner, 1)
-        }
-        return rect
+    private var visibleArea: ComposerVisibleArea {
+        ComposerVisibleArea(width: canvasSize.width, isViewing: chrome.isViewing, isBookPage: isBookPage)
     }
 
-    /// Offset from a piece's top-left that keeps a floating control on screen around it.
-    private func floatingOffset(
+    /// Only for actions (taps, placing a piece): reading it while drawing the board would redraw the
+    /// whole board on every scroll frame.
+    private var visibleCanvasRect: CGRect? {
+        visibleArea.rect(scrollBubbleRail.metrics)
+    }
+
+    /// Keeps a floating control on screen around its piece. The placement reads the scroll position
+    /// itself, so scrolling moves the control without redrawing the board.
+    private func floatingPlacement(
         _ key: String,
         for block: ComposerBlock,
         fallback: CGSize,
         gap: CGFloat = 10,
         anchorY: CGFloat? = nil,
         trailing: Bool = false
-    ) -> CGSize {
-        let size = floatingSizes[key] ?? fallback
-        guard let frame = blockFrames[block.id], frame.width > 1, let visible = visibleCanvasRect else {
-            let x = trailing ? (blockFrames[block.id]?.width ?? size.width) - size.width : 0
-            return CGSize(width: x, height: -(size.height + gap))
-        }
-        // Trailing controls center over a strip at the piece's right edge, so they line up with it.
-        let around = trailing
-            ? CGRect(x: frame.maxX - size.width, y: frame.minY, width: size.width, height: frame.height)
-            : frame
-        let placement = ComposerChromePlacement.floating(
-            size: size,
-            around: around,
-            visible: visible,
+    ) -> ComposerFloatingPlacement {
+        ComposerFloatingPlacement(
+            rail: scrollBubbleRail,
+            area: visibleArea,
+            frame: blockFrames[block.id],
+            size: floatingSizes[key] ?? fallback,
             gap: gap,
-            anchorY: anchorY
+            anchorY: anchorY,
+            trailing: trailing
         )
-        return CGSize(width: placement.origin.x - frame.minX, height: placement.origin.y - frame.minY)
     }
 
     /// The angle to draw right now: the saved one, or the one a twist or handle drag is showing.
@@ -2406,7 +2405,7 @@ struct MosaicComposerView: View {
     /// double-tap it to straighten.
     private func rotateHandle(for block: ComposerBlock, frame: CGRect) -> some View {
         let lift: CGFloat = 30
-        let below = rotateHandleGoesBelow(block, frame: frame, lift: lift)
+        let below = rotateHandleBelow
         return ZStack {
             Circle()
                 .fill(Color(red: 0.20, green: 0.21, blue: 0.23))
@@ -2416,6 +2415,14 @@ struct MosaicComposerView: View {
                 .foregroundStyle(.white)
         }
         .frame(width: 28, height: 28)
+        .background(ComposerRotateHandleSide(
+            rail: scrollBubbleRail,
+            area: visibleArea,
+            rotation: block.rotation,
+            frame: frame,
+            lift: lift,
+            below: $rotateHandleBelow
+        ))
         .overlay {
             ComposerCornerCatcher(
                 onChanged: { translation in
@@ -2436,7 +2443,7 @@ struct MosaicComposerView: View {
             )
             .frame(width: 44, height: 44)
         }
-        .position(x: frame.width / 2, y: below ? frame.height + lift : -lift)
+        // Before `.position`, which spans the parent: VoiceOver's box is the handle, not the whole piece.
         .accessibilityElement()
         .accessibilityLabel("Rotate")
         .accessibilityValue("\(Int(block.rotation.rounded())) degrees")
@@ -2446,6 +2453,7 @@ struct MosaicComposerView: View {
             commitRotation(block.id, to: block.rotation + step)
         }
         .accessibilityIdentifier("composer.rotateHandle")
+        .position(x: frame.width / 2, y: below ? frame.height + lift : -lift)
     }
 
     /// The handle starts straight above (or below) the center, turned by the saved angle; the finger's
@@ -2464,18 +2472,6 @@ struct MosaicComposerView: View {
             fromCenterTo: CGSize(width: start.width + translation.width, height: start.height + translation.height)
         )
         return ComposerRotation.normalized(below ? angle + 180 : angle)
-    }
-
-    /// The handle moves below the piece when its spot above would be off screen.
-    private func rotateHandleGoesBelow(_ block: ComposerBlock, frame: CGRect, lift: CGFloat) -> Bool {
-        guard let visible = visibleCanvasRect else { return false }
-        let radians = block.rotation * .pi / 180
-        let reach = frame.height / 2 + lift
-        let handle = CGPoint(
-            x: frame.midX + reach * CGFloat(sin(radians)),
-            y: frame.midY - reach * CGFloat(cos(radians))
-        )
-        return !visible.insetBy(dx: 22, dy: 22).contains(handle)
     }
 
     private func deleteBlock(_ blockID: ComposerBlockID) {

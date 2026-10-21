@@ -174,7 +174,7 @@ private struct MosaicOnboardingGateView: View {
             )
             return
         }
-        let status = try? await MosaicOnboardingClient(config: config).status(accessToken: token)
+        let status = await Self.onboardingStatus(config: config, token: token)
         guard account.session?.userID == userID else { return }
         self.status = status
         if status?.isOnboarded == true {
@@ -186,6 +186,24 @@ private struct MosaicOnboardingGateView: View {
             status: status
         )
         route = next
+    }
+
+    /// Asks up to three times before showing "Couldn't reach Mosaic": right after signing in, a
+    /// brief connection drop otherwise sent people to Try again for no visible reason.
+    private static func onboardingStatus(config: SupabaseSyncConfig, token: String) async -> MosaicOnboardingStatus? {
+        let client = MosaicOnboardingClient(config: config)
+        for delay in [0, 600, 1500] {
+            if delay > 0 {
+                try? await Task.sleep(for: .milliseconds(delay))
+            }
+            guard !Task.isCancelled else { return nil }
+            do {
+                return try await client.status(accessToken: token)
+            } catch {
+                continue
+            }
+        }
+        return nil
     }
 }
 

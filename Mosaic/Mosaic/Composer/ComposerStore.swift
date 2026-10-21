@@ -11,7 +11,12 @@ struct ComposerClipboardItem: Equatable {
 @MainActor
 @Observable
 final class ComposerStore {
-    private(set) var snapshot: ComposerSnapshot
+    private(set) var snapshot: ComposerSnapshot {
+        didSet { lookup = ComposerStoreLookup() }
+    }
+    /// Where each board and piece sits, rebuilt after the snapshot changes, so drawing a board
+    /// doesn't search all of its pieces once for every piece it draws.
+    @ObservationIgnored private var lookup = ComposerStoreLookup()
     private(set) var isRestoringDocuments = false
     private(set) var mediaVersions: [String: Int] = [:]
     /// True while the latest edit could not be written to this phone (usually a full disk).
@@ -237,22 +242,45 @@ final class ComposerStore {
 
     func blocks(for documentID: ComposerDocumentID?) -> [ComposerBlock] {
         if let documentID {
-            return snapshot.pursuits.first(where: { $0.id == documentID })?.blocks ?? []
+            if lookup.boards == nil {
+                lookup.boards = Dictionary(
+                    snapshot.pursuits.enumerated().map { ($1.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            }
+            guard let index = lookup.boards?[documentID] else { return [] }
+            return snapshot.pursuits[index].blocks
         }
         return snapshot.mosaicBlocks
     }
 
     func block(with id: ComposerBlockID, in documentID: ComposerDocumentID?) -> ComposerBlock? {
         let page = blocks(for: documentID)
-        if let block = page.first(where: { $0.id == id }) {
-            return block
+        guard let spot = pieceSpots(in: documentID, page: page)[id] else { return nil }
+        return spot.member.map { page[spot.index].groupMembers[$0] } ?? page[spot.index]
+    }
+
+    /// A piece directly on the board, not inside a group.
+    func hasTopLevelBlock(_ id: ComposerBlockID, in documentID: ComposerDocumentID?) -> Bool {
+        guard let spot = pieceSpots(in: documentID, page: blocks(for: documentID))[id] else { return false }
+        return spot.member == nil
+    }
+
+    /// The first piece with each id wins, and a piece on the board wins over a group member.
+    private func pieceSpots(in documentID: ComposerDocumentID?, page: [ComposerBlock]) -> [ComposerBlockID: ComposerStoreLookup.Spot] {
+        let key = documentID?.rawValue ?? ""
+        if let spots = lookup.pieces[key] { return spots }
+        var spots: [ComposerBlockID: ComposerStoreLookup.Spot] = [:]
+        for (index, block) in page.enumerated() where spots[block.id] == nil {
+            spots[block.id] = ComposerStoreLookup.Spot(index: index, member: nil)
         }
-        for block in page where block.kind == .group {
-            if let member = block.groupMembers.first(where: { $0.id == id }) {
-                return member
+        for (index, block) in page.enumerated() where block.kind == .group {
+            for (member, piece) in block.groupMembers.enumerated() where spots[piece.id] == nil {
+                spots[piece.id] = ComposerStoreLookup.Spot(index: index, member: member)
             }
         }
-        return nil
+        lookup.pieces[key] = spots
+        return spots
     }
 
     /// Turns the fixed Mosaic title into a heading on the board, once.
@@ -1260,4 +1288,16 @@ final class ComposerStore {
         var blockID: ComposerBlockID
         var at: Date
     }
+}
+
+struct ComposerStoreLookup {
+    struct Spot {
+        var index: Int
+        /// Set for a piece inside the group at `index`.
+        var member: Int?
+    }
+
+    var boards: [ComposerDocumentID: Int]?
+    /// By board id, "" for the Mosaic.
+    var pieces: [String: [ComposerBlockID: Spot]] = [:]
 }

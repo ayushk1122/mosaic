@@ -184,6 +184,9 @@ enum MosaicSessionKeychain {
 final class MosaicAccount {
     private(set) var session: MosaicSession?
     private(set) var lastError: String?
+    /// True while Google or Apple has handed back and the session is being fetched, so the
+    /// sign-in screen can show progress instead of looking idle.
+    private(set) var isFinishingSignIn = false
     private var tokenRefresh: Task<MosaicSession, Error>?
     private var tokenRefreshID: UUID?
     private var config: SupabaseSyncConfig?
@@ -254,7 +257,7 @@ final class MosaicAccount {
             "username": username,
             "password": password
         ])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.send(request)
         guard let http = response as? HTTPURLResponse else {
             throw MosaicPasswordLoginError.requestFailed
         }
@@ -296,6 +299,8 @@ final class MosaicAccount {
     }
 
     func signInWithApple() {
+        // A second tap would replace the nonce the first sheet is still using, and that sign-in would fail.
+        guard appleSignInDelegate == nil, !isFinishingSignIn else { return }
         lastError = nil
         guard config != nil else {
             lastError = "Mosaic is not connected to a project yet."
@@ -330,7 +335,11 @@ final class MosaicAccount {
     }
 
     private func completeApple(credential: ASAuthorizationAppleIDCredential) async {
-        defer { appleSignInDelegate = nil }
+        isFinishingSignIn = true
+        defer {
+            appleSignInDelegate = nil
+            isFinishingSignIn = false
+        }
         guard let config,
               let tokenData = credential.identityToken,
               let idToken = String(data: tokenData, encoding: .utf8),
@@ -472,6 +481,8 @@ final class MosaicAccount {
     }
 
     func signInWithGoogle() {
+        // A second tap would replace the verifier the first sheet is still using, and that sign-in would fail.
+        guard webSession == nil, !isFinishingSignIn else { return }
         lastError = nil
         guard let config else {
             lastError = "Mosaic is not connected to a project yet."
@@ -492,11 +503,13 @@ final class MosaicAccount {
         session.prefersEphemeralWebBrowserSession = false
         webSession = session
         if !session.start() {
+            webSession = nil
             lastError = "Google sign-in could not open."
         }
     }
 
     private func completeGoogle(callback: URL?, error: Error?, config: SupabaseSyncConfig) {
+        webSession = nil
         if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
             present("Google sign-in was cancelled.")
             return
@@ -514,7 +527,9 @@ final class MosaicAccount {
             present("Google sign-in did not return a code. Turn on the Google provider in Supabase and allow the redirect mosaic://login-callback.")
             return
         }
+        isFinishingSignIn = true
         Task {
+            defer { isFinishingSignIn = false }
             do {
                 let signedIn = try await exchangePKCE(code: code, verifier: verifier, config: config)
                 store(session: signedIn)
@@ -567,7 +582,7 @@ final class MosaicAccount {
         request.httpMethod = "POST"
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(ending.accessToken)", forHTTPHeaderField: "Authorization")
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await Self.send(request)
     }
 
     func accessToken() async -> String? {
@@ -652,7 +667,7 @@ final class MosaicAccount {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.send(request)
         guard let http = response as? HTTPURLResponse else {
             throw MosaicOTPError.requestFailed
         }
@@ -684,7 +699,28 @@ final class MosaicAccount {
     }
 
     private func passwordMessage(for error: Error) -> String {
-        "Email, username, or password didn’t match. If you signed up with Google, Apple, or a code, continue with that instead."
+        switch error {
+        case MosaicAuthFailure.permanent, MosaicPasswordLoginError.rejected:
+            "Email, username, or password didn’t match. If you signed up with Google, Apple, or a code, continue with that instead."
+        default:
+            // Offline or a server hiccup; the details were fine as far as anyone knows.
+            "Couldn’t reach Mosaic. Check your connection and try again."
+        }
+    }
+
+    /// Sends once more when the connection drops before a reply. The first request after the app
+    /// sits idle often lands on a connection the server already closed, which a retry gets past.
+    nonisolated static func send(_ request: URLRequest, session: URLSession = .shared) async throws -> (Data, URLResponse) {
+        do {
+            return try await session.data(for: request)
+        } catch let error as URLError where retriesOnce(error.code) {
+            try await Task.sleep(for: .milliseconds(300))
+            return try await session.data(for: request)
+        }
+    }
+
+    nonisolated static func retriesOnce(_ code: URLError.Code) -> Bool {
+        code == .networkConnectionLost || code == .timedOut
     }
 
     private func putUser(
@@ -698,7 +734,7 @@ final class MosaicAccount {
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.send(request)
         guard let http = response as? HTTPURLResponse else {
             throw MosaicAuthFailure.transport
         }
@@ -728,7 +764,7 @@ final class MosaicAccount {
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.send(request)
         guard let http = response as? HTTPURLResponse else {
             throw MosaicAuthFailure.transport
         }
