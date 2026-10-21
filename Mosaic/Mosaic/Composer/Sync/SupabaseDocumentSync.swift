@@ -24,6 +24,8 @@ struct SupabaseSyncConfig: Equatable, Sendable {
 enum SupabaseDocumentSyncError: Error, Equatable {
     case revisionConflict
     case mosaicExists
+    /// Over the server's body size limit; retrying won't help until something is removed.
+    case documentTooLarge
     case requestFailed
     case unexpectedResponse
 }
@@ -102,6 +104,69 @@ struct SupabaseDocumentSync: Sendable {
             }
             result.append(contentsOf: page)
         }
+    }
+
+    /// Each of the owner's boards and its revision: the cheap check for edits made on another device.
+    func ownRevisions(ownerID: UUID, accessToken: String) async throws -> [UUID: Int64] {
+        struct Row: Decodable {
+            var id: UUID
+            var revision: Int64
+        }
+        var result: [UUID: Int64] = [:]
+        var offset = 0
+        while true {
+            try Task.checkCancellation()
+            var components = URLComponents(url: config.url.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [
+                URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
+                URLQueryItem(name: "select", value: "id,revision"),
+                URLQueryItem(name: "order", value: "id.asc"),
+                URLQueryItem(name: "limit", value: "500"),
+                URLQueryItem(name: "offset", value: String(offset))
+            ]
+            var request = URLRequest(url: components.url!)
+            request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw SupabaseDocumentSyncError.requestFailed
+            }
+            let page = try JSONDecoder().decode([Row].self, from: data)
+            guard !page.isEmpty else { return result }
+            for row in page {
+                result[row.id] = row.revision
+            }
+            offset += page.count
+        }
+    }
+
+    /// The owner's boards with these ids, in batches so the request stays short.
+    func ownDocuments(ownerID: UUID, ids: [UUID], accessToken: String) async throws -> [ComposerRestoredDocument] {
+        var result: [ComposerRestoredDocument] = []
+        for start in stride(from: 0, to: ids.count, by: 40) {
+            try Task.checkCancellation()
+            let batch = ids[start..<min(start + 40, ids.count)]
+            let list = batch.map { $0.uuidString.lowercased() }.joined(separator: ",")
+            var components = URLComponents(url: config.url.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [
+                URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
+                URLQueryItem(name: "id", value: "in.(\(list))"),
+                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision")
+            ]
+            var request = URLRequest(url: components.url!)
+            request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw SupabaseDocumentSyncError.requestFailed
+            }
+            let rows = try JSONDecoder().decode([ComposerRestoredDocument].self, from: data)
+            guard rows.allSatisfy({ $0.ownerID == ownerID && $0.revision > 0 && batch.contains($0.id) }) else {
+                throw SupabaseDocumentSyncError.unexpectedResponse
+            }
+            result.append(contentsOf: rows)
+        }
+        return result
     }
 
     func downloadOriginal(ownerID: UUID, assetID: UUID, accessToken: String) async throws -> Data {
@@ -250,9 +315,11 @@ struct SupabaseDocumentSync: Sendable {
         if message.contains("mosaic exists") || message.contains("23505") {
             return .mosaicExists
         }
-        if status == 409 {
-            return .revisionConflict
+        if message.contains("document body too large") {
+            return .documentTooLarge
         }
+        // Other 409s (a parent board not found yet, say) are not revision conflicts; treating them
+        // as one wrote a spurious conflict copy and retried.
         return .requestFailed
     }
 

@@ -115,6 +115,7 @@ final class ComposerBackgroundRestore {
             // Keep its original revision and assets, never replace it with another snapshot.
             complete.revisions.merge(state.revisions) { _, local in local }
             complete.mediaAssets.merge(state.mediaAssets) { _, local in local }
+            complete.pushedHashes.merge(state.pushedHashes) { _, local in local }
             try Task.checkCancellation()
             try store.finishRestoring(snapshot: remote, state: complete)
             state = complete

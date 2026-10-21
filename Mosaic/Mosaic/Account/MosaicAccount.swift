@@ -747,7 +747,7 @@ final class MosaicAccount {
             "Google sign-in was rejected. In Supabase, turn on the Google provider and allow the redirect mosaic://login-callback."
         case .unexpectedResponse:
             "Google sign-in returned an unexpected response."
-        case .revisionConflict, .mosaicExists:
+        case .revisionConflict, .mosaicExists, .documentTooLarge:
             "Google sign-in did not finish."
         }
     }

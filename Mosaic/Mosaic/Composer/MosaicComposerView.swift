@@ -90,7 +90,6 @@ struct MosaicComposerView: View {
     @State private var showsBackgroundEditor = false
     @State private var dragScrollRelay = ComposerDragScrollRelay()
     @State private var composerSpace = UUID().uuidString
-    @State private var canvasScrollPosition = ScrollPosition()
     @State private var scrollBubbleRail = ComposerScrollBubbleRail()
     @State private var clipboardMenuBlockID: ComposerBlockID?
     @State private var pasteAnchor: CGPoint?
@@ -622,13 +621,7 @@ struct MosaicComposerView: View {
             }
             ZStack(alignment: .bottomTrailing) {
                 canvasScroll
-                ComposerDragScrollDriver(relay: dragScrollRelay, onOffset: { y in
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        canvasScrollPosition.scrollTo(y: y)
-                    }
-                }) {
+                ComposerDragScrollDriver(relay: dragScrollRelay) {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
                 .allowsHitTesting(false)
@@ -780,7 +773,6 @@ struct MosaicComposerView: View {
         .scrollDisabled(textDragVisual.isMoving || socialCornerResizing)
         .scrollIndicators(.hidden, axes: .vertical)
         .scrollDismissesKeyboard(.interactively)
-        .scrollPosition($canvasScrollPosition)
         .onScrollGeometryChange(for: ComposerScrollBubbleMetrics.self) { geometry in
             ComposerScrollBubbleMetrics(geometry)
         } action: { _, metrics in
@@ -867,11 +859,7 @@ struct MosaicComposerView: View {
                 // Measured after rotating, so frames stay the piece's own untilted box.
                 .rotationEffect(angle)
                 // The live drawing canvas draws plain: a faded or shadowed canvas is hard to draw on.
-                .modifier(ComposerPieceLookModifier(
-                    opacity: drawingBlockID == block.id ? 1 : block.opacity,
-                    shadow: drawingBlockID == block.id ? .none : block.shadow,
-                    color: block.shadowColor
-                ))
+                .composerPieceLook(block, plain: drawingBlockID == block.id)
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -2681,15 +2669,9 @@ struct MosaicComposerView: View {
     @discardableResult
     private func stopDragFollow() -> CGFloat {
         let boost = dragScrollRelay.boost
-        if let followed = dragScrollRelay.intendedOffset {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                canvasScrollPosition.scrollTo(y: followed)
-            }
-        }
+        // The driver already left the scroll view where it followed to. Handing that offset to
+        // SwiftUI's `scrollTo` clamps it short of the bottom inset, and the board jumps.
         dragScrollRelay.boost = 0
-        dragScrollRelay.intendedOffset = nil
         dragScrollRelay.active = false
         dragScrollRelay.tracksItem = false
         return boost

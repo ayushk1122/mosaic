@@ -1,7 +1,7 @@
 import Foundation
 
 /// One board as it is stored in `documents`.
-struct ComposerSyncDocument: Equatable, Sendable {
+struct ComposerSyncDocument: Codable, Equatable, Sendable {
     var id: UUID
     var parentID: UUID?
     var role: ComposerSyncRole
@@ -286,7 +286,7 @@ enum ComposerBoardSync {
     }
 
     /// PostgreSQL UUIDs are lowercase; local document identities use UUID.uuidString.
-    private static func normalizedReferences(_ blocks: [ComposerBlock]) -> [ComposerBlock] {
+    static func normalizedReferences(_ blocks: [ComposerBlock]) -> [ComposerBlock] {
         blocks.map { block in
             var block = block
             if let id = block.pursuitID, let uuid = UUID(uuidString: id.rawValue) {
@@ -340,7 +340,7 @@ enum ComposerBoardSync {
         }
     }
 
-    private static func references(_ block: ComposerBlock, target: UUID) -> Bool {
+    static func references(_ block: ComposerBlock, target: UUID) -> Bool {
         if (block.kind == .pursuit || block.kind == .node),
            let pursuitID = block.pursuitID,
            uuid(pursuitID) == target {

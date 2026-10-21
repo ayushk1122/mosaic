@@ -33,6 +33,7 @@ struct ComposerMediaCanvasBlock: View {
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
 
     private var iconPlacement: ComposerChromePlacement {
         ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
@@ -49,6 +50,7 @@ struct ComposerMediaCanvasBlock: View {
 
     var body: some View {
         mediaContent
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isLifted, !isRelocating {
                     mediaChrome
@@ -408,8 +410,9 @@ struct ComposerInlineVideo: UIViewRepresentable {
         guard let player = context.coordinator.player else { return }
         if isPaused {
             player.pause()
+            context.coordinator.releaseAudio()
         } else if player.timeControlStatus != .playing {
-            Self.claimAudio()
+            context.coordinator.claimAudio()
             player.play()
         }
     }
@@ -426,16 +429,9 @@ struct ComposerInlineVideo: UIViewRepresentable {
         if isPaused {
             player.pause()
         } else {
-            Self.claimAudio()
+            context.coordinator.claimAudio()
             player.play()
         }
-    }
-
-    /// Only a video that actually plays takes over audio, so a paused video on screen
-    /// doesn't stop the person's music.
-    static func claimAudio() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     static func dismantleUIView(_ uiView: ComposerPlayerView, coordinator: Coordinator) {
@@ -472,7 +468,30 @@ struct ComposerInlineVideo: UIViewRepresentable {
             endObserver = nil
             player?.pause()
             player = nil
+            releaseAudio()
         }
+
+        func claimAudio() { ComposerVideoAudio.claim(ObjectIdentifier(self)) }
+        func releaseAudio() { ComposerVideoAudio.release(ObjectIdentifier(self)) }
+    }
+}
+
+/// Only a video that actually plays takes over audio, so a paused video on screen doesn't stop the
+/// person's music; once the last one pauses or leaves the screen, their music can resume.
+enum ComposerVideoAudio {
+    private(set) static var playing: Set<ObjectIdentifier> = []
+
+    static func claim(_ video: ObjectIdentifier) {
+        if playing.isEmpty {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
+        playing.insert(video)
+    }
+
+    static func release(_ video: ObjectIdentifier) {
+        guard playing.remove(video) != nil, playing.isEmpty else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 

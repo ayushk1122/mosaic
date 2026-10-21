@@ -28,6 +28,32 @@ struct ComposerAccountRestoreTests {
         }
     }
 
+    @Test
+    func afterARestoreUnchangedBoardsAreNotPushedAgain() throws {
+        // As if fetched from the server: encoded and decoded the way the restore reads rows.
+        let fetched = try JSONDecoder().decode([ComposerRestoredDocument].self, from: JSONEncoder().encode(rows()))
+        let (snapshot, state) = try ComposerAccountRestore.assemble(rows: fetched, ownerID: owner, mosaicID: mosaic)
+        let local = ComposerMediaCatalog.stamped(
+            ComposerBoardSync.split(snapshot: snapshot, mosaicID: mosaic),
+            assets: state.mediaAssets
+        )
+        #expect(local.count == fetched.count)
+        for document in local {
+            let key = document.id.uuidString.lowercased()
+            #expect(state.pushedHashes[key] != nil)
+            #expect(ComposerSyncState.contentHash(of: document) == state.pushedHashes[key], "\(document.role) would be pushed again")
+        }
+
+        // Editing one board afterwards marks only that board as changed.
+        var edited = snapshot
+        edited.mosaicBlocks.append(ComposerBlock.make(kind: .text, position: BlockPosition(x: 0.4, y: 0.4)))
+        let changed = ComposerMediaCatalog.stamped(
+            ComposerBoardSync.split(snapshot: edited, mosaicID: mosaic),
+            assets: state.mediaAssets
+        ).filter { ComposerSyncState.contentHash(of: $0) != state.pushedHashes[$0.id.uuidString.lowercased()] }
+        #expect(changed.map(\.id) == [mosaic])
+    }
+
     private func client(_ replies: [(Int, Data)]) -> SupabaseDocumentSync {
         RestoreURLProtocol.state.reset(replies)
         let config = URLSessionConfiguration.ephemeral

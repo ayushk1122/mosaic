@@ -122,6 +122,7 @@ struct MosaicTabShell: View {
         }
         .task {
             guard let account else { return }
+            remoteSync.store = store
             // Captures only what it uses: holding the view (and through it the store) would keep
             // the old store alive after signing out.
             store.onPersisted = { [weak store, remoteSync, account] in
@@ -166,6 +167,20 @@ struct MosaicTabShell: View {
                 downloads.failure = "Some content couldn’t load. Your edits are saved on this device."
             }
         }
+        .task(id: scenePhase) {
+            // Boards changed on another device: on open, on returning to the app, and every minute while open.
+            guard let account, scenePhase == .active else { return }
+            remoteSync.store = store
+            while !Task.isCancelled {
+                remoteSync.pullNow(account: account)
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+        .onChange(of: remoteSync.pullCount) {
+            // Pulled boards may show photos this phone doesn't have yet.
+            if account?.session != nil { downloads.noteExpectedFiles(store: store) }
+            if !downloads.isLoading { downloadAttempt += 1 }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 if !downloads.isLoading { downloadAttempt += 1 }
@@ -190,6 +205,23 @@ struct MosaicTabShell: View {
                 if let account {
                     remoteSync.flushNow(account: account)
                 }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let conflict = remoteSync.conflicts.first {
+                syncConflictBanner(conflict)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let board = remoteSync.oversizedBoards.first {
+                Text("“\(board)” is too large to sync. Remove a drawing or photo from it to sync it again.")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.36, green: 0.28, blue: 0.12))
+                    .accessibilityIdentifier("sync.tooLarge")
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -229,6 +261,30 @@ struct MosaicTabShell: View {
         .environment(pursuitPrivacy)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
+    }
+
+    /// ADR 0003: the other device's version is showing; this device's is kept until the person chooses.
+    private func syncConflictBanner(_ conflict: ComposerSyncConflict) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(conflict.deleted == nil
+                 ? "“\(conflict.title)” was changed on another device too. Showing that version."
+                 : "“\(conflict.title)” was deleted on another device, but you’d edited it here.")
+                .font(.caption)
+            HStack(spacing: 16) {
+                Button("Keep my version") { remoteSync.keepMyVersion(conflict) }
+                    .accessibilityIdentifier("sync.conflict.keep")
+                Button("Discard") { remoteSync.discard(conflict) }
+                    .accessibilityIdentifier("sync.conflict.discard")
+            }
+            .font(.caption.bold())
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(red: 0.16, green: 0.22, blue: 0.34))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sync.conflict")
     }
 
     /// After downloads fail, nothing is coming until Retry, so missing media shows as unavailable.

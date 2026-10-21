@@ -30,6 +30,7 @@ struct ComposerTextCanvasBlock: View {
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @Environment(\.composerPaperPage) private var onPaper
 
     private var readingColor: Color {
@@ -111,6 +112,7 @@ struct ComposerTextCanvasBlock: View {
             }
             .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
             .clipped()
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if showsFormatButton, isSelected, !isRelocating, !isLifted {
                     formatIconStack

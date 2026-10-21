@@ -152,9 +152,40 @@ struct ComposerPieceLookModifier: ViewModifier {
     }
 }
 
+private struct ComposerPieceOpacityKey: EnvironmentKey {
+    static let defaultValue: Double = 1
+}
+
+extension EnvironmentValues {
+    /// A piece's own opacity, for pieces that draw their own icons: they fade their content and
+    /// keep the icons at full strength.
+    var composerPieceOpacity: Double {
+        get { self[ComposerPieceOpacityKey.self] }
+        set { self[ComposerPieceOpacityKey.self] = newValue }
+    }
+}
+
+extension ComposerBlock {
+    /// Pieces whose crop, menu, format, or pencil icons are drawn inside the piece itself.
+    var drawsOwnIcons: Bool {
+        switch kind {
+        case .text, .heading, .list, .media, .carousel, .social, .pursuit, .node: true
+        case .link: isContent
+        default: false
+        }
+    }
+}
+
 extension View {
-    func composerPieceLook(_ block: ComposerBlock) -> some View {
-        modifier(ComposerPieceLookModifier(opacity: block.opacity, shadow: block.shadow, color: block.shadowColor))
+    /// `plain` draws the piece without its look, as while drawing on it.
+    func composerPieceLook(_ block: ComposerBlock, plain: Bool = false) -> some View {
+        let opacity = plain ? 1 : block.opacity
+        return environment(\.composerPieceOpacity, block.drawsOwnIcons ? opacity : 1)
+            .modifier(ComposerPieceLookModifier(
+                opacity: block.drawsOwnIcons ? 1 : opacity,
+                shadow: plain ? .none : block.shadow,
+                color: block.shadowColor
+            ))
     }
 }
 
@@ -223,6 +254,7 @@ struct ComposerCanvasBlockView: View {
     @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
     @Environment(\.mosaicPrivacyDisplay) private var privacyDisplay
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
@@ -451,6 +483,7 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
+            .opacity(pieceOpacity)
             .overlay(alignment: .topTrailing) {
                 if let visit, block.kind == .pursuit,
                    let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),

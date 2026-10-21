@@ -760,6 +760,9 @@ struct ComposerBoardSyncTests {
         let data = Data(#"[{"revision": 3}]"#.utf8)
         #expect(try SupabaseDocumentSync.revision(from: data) == 3)
         #expect(SupabaseDocumentSync.error(from: Data("revision conflict".utf8), status: 400) == .revisionConflict)
+        #expect(SupabaseDocumentSync.error(from: Data(#"{"code":"22023","message":"document body too large"}"#.utf8), status: 400) == .documentTooLarge)
+        // A missing parent is a 409 too, but not a revision conflict.
+        #expect(SupabaseDocumentSync.error(from: Data(#"{"code":"23503","message":"parent not found"}"#.utf8), status: 409) == .requestFailed)
         #expect(SupabaseDocumentSync.mosaicID(from: Data("null".utf8)) == nil)
         #expect(
             SupabaseDocumentSync.mosaicID(from: Data(#""65c2a70f-dfb3-40a0-a76c-96a6e721fd22""#.utf8))

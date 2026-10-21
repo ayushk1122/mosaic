@@ -100,6 +100,24 @@ final class ComposerStore {
         onPersisted?()
     }
 
+    /// Takes boards changed on another device (already merged by `ComposerPull`). A replaced
+    /// board's undo history is cleared, so Undo can't bring back the older version and push it.
+    func applySynced(_ synced: ComposerSnapshot, replaced: Set<ComposerDocumentID?>) {
+        var merged = synced
+        ComposerBoardSync.pruneUnreferenced(
+            &merged,
+            protecting: Set(detachedClipboardDocumentIDs.map(\.rawValue))
+        )
+        Self.refreshPursuitTitles(&merged)
+        for documentID in replaced {
+            undoStacks[Self.undoKey(documentID)] = nil
+        }
+        undoCoalesce = nil
+        guard merged != snapshot else { return }
+        snapshot = merged
+        persist()
+    }
+
     func mediaDidDownload(_ fileName: String) {
         mediaVersions[fileName, default: 0] += 1
     }

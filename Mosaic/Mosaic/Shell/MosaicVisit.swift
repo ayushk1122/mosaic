@@ -184,13 +184,13 @@ struct MosaicVisitClient: Sendable {
         }
     }
 
-    /// Storage paths to try for one file, best first. Photos have a display copy;
-    /// a GIF's display copy is a still and a PNG's is a JPEG without transparency (a sticker would
-    /// show on a solid box), so their originals are used.
-    nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
+    /// Storage paths to try for one file, best first. Photos have a display copy; a GIF's display
+    /// copy is a still, and a sticker's is a JPEG without transparency (it would show on a solid
+    /// box), so their originals are used. Other PNGs use the smaller display copy.
+    nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String, isSticker: Bool = false) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
-        let usesOriginal = ["mov", "mp4", "m4v", "gif", "png"].contains((fileName as NSString).pathExtension.lowercased())
+        let usesOriginal = isSticker || ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
         return (usesOriginal ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
     }
 

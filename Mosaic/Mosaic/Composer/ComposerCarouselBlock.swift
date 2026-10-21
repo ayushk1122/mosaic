@@ -209,6 +209,7 @@ struct ComposerCarouselCanvasBlock: View {
     @State private var loadingPosters: Set<String> = []
     @State private var failedPosters: Set<String> = []
     @Environment(\.composerMediaWaiting) private var mediaWaiting
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
 
@@ -237,6 +238,7 @@ struct ComposerCarouselCanvasBlock: View {
 
     var body: some View {
         face
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isLifted, !isRelocating {
                     editButton

@@ -107,7 +107,15 @@ struct ComposerAccountRestore {
         }
         var state = ComposerSyncState(mosaicID: mosaicID)
         for row in rows {
-            state.revisions[row.id.uuidString.lowercased()] = row.revision
+            let key = row.id.uuidString.lowercased()
+            state.revisions[key] = row.revision
+            // Recorded as already pushed, so the first push after a restore skips boards that
+            // haven't changed instead of re-saving all of them, which could overwrite edits another
+            // device made in the meantime. Anything edited here afterwards hashes differently and
+            // is pushed as usual.
+            if let hash = ComposerSyncState.contentHash(of: row.document) {
+                state.pushedHashes[key] = hash
+            }
             for (file, asset) in row.body.mediaAssets ?? [:] {
                 guard isSafeFileName(file), let assetID = UUID(uuidString: asset) else {
                     throw ComposerRestoreError.invalidMedia

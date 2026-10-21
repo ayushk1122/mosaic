@@ -74,6 +74,11 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     }
 }
 
+/// A push found the board changed on another device; carries the server's version.
+struct ComposerPushConflict: Error {
+    var server: ComposerRestoredDocument
+}
+
 /// Pushes the local snapshot to Supabase after edits settle.
 @MainActor
 @Observable
@@ -90,6 +95,19 @@ final class ComposerRemoteSync {
     private var mediaRetryBudget = 0
     /// Set when a push could not finish, so the next foreground or retry tries again.
     private var needsPush = false
+    /// Boards the server refused as too large on the last push, by name, for the shell's notice.
+    private(set) var oversizedBoards: [String] = []
+    /// Boards changed on this device and on another one before syncing (ADR 0003). The server's
+    /// version is showing; each holds this device's version until kept or discarded.
+    private(set) var conflicts: [ComposerSyncConflict] = []
+    /// Bumped after a pull brings in boards, so the shell can download any new photos.
+    private(set) var pullCount = 0
+    /// Where pulled boards go, and where a push or pull reads the current copy from.
+    @ObservationIgnored weak var store: ComposerStore?
+    @ObservationIgnored private var wantsPull = false
+    /// Replaced in tests with a fake server.
+    @ObservationIgnored var makeClient: (SupabaseSyncConfig) -> SupabaseDocumentSync = { SupabaseDocumentSync(config: $0) }
+    @ObservationIgnored private var refusedAsTooLarge: [UUID: String] = [:]
     private var failureRetries = 0
     /// Files whose upload failed on several pushes in a row this session; skipped until relaunch.
     @ObservationIgnored private var uploadFailures: [String: Int] = [:]
@@ -98,6 +116,7 @@ final class ComposerRemoteSync {
 
     init(location: ComposerStorageLocation = .shared()) {
         self.location = location
+        conflicts = Self.loadConflicts(at: location)
     }
 
     var canUpload: Bool { loadState()?.pendingRestore != true }
@@ -196,6 +215,11 @@ final class ComposerRemoteSync {
         var pushed: (snapshot: ComposerSnapshot, protecting: Set<UUID>)?
         repeat {
             again = false
+            // Pull first, so a board changed elsewhere arrives before this device's copy is pushed.
+            if wantsPull {
+                wantsPull = false
+                await pull(account: account)
+            }
             guard let snapshot = latest else { break }
             let protecting = latestProtecting
             latest = nil
@@ -212,7 +236,7 @@ final class ComposerRemoteSync {
                 break
             }
             needsPush = false
-        } while again || latest != nil
+        } while again || latest != nil || wantsPull
 
         if needsPush {
             scheduleFailureRetry(account: account)
@@ -255,19 +279,35 @@ final class ComposerRemoteSync {
 
     private static let uploadAttemptLimit = 3
 
+    /// Captured once per push or pull, so a sign-out or account switch midway can't mix two accounts.
+    private func credentials(for account: MosaicAccount) async -> (client: SupabaseDocumentSync, userID: UUID, token: String)? {
+        guard let config = SupabaseSyncConfig.current(),
+              let userID = account.session?.userID,
+              let accessToken = await account.accessToken(),
+              account.session?.userID == userID
+        else { return nil }
+        return (makeClient(config), userID, accessToken)
+    }
+
     private func push(
         _ snapshot: ComposerSnapshot,
         account: MosaicAccount,
         protecting: Set<UUID>
     ) async -> Bool {
         lastPushLeftMediaPending = false
-        // Captured once, so a sign-out or account switch mid-push can't mix two accounts.
-        guard let config = SupabaseSyncConfig.current(),
-              let userID = account.session?.userID,
-              let accessToken = await account.accessToken(),
-              account.session?.userID == userID
-        else { return false }
-        let client = SupabaseDocumentSync(config: config)
+        guard let credentials = await credentials(for: account) else { return false }
+        return await push(snapshot, protecting: protecting, client: credentials.client, userID: credentials.userID, accessToken: credentials.token)
+    }
+
+    /// One push with known credentials; called directly by tests with a fake server.
+    func push(
+        _ snapshot: ComposerSnapshot,
+        protecting: Set<UUID>,
+        client: SupabaseDocumentSync,
+        userID: UUID,
+        accessToken: String
+    ) async -> Bool {
+        lastPushLeftMediaPending = false
         do {
             let stored = loadState()
             guard stored?.pendingRestore != true else { return false }
@@ -293,9 +333,31 @@ final class ComposerRemoteSync {
             // One board the server refuses (too large, say) mustn't hold back every other board
             // and the media; it's retried with the next push.
             var anySaveFailed = false
+            var tooLarge = Set<UUID>()
+            var serverVersions: [UUID: ComposerRestoredDocument] = [:]
+            defer {
+                oversizedBoards = documents
+                    .filter { tooLarge.contains($0.id) }
+                    .map { $0.role == .mosaic || $0.title.isEmpty ? "Your Mosaic" : $0.title }
+            }
             for document in documents {
+                // The same refused content isn't uploaded again (about 2 MB each time) until it changes.
+                let hash = ComposerSyncState.contentHash(of: document)
+                if let hash, refusedAsTooLarge[document.id] == hash {
+                    tooLarge.insert(document.id)
+                    continue
+                }
                 do {
                     try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                    refusedAsTooLarge[document.id] = nil
+                } catch SupabaseDocumentSyncError.documentTooLarge {
+                    // Retrying won't help until something is removed, so it isn't a failed push:
+                    // the person is told which board, and everything else keeps syncing.
+                    tooLarge.insert(document.id)
+                    refusedAsTooLarge[document.id] = hash
+                } catch let conflict as ComposerPushConflict {
+                    // Changed on another device too: its version is brought in below, never overwritten.
+                    serverVersions[conflict.server.id] = conflict.server
                 } catch {
                     if Task.isCancelled { return false }
                     anySaveFailed = true
@@ -329,7 +391,12 @@ final class ComposerRemoteSync {
                     saveState(state)
                 }
             }
-            guard let mediaFile else { return !anySaveFailed }
+            guard let mediaFile else {
+                if !serverVersions.isEmpty {
+                    state = bringIn(rows: Array(serverVersions.values), removed: [], state: state)
+                }
+                return !anySaveFailed
+            }
             let references = ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID)
             state.mediaAssets = await uploadMedia(
                 references: references,
@@ -341,13 +408,32 @@ final class ComposerRemoteSync {
             )
             saveState(state)
             let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets)
-            for document in restamped {
+            // A board that conflicted is no longer this device's to push until the person chooses.
+            for document in restamped where serverVersions[document.id] == nil {
+                // The same refused content isn't uploaded again (about 2 MB each time) until it changes.
+                let hash = ComposerSyncState.contentHash(of: document)
+                if let hash, refusedAsTooLarge[document.id] == hash {
+                    tooLarge.insert(document.id)
+                    continue
+                }
                 do {
                     try await saveIfChanged(document, state: &state, client: client, ownerID: userID, accessToken: accessToken)
+                    refusedAsTooLarge[document.id] = nil
+                } catch SupabaseDocumentSyncError.documentTooLarge {
+                    // Retrying won't help until something is removed, so it isn't a failed push:
+                    // the person is told which board, and everything else keeps syncing.
+                    tooLarge.insert(document.id)
+                    refusedAsTooLarge[document.id] = hash
+                } catch let conflict as ComposerPushConflict {
+                    // Changed on another device too: its version is brought in below, never overwritten.
+                    serverVersions[conflict.server.id] = conflict.server
                 } catch {
                     if Task.isCancelled { return false }
                     anySaveFailed = true
                 }
+            }
+            if !serverVersions.isEmpty {
+                state = bringIn(rows: Array(serverVersions.values), removed: [], state: state)
             }
             // Readable local files without a cloud asset are not finished syncing yet,
             // unless they have already failed too often to be retried this session.
@@ -457,20 +543,108 @@ final class ComposerRemoteSync {
             if server.body == document.body, server.title == document.title {
                 return server.revision
             }
-            // Another device changed this board. Until the conflict banner from ADR 0003 exists,
-            // this phone's version is saved, and the server's is kept on this phone so it isn't lost.
-            keepConflictCopy(server)
-            let retry = ComposerDocumentPush(document: document, expectedRevision: server.revision)
-            return try await client.save(push: retry, accessToken: accessToken)
+            // Another device changed this board (ADR 0003): its version wins what's shown, and this
+            // device's version is kept as a conflict copy. Nothing is overwritten.
+            throw ComposerPushConflict(server: server)
         }
     }
 
-    private func keepConflictCopy(_ server: ComposerRestoredDocument) {
-        let folder = location.root.appendingPathComponent("conflicts", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let name = "\(server.id.uuidString.lowercased())-r\(server.revision).json"
-        if let data = try? JSONEncoder().encode(server) {
-            try? data.write(to: folder.appendingPathComponent(name), options: .atomic)
+    // MARK: Pulling other devices' edits
+
+    /// Checks for boards changed on another device; runs before any waiting push.
+    func pullNow(account: MosaicAccount) {
+        guard canUpload else { return }
+        latestAccount = account
+        wantsPull = true
+        Task { await run(account: account) }
+    }
+
+    private func pull(account: MosaicAccount) async {
+        guard let credentials = await credentials(for: account) else { return }
+        await pull(client: credentials.client, userID: credentials.userID, accessToken: credentials.token)
+    }
+
+    /// One pull with known credentials; called directly by tests with a fake server.
+    func pull(client: SupabaseDocumentSync, userID: UUID, accessToken: String) async {
+        // A device that has never synced has nothing to compare; a restore brings boards in instead.
+        guard store != nil, let before = loadState(), !before.pendingRestore else { return }
+        guard let remote = try? await client.ownRevisions(ownerID: userID, accessToken: accessToken) else { return }
+        let changed = ComposerPull.changedIDs(remote: remote, state: before)
+        let removed = ComposerPull.removedIDs(remote: remote, state: before)
+        guard !changed.isEmpty || !removed.isEmpty else { return }
+        let rows: [ComposerRestoredDocument]
+        if changed.isEmpty {
+            rows = []
+        } else {
+            guard let fetched = try? await client.ownDocuments(ownerID: userID, ids: changed, accessToken: accessToken) else { return }
+            rows = fetched
+        }
+        // Read again after the network: a push may have saved newer revisions meanwhile.
+        guard let state = loadState() else { return }
+        let newer = rows.filter { $0.revision > (state.revisions[$0.id.uuidString.lowercased()] ?? 0) }
+        let gone = removed.filter { state.revisions[$0.uuidString.lowercased()] != nil }
+        guard !newer.isEmpty || !gone.isEmpty else { return }
+        _ = bringIn(rows: newer, removed: gone, state: state)
+    }
+
+    /// Merges boards from the server into the store's current copy, in one step on the main actor
+    /// with no waiting in between, so an edit can't slip in while the merge is worked out.
+    @discardableResult
+    private func bringIn(rows: [ComposerRestoredDocument], removed: [UUID], state: ComposerSyncState) -> ComposerSyncState {
+        guard let store else { return state }
+        let result = ComposerPull.merge(
+            rows: rows,
+            removed: removed,
+            snapshot: store.snapshot,
+            state: state,
+            mosaicID: state.mosaicID,
+            now: Date()
+        )
+        saveState(result.state)
+        if !result.conflicts.isEmpty {
+            // A newer conflict on the same board replaces the older one: it holds this device's latest version.
+            let incoming = Set(result.conflicts.map(\.id))
+            conflicts = conflicts.filter { !incoming.contains($0.id) } + result.conflicts
+            saveConflicts()
+        }
+        store.applySynced(result.snapshot, replaced: result.replaced)
+        pullCount += 1
+        return result.state
+    }
+
+    /// "Keep my version": this device's copy goes back on the board and is pushed as the newest version.
+    func keepMyVersion(_ conflict: ComposerSyncConflict) {
+        guard let store, let state = loadState() else { return }
+        let restored = ComposerPull.restoring(conflict, to: store.snapshot, mosaicID: state.mosaicID)
+        conflicts.removeAll { $0.id == conflict.id }
+        saveConflicts()
+        let board: ComposerDocumentID? = conflict.id == state.mosaicID ? nil : ComposerPull.localID(conflict.id, in: store.snapshot)
+        store.applySynced(restored, replaced: [board])
+    }
+
+    /// "Discard": the other device's version stays and this device's copy is dropped.
+    func discard(_ conflict: ComposerSyncConflict) {
+        conflicts.removeAll { $0.id == conflict.id }
+        saveConflicts()
+    }
+
+    private var conflictsURL: URL {
+        location.root.appendingPathComponent("conflicts", isDirectory: true).appendingPathComponent("pending.json")
+    }
+
+    private static func loadConflicts(at location: ComposerStorageLocation) -> [ComposerSyncConflict] {
+        let url = location.root.appendingPathComponent("conflicts", isDirectory: true).appendingPathComponent("pending.json")
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return (try? JSONDecoder().decode([ComposerSyncConflict].self, from: data)) ?? []
+    }
+
+    private func saveConflicts() {
+        let url = conflictsURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if conflicts.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else if let data = try? JSONEncoder().encode(conflicts) {
+            try? data.write(to: url, options: .atomic)
         }
     }
 

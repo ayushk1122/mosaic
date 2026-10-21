@@ -100,11 +100,25 @@ struct ComposerStickerTests {
     @Test
     func visitorsGetTransparentOriginalsForStickers() {
         let owner = UUID()
-        let paths = MosaicVisitClient.objectPaths(ownerID: owner, assetID: "asset", fileName: "cutout.png")
+        let paths = MosaicVisitClient.objectPaths(ownerID: owner, assetID: "asset", fileName: "cutout.png", isSticker: true)
         #expect(paths.count == 1)
         #expect(paths.first?.hasSuffix("/original") == true)
         let photo = MosaicVisitClient.objectPaths(ownerID: owner, assetID: "asset", fileName: "photo.jpg")
         #expect(photo.first?.hasSuffix("/display") == true)
+        // A PNG photo that isn't a sticker gets the smaller display copy.
+        let screenshot = MosaicVisitClient.objectPaths(ownerID: owner, assetID: "asset", fileName: "screenshot.png")
+        #expect(screenshot.first?.hasSuffix("/display") == true)
+    }
+
+    @Test
+    func visitorsFindStickersInsideGroups() {
+        var sticker = ComposerBlock.make(kind: .sticker, position: BlockPosition(x: 0.2, y: 0.2))
+        sticker.mediaFileName = "cutout.png"
+        var photo = ComposerBlock.make(kind: .media, position: BlockPosition(x: 0.4, y: 0.4))
+        photo.mediaFileName = "photo.png"
+        var group = ComposerBlock.make(kind: .group, position: BlockPosition(x: 0.5, y: 0.5))
+        group.groupMembers = [sticker, photo]
+        #expect(MosaicVisitMedia.stickerFiles(in: [group]) == ["cutout.png"])
     }
 
     // MARK: Your stickers

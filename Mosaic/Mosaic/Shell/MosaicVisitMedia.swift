@@ -29,9 +29,26 @@ final class MosaicVisitMedia {
 
     static func location(viewerID: UUID, ownerID: UUID) -> ComposerStorageLocation {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return ComposerStorageLocation(root: caches.appendingPathComponent("Visits-v2", isDirectory: true)
+        removeOldCaches(in: caches)
+        return ComposerStorageLocation(root: caches.appendingPathComponent("Visits-v3", isDirectory: true)
             .appendingPathComponent(viewerID.uuidString.lowercased(), isDirectory: true)
             .appendingPathComponent(ownerID.uuidString.lowercased(), isDirectory: true))
+    }
+
+    /// v2 may hold a sticker's JPEG display copy, which shows on a solid box.
+    private static var removedOldCaches = false
+    private static func removeOldCaches(in caches: URL) {
+        guard !removedOldCaches else { return }
+        removedOldCaches = true
+        try? FileManager.default.removeItem(at: caches.appendingPathComponent("Visits-v2", isDirectory: true))
+    }
+
+    /// Files placed as stickers on a board, including inside groups.
+    static func stickerFiles(in blocks: [ComposerBlock]) -> Set<String> {
+        blocks.reduce(into: Set<String>()) { files, block in
+            if block.kind == .sticker, let name = block.mediaFileName, !name.isEmpty { files.insert(name) }
+            files.formUnion(stickerFiles(in: block.groupMembers))
+        }
     }
 
     func boardID(_ documentID: ComposerDocumentID?) -> UUID {
@@ -95,11 +112,13 @@ final class MosaicVisitMedia {
         pendingFiles.formUnion(missing.keys)
         defer { pendingFiles.subtract(missing.keys) }
         let client = client, ownerID = ownerID
+        let stickers = Self.stickerFiles(in: document.body.blocks)
         await withTaskGroup(of: (String, Data?).self) { group in
             var queue = Array(missing).makeIterator()
             func next() {
                 guard !Task.isCancelled, let (name, asset) = queue.next() else { return }
-                let paths = MosaicVisitClient.objectPaths(ownerID: ownerID, assetID: asset, fileName: name)
+                let paths = MosaicVisitClient.objectPaths(ownerID: ownerID, assetID: asset, fileName: name,
+                                                          isSticker: stickers.contains(name))
                 group.addTask {
                     for path in paths {
                         guard !Task.isCancelled else { return (name, nil) }
