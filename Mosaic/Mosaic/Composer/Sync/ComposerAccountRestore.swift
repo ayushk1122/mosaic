@@ -126,6 +126,7 @@ struct ComposerAccountRestore {
                 }
                 state.mediaAssets[file] = normalized
             }
+            state.mediaPreviews.merge(row.body.mediaPreviews ?? [:]) { _, row in row }
         }
         // Unuploaded local media has no cloud asset to recover. Preserve those references as-is.
         return (snapshot, state)

@@ -26,6 +26,9 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
     var pursuitPagesBlanked: Bool?
     /// Local file name to the private Storage asset. Blocks keep their file names.
     var mediaAssets: [String: String]?
+    /// Local file name to a tiny blurred stand-in (`ComposerMediaPreview`), shown to visitors while
+    /// the file downloads. The server keeps only previews of files visitors' copy still uses.
+    var mediaPreviews: [String: String]?
     /// Only on the Mosaic board. The server drops it from visitors' copy (`viewer_board_body`).
     var stickerLibrary: [ComposerSavedSticker]?
 
@@ -36,8 +39,10 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
         mosaicTitlePlaced: Bool?,
         pursuitPagesBlanked: Bool?,
         mediaAssets: [String: String]? = nil,
+        mediaPreviews: [String: String]? = nil,
         stickerLibrary: [ComposerSavedSticker]? = nil
     ) {
+        self.mediaPreviews = mediaPreviews
         self.stickerLibrary = stickerLibrary
         self.blocks = blocks
         self.layoutHeight = layoutHeight
@@ -48,7 +53,7 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case blocks, layoutHeight, background, mosaicTitlePlaced, pursuitPagesBlanked, mediaAssets, stickerLibrary
+        case blocks, layoutHeight, background, mosaicTitlePlaced, pursuitPagesBlanked, mediaAssets, mediaPreviews, stickerLibrary
     }
 
     init(from decoder: Decoder) throws {
@@ -59,6 +64,8 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
         mosaicTitlePlaced = try container.decodeIfPresent(Bool.self, forKey: .mosaicTitlePlaced)
         pursuitPagesBlanked = try container.decodeIfPresent(Bool.self, forKey: .pursuitPagesBlanked)
         mediaAssets = try container.decodeIfPresent([String: String].self, forKey: .mediaAssets)
+        // Only a placeholder: a malformed list is dropped rather than failing the board.
+        mediaPreviews = (try? container.decodeIfPresent([String: String].self, forKey: .mediaPreviews)) ?? nil
         let library = ComposerSavedSticker.lenientList(from: container, forKey: .stickerLibrary)
         stickerLibrary = container.contains(.stickerLibrary) ? library : nil
     }
@@ -71,6 +78,7 @@ struct ComposerBoardBody: Codable, Equatable, Sendable {
         try container.encodeIfPresent(mosaicTitlePlaced, forKey: .mosaicTitlePlaced)
         try container.encodeIfPresent(pursuitPagesBlanked, forKey: .pursuitPagesBlanked)
         try container.encodeIfPresent(mediaAssets, forKey: .mediaAssets)
+        try container.encodeIfPresent(mediaPreviews, forKey: .mediaPreviews)
         try container.encodeIfPresent(stickerLibrary, forKey: .stickerLibrary)
     }
 }

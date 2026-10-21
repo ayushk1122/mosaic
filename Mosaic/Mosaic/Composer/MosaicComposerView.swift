@@ -302,6 +302,10 @@ struct MosaicComposerView: View {
             .environment(\.composerPaperPage, isBookPage)
             .environment(\.composerMediaVersions, store.mediaVersions)
             .environment(\.composerMediaWaiting, visit?.media?.waiting(for: documentID) ?? ownerMediaWaiting)
+            .environment(\.composerMediaPreviews, visit?.media?.previews ?? [:])
+            // Leaving the visit, or opening another board in it, stops the quiet fetching; the
+            // next board to finish loading starts it again.
+            .onDisappear { visit?.media?.pausePrefetch() }
             .preference(key: ComposerGroupingPreferenceKey.self, value: isGrouping)
             .task(id: documentID) {
                 visit?.recordVisit(to: documentID.flatMap(ComposerBoardSync.uuid))

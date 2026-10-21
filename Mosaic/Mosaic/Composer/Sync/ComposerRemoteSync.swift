@@ -9,6 +9,9 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     var pendingRestore: Bool
     /// Content hash of each board as last saved, so unchanged boards are not pushed again.
     var pushedHashes: [String: String]
+    /// File name to its encoded `ComposerMediaPreview`, or "" for a file that has none (a sticker,
+    /// an unreadable file), so it isn't tried again.
+    var mediaPreviews: [String: String] = [:]
 
     init(
         mosaicID: UUID,
@@ -31,6 +34,7 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
         mediaAssets = try container.decodeIfPresent([String: String].self, forKey: .mediaAssets) ?? [:]
         pendingRestore = try container.decodeIfPresent(Bool.self, forKey: .pendingRestore) ?? false
         pushedHashes = try container.decodeIfPresent([String: String].self, forKey: .pushedHashes) ?? [:]
+        mediaPreviews = try container.decodeIfPresent([String: String].self, forKey: .mediaPreviews) ?? [:]
     }
 
     func encode(to encoder: Encoder) throws {
@@ -40,6 +44,9 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
         try container.encode(mediaAssets, forKey: .mediaAssets)
         try container.encode(pendingRestore, forKey: .pendingRestore)
         try container.encode(pushedHashes, forKey: .pushedHashes)
+        if !mediaPreviews.isEmpty {
+            try container.encode(mediaPreviews, forKey: .mediaPreviews)
+        }
     }
 
     /// Identifies a board's saved content: title, placement, and body.
@@ -70,7 +77,7 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case mosaicID, revisions, mediaAssets, pendingRestore, pushedHashes
+        case mosaicID, revisions, mediaAssets, pendingRestore, pushedHashes, mediaPreviews
     }
 }
 
@@ -334,7 +341,7 @@ final class ComposerRemoteSync {
             let split = ComposerBoardSync.split(snapshot: snapshot, mosaicID: mosaicID).filter { document in
                 document.parentID != nil || document.role == .mosaic || document.role == .pursuit
             }
-            let documents = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets)
+            let documents = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets, previews: state.mediaPreviews)
             // One board the server refuses (too large, say) mustn't hold back every other board
             // and the media; it's retried with the next push.
             var anySaveFailed = false
@@ -393,6 +400,7 @@ final class ComposerRemoteSync {
                         ComposerMediaCatalog.references(snapshot: snapshot, mosaicID: mosaicID).map(\.fileName)
                     )
                     state.mediaAssets = state.mediaAssets.filter { liveFiles.contains($0.key) }
+                    state.mediaPreviews = state.mediaPreviews.filter { liveFiles.contains($0.key) }
                     saveState(state)
                 }
             }
@@ -411,8 +419,13 @@ final class ComposerRemoteSync {
                 accessToken: accessToken,
                 mediaFile: mediaFile
             )
+            state.mediaPreviews = await Self.addingPreviews(
+                to: state.mediaPreviews,
+                for: references.map(\.fileName).filter { state.mediaAssets[$0] != nil },
+                mediaFile: mediaFile
+            )
             saveState(state)
-            let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets)
+            let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets, previews: state.mediaPreviews)
             // A board that conflicted is no longer this device's to push until the person chooses.
             for document in restamped where serverVersions[document.id] == nil {
                 // The same refused content isn't uploaded again (about 2 MB each time) until it changes.
@@ -475,6 +488,29 @@ final class ComposerRemoteSync {
         state.revisions[key] = next
         state.pushedHashes[key] = hash
         saveState(state)
+    }
+
+    /// Makes the blurred stand-ins visitors see while files download, a few per push so a large
+    /// board catches up over several pushes rather than holding one up.
+    static func addingPreviews(
+        to previews: [String: String],
+        for files: [String],
+        mediaFile: @MainActor (String) -> URL,
+        limit: Int = 30
+    ) async -> [String: String] {
+        var previews = previews
+        var made = 0
+        for file in files where previews[file] == nil {
+            guard made < limit else { break }
+            let url = mediaFile(file)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            made += 1
+            let preview = ComposerMediaKind.isVideo(file)
+                ? await ComposerMediaPreview.make(videoAt: url)
+                : await Task.detached(priority: .utility) { ComposerMediaPreview.make(imageAt: url) }.value
+            previews[file] = preview?.encoded ?? ""
+        }
+        return previews
     }
 
     private func uploadMedia(

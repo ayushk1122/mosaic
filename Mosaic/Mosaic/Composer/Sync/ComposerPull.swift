@@ -61,7 +61,11 @@ enum ComposerPull {
         var conflicts: [ComposerSyncConflict] = []
         var replaced: Set<ComposerDocumentID?> = []
         let local = Dictionary(
-            ComposerMediaCatalog.stamped(ComposerBoardSync.split(snapshot: snapshot, mosaicID: mosaicID), assets: state.mediaAssets)
+            ComposerMediaCatalog.stamped(
+                ComposerBoardSync.split(snapshot: snapshot, mosaicID: mosaicID),
+                assets: state.mediaAssets,
+                previews: state.mediaPreviews
+            )
                 .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
@@ -82,6 +86,7 @@ enum ComposerPull {
                 state.pushedHashes[key] = hash
             }
             state.mediaAssets.merge(row.body.mediaAssets ?? [:]) { _, remote in remote }
+            state.mediaPreviews.merge(row.body.mediaPreviews ?? [:]) { _, remote in remote }
             replaced.insert(row.id == mosaicID ? nil : localID(row.id, in: snapshot))
         }
 

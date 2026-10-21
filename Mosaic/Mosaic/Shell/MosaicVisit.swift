@@ -109,12 +109,14 @@ struct MosaicVisitClient: Sendable {
         _ = try await rpc("record_visit", body: ["p_document_id": documentID.uuidString.lowercased()], accessToken: accessToken)
     }
 
-    /// One Storage object, or nil when it is missing or not readable.
-    func download(path: String, accessToken: String) async -> Data? {
+    /// One Storage object, or nil when it is missing or not readable. `inLowDataMode: false` skips
+    /// the download while Low Data Mode is on, for fetches nobody has asked to see yet.
+    func download(path: String, accessToken: String, inLowDataMode: Bool = true) async -> Data? {
         guard let url = URL(string: "\(config.url.absoluteString)/storage/v1/object/authenticated/media/\(path)") else {
             return nil
         }
         var request = URLRequest(url: url)
+        request.allowsConstrainedNetworkAccess = inLowDataMode
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         guard let (data, response) = try? await session.data(for: request),

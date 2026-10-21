@@ -80,18 +80,22 @@ struct ComposerCarouselItemFace: View {
     var compact = false
     var isUnavailable = false
 
+    @Environment(\.composerMediaPreviews) private var mediaPreviews
+
     /// Width divided by height, matching the item's block on a board: a photo or video's own
-    /// shape, a content card's shape, and a square logo for a social.
-    static func aspect(of item: CarouselMediaItem, poster: UIImage?) -> CGFloat {
+    /// shape, a content card's shape, and a square logo for a social. Before the picture arrives,
+    /// a visitor's preview gives the shape, so the card doesn't change size when it lands.
+    static func aspect(of item: CarouselMediaItem, poster: UIImage?, preview: ComposerMediaPreview? = nil) -> CGFloat {
+        let cover = poster?.size ?? preview.map { CGSize(width: $0.aspect, height: 1) }
         switch item.kind {
         case .social:
             return 1
         case .content:
-            let size = (item.contentPlatform ?? .youtube).cardSize(cover: poster?.size)
+            let size = (item.contentPlatform ?? .youtube).cardSize(cover: cover)
             return size.width / max(size.height, 1)
         case .media:
-            guard let poster, poster.size.height > 0 else { return 4.0 / 5.0 }
-            return min(max(poster.size.width / poster.size.height, 0.5), 2)
+            guard let cover, cover.height > 0 else { return 4.0 / 5.0 }
+            return min(max(cover.width / cover.height, 0.5), 2)
         }
     }
 
@@ -103,6 +107,8 @@ struct ComposerCarouselItemFace: View {
                     ComposerPicture(image: poster)
                 } else if isUnavailable {
                     ComposerMediaUnavailable(isVideo: ComposerMediaStill.isVideo(URL(fileURLWithPath: item.fileName)), compact: compact)
+                } else if let preview = mediaPreviews[item.fileName] {
+                    ComposerMediaPlaceholder(preview: preview, showsProgress: !compact)
                 } else {
                     Color.white.opacity(0.08)
                     ProgressView()
@@ -155,6 +161,8 @@ struct ComposerCarouselItemFace: View {
             .overlay {
                 if let poster {
                     ComposerPicture(image: poster)
+                } else if let preview = mediaPreviews[item.fileName] {
+                    ComposerMediaPlaceholder(preview: preview, showsProgress: false)
                 } else if let logo {
                     ComposerSocialMark(platform: logo, side: compact ? 28 : 44)
                 }
@@ -209,6 +217,7 @@ struct ComposerCarouselCanvasBlock: View {
     @State private var loadingPosters: Set<String> = []
     @State private var failedPosters: Set<String> = []
     @Environment(\.composerMediaWaiting) private var mediaWaiting
+    @Environment(\.composerMediaPreviews) private var mediaPreviews
     @Environment(\.composerPieceOpacity) private var pieceOpacity
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
@@ -333,7 +342,7 @@ struct ComposerCarouselCanvasBlock: View {
         let poster = posters[item.fileName]
         let size = isSocial
             ? CGSize(width: layout.socialSide, height: layout.socialSide)
-            : layout.cardSize(aspect: ComposerCarouselItemFace.aspect(of: item, poster: poster))
+            : layout.cardSize(aspect: ComposerCarouselItemFace.aspect(of: item, poster: poster, preview: mediaPreviews[item.fileName]))
         return ZStack {
             if isCenter, isVideo, playing, let url {
                 ComposerInlineVideo(url: url, isPaused: false, fillsFrame: true)

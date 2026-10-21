@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct ComposerMediaCanvasBlock: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
     @Environment(\.composerMediaWaiting) private var mediaWaiting
+    @Environment(\.composerMediaPreviews) private var mediaPreviews
 
     @Binding var block: ComposerBlock
     let mediaURL: URL?
@@ -135,6 +136,8 @@ struct ComposerMediaCanvasBlock: View {
                 onReplace: showsReplace ? onReplace : nil,
                 onReplaceFrame: { replaceFrame = $0 }
             ))
+        } else if let placeholder {
+            framed(ComposerMediaPlaceholder(preview: placeholder))
         } else {
             ProgressView()
                 .tint(.white)
@@ -147,11 +150,19 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private var contentAspect: CGFloat {
-        isVideo ? videoAspect : imageAspect
+        guard isVideo else { return imageAspect }
+        // A video still downloading takes its preview's shape, so it doesn't resize on arrival.
+        if loadFailed, let placeholder { return CGFloat(placeholder.aspect) }
+        return videoAspect
+    }
+
+    /// A visitor's blurred stand-in, and the shape to hold until the file arrives.
+    private var placeholder: ComposerMediaPreview? {
+        block.mediaFileName.flatMap { mediaPreviews[$0] }
     }
 
     private var imageAspect: CGFloat {
-        guard let preview, preview.size.height > 0 else { return 1 }
+        guard let preview, preview.size.height > 0 else { return placeholder.map { CGFloat($0.aspect) } ?? 1 }
         return preview.size.width / preview.size.height
     }
 

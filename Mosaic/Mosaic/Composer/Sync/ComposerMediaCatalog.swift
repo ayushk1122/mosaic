@@ -73,13 +73,21 @@ enum ComposerMediaCatalog {
         return found
     }
 
-    /// Copies asset ids onto each board that uses those file names.
-    static func stamped(_ documents: [ComposerSyncDocument], assets: [String: String]) -> [ComposerSyncDocument] {
+    /// Copies asset ids, and the previews visitors see while files download, onto each board that
+    /// uses those file names.
+    static func stamped(
+        _ documents: [ComposerSyncDocument],
+        assets: [String: String],
+        previews: [String: String] = [:]
+    ) -> [ComposerSyncDocument] {
         documents.map { document in
             var copy = document
             let names = fileNames(in: document.body)
             let used = assets.filter { names.contains($0.key) }
             copy.body.mediaAssets = used.isEmpty ? nil : used
+            // Only files that already have a cloud copy: a preview is a stand-in while one downloads.
+            let shown = previews.filter { !$0.value.isEmpty && used[$0.key] != nil }
+            copy.body.mediaPreviews = shown.isEmpty ? nil : shown
             return copy
         }
     }
