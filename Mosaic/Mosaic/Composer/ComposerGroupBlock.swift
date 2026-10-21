@@ -8,6 +8,52 @@ struct ComposerBlockFrameKey: PreferenceKey {
     }
 }
 
+/// The selected group's members' untilted sizes, so the board can ungroup a tilted group in place.
+struct ComposerGroupMemberSizesKey: PreferenceKey {
+    static var defaultValue: [ComposerBlockID: [ComposerBlockID: CGSize]] = [:]
+
+    static func reduce(
+        value: inout [ComposerBlockID: [ComposerBlockID: CGSize]],
+        nextValue: () -> [ComposerBlockID: [ComposerBlockID: CGSize]]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+/// A piece that can be tapped while choosing what to group.
+struct ComposerGroupingTarget {
+    var id: ComposerBlockID
+    /// The piece's untilted box on the board.
+    var frame: CGRect
+    var rotation: Double = 0
+    /// For drawings, the areas around the ink in the piece's own points (already scaled), so a
+    /// tap through empty parts of a drawing reaches the piece underneath.
+    var inkRects: [CGRect]?
+
+    init(block: ComposerBlock, frame: CGRect) {
+        self.id = block.id
+        self.frame = frame
+        self.rotation = block.rotation
+        guard block.kind == .drawing, block.drawingData != nil else { return }
+        let scale = CGFloat(max(block.style.scale, 0.05))
+        let rects = ComposerDrawingMetrics.touchRects(of: ComposerDrawingMetrics.drawing(from: block.drawingData))
+        inkRects = rects.map { $0.applying(CGAffineTransform(scaleX: scale, y: scale)) }
+    }
+
+    func contains(_ point: CGPoint) -> Bool {
+        guard let inkRects else { return frame.insetBy(dx: -4, dy: -4).contains(point) }
+        // Undo the tilt around the center, then test in the drawing's own coordinates.
+        let radians = -rotation * .pi / 180
+        let dx = point.x - frame.midX
+        let dy = point.y - frame.midY
+        let local = CGPoint(
+            x: dx * CGFloat(cos(radians)) - dy * CGFloat(sin(radians)) + frame.width / 2,
+            y: dx * CGFloat(sin(radians)) + dy * CGFloat(cos(radians)) + frame.height / 2
+        )
+        return inkRects.contains { $0.contains(local) }
+    }
+}
+
 enum ComposerGroupMath {
     /// The banner pins to the top and the tabs bar filters the whole page, so neither can sit inside a group.
     static func canGroup(_ kind: BlockKind) -> Bool {
@@ -49,20 +95,33 @@ enum ComposerGroupMath {
         return group
     }
 
+    /// `memberSizes` are each member's untilted size inside the group. A tilted group turns each
+    /// member's center around the group's center and adds its tilt to the member's own.
     static func ungroupedMembers(
         of group: ComposerBlock,
         canvasWidth: CGFloat,
-        layoutHeight: CGFloat
+        layoutHeight: CGFloat,
+        memberSizes: [ComposerBlockID: CGSize] = [:]
     ) -> [ComposerBlock] {
         let scale = max(group.style.scale, 0.01)
         let width = group.groupWidth * scale
         let height = group.groupHeight * scale
         let originX = canvasWidth * group.position.x
         let originY = layoutHeight * group.position.y
+        let groupCenter = CGPoint(x: originX + width / 2, y: originY + height / 2)
+        let radians = group.rotation * .pi / 180
         return group.groupMembers.map { member in
             var copy = member
-            let x = originX + copy.position.x * width
-            let y = originY + copy.position.y * height
+            var x = originX + copy.position.x * width
+            var y = originY + copy.position.y * height
+            if group.rotation != 0 {
+                let size = memberSizes[member.id].map { CGSize(width: $0.width * scale, height: $0.height * scale) } ?? .zero
+                let center = CGPoint(x: x + size.width / 2, y: y + size.height / 2)
+                let turned = rotated(center, around: groupCenter, radians: radians)
+                x = turned.x - size.width / 2
+                y = turned.y - size.height / 2
+                copy.rotation = ComposerRotation.normalized(member.rotation + group.rotation)
+            }
             copy.position = BlockPosition(
                 x: canvasWidth > 1 ? x / canvasWidth : 0,
                 y: layoutHeight > 1 ? y / layoutHeight : 0
@@ -71,6 +130,16 @@ enum ComposerGroupMath {
             bake(scale, into: &copy)
             return copy
         }
+    }
+
+    /// Clockwise on screen (y grows downward), matching `rotationEffect`.
+    static func rotated(_ point: CGPoint, around center: CGPoint, radians: Double) -> CGPoint {
+        let dx = Double(point.x - center.x)
+        let dy = Double(point.y - center.y)
+        return CGPoint(
+            x: center.x + CGFloat(dx * cos(radians) - dy * sin(radians)),
+            y: center.y + CGFloat(dx * sin(radians) + dy * cos(radians))
+        )
     }
 
     /// Uses the same limits as pinching or corner-resizing that piece on its own,
@@ -89,6 +158,8 @@ enum ComposerGroupMath {
             block.style.scale *= scale
         case .carousel:
             block.style.scale = min(max(block.style.scale * scale, CarouselLayout.minimumScale), 3.2)
+        case .drawing:
+            block.style.scale = min(max(block.style.scale * scale, ComposerDrawingMetrics.minimumScale), 3.2)
         default:
             block.style.scale = min(max(block.style.scale * scale, 0.45), 3.2)
         }
@@ -117,7 +188,6 @@ struct ComposerGroupCanvasBlock: View {
     var onStyleMenuChange: (Bool) -> Void = { _ in }
     var onClaimFormatTap: () -> Void = {}
     var onActivate: () -> Void = {}
-    var onUngroup: (() -> Void)?
 
     @Environment(ComposerStore.self) private var store
     @FocusState private var childFocus: ComposerBlockID?
@@ -125,6 +195,8 @@ struct ComposerGroupCanvasBlock: View {
     @State private var activeMemberID: ComposerBlockID?
     @State private var contentEditMemberID: ComposerBlockID?
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
+    /// Each member's untilted size inside the group, so ungrouping a tilted group can place them.
+    @State private var memberSizes: [ComposerBlockID: CGSize] = [:]
 
     private var baseWidth: CGFloat { max(CGFloat(block.groupWidth), 1) }
     private var baseHeight: CGFloat { max(CGFloat(block.groupHeight), 1) }
@@ -134,6 +206,12 @@ struct ComposerGroupCanvasBlock: View {
         ZStack(alignment: .topLeading) {
             ForEach(block.groupMembers) { member in
                 memberView(member.id)
+                    .onGeometryChange(for: CGSize.self) { proxy in
+                        proxy.size
+                    } action: { size in
+                        memberSizes[member.id] = size
+                    }
+                    .rotationEffect(.degrees(member.rotation))
                     .offset(
                         x: CGFloat(member.position.x) * baseWidth,
                         y: CGFloat(member.position.y) * baseHeight
@@ -144,21 +222,7 @@ struct ComposerGroupCanvasBlock: View {
         .scaleEffect(scale, anchor: .topLeading)
         .frame(width: baseWidth * scale, height: baseHeight * scale, alignment: .topLeading)
         .contentShape(Rectangle())
-        .overlay(alignment: .topTrailing) {
-            if let onUngroup, isSelected, !isLifted, !isViewing {
-                Button(action: onUngroup) {
-                    Text("Ungroup")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .offset(y: -36)
-                .accessibilityLabel("Ungroup")
-            }
-        }
+        .preference(key: ComposerGroupMemberSizesKey.self, value: isSelected ? [block.id: memberSizes] : [:])
         .onChange(of: isSelected) { _, selected in
             if !selected {
                 editingMemberID = nil
@@ -216,7 +280,6 @@ struct ComposerGroupCanvasBlock: View {
                 onEditCarousel: { onEditCarousel(id) },
                 onSelectTabs: { activate(id) },
                 onEditSocial: { onEditSocial(id) },
-                onUngroup: nil,
                 onPresentMedia: isViewing ? onPresentMedia : nil,
                 onBodyTap: mediaBodyTap(id),
                 onOpenSocial: socialOpen(member),
@@ -297,7 +360,9 @@ struct ComposerGroupCanvasBlock: View {
             guard let member = block.groupMembers.first(where: { $0.id == id }) else { return }
             if isViewing {
                 guard let name = member.mediaFileName, !name.isEmpty else { return }
-                onPresentMedia?(store.mediaURL(for: name), ComposerMediaCrop(block: member))
+                var crop = ComposerMediaCrop(block: member)
+                crop.markup = ComposerMediaMarkup.data(for: member, in: block, memberSizes: memberSizes)
+                onPresentMedia?(store.mediaURL(for: name), crop)
             } else if playingMediaIDs.contains(id) {
                 playingMediaIDs.remove(id)
             } else {

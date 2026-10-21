@@ -37,10 +37,61 @@ struct ComposerChromePlacement: Equatable {
         // Crop and Replace stack above the menu icon, which needs about 96 points of room.
         return ComposerChromePlacement(x: x, cropBelow: itemFrame.minY < 96)
     }
+
+    /// Where a floating control goes around a piece, in the same coordinates as `item` and `visible`.
+    /// It centers over the piece and slides inward at the sides; it sits above the piece, flips below
+    /// when there's no room, and pins to the top of the visible area when neither fits. `anchorY`
+    /// (the finger) replaces the piece's top and bottom for pieces taller than the screen.
+    struct FloatingPlacement: Equatable {
+        var origin: CGPoint
+        var isBelow: Bool
+    }
+
+    static let floatingMargin: CGFloat = 8
+
+    static func floating(
+        size: CGSize,
+        around item: CGRect,
+        visible: CGRect,
+        gap: CGFloat = 10,
+        anchorY: CGFloat? = nil
+    ) -> FloatingPlacement {
+        let margin = floatingMargin
+        let minX = visible.minX + margin
+        let maxX = max(visible.maxX - margin - size.width, minX)
+        let x = min(max(item.midX - size.width / 2, minX), maxX)
+
+        let top = anchorY ?? item.minY
+        let bottom = anchorY ?? item.maxY
+        let minY = visible.minY + margin
+        let maxY = max(visible.maxY - margin - size.height, minY)
+        let above = top - gap - size.height
+        if above >= minY, above <= maxY {
+            return FloatingPlacement(origin: CGPoint(x: x, y: above), isBelow: false)
+        }
+        let below = bottom + gap
+        if below >= minY, below <= maxY {
+            return FloatingPlacement(origin: CGPoint(x: x, y: below), isBelow: true)
+        }
+        // Taller than the screen, or squeezed: keep it inside the visible area, at the piece's top when possible.
+        return FloatingPlacement(origin: CGPoint(x: x, y: min(max(top, minY), maxY)), isBelow: false)
+    }
 }
 
 private struct ComposerViewportWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
+}
+
+private struct ComposerBlockLockedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// True inside a locked piece: its own resize handles and pinches stay off.
+    var composerBlockLocked: Bool {
+        get { self[ComposerBlockLockedKey.self] }
+        set { self[ComposerBlockLockedKey.self] = newValue }
+    }
 }
 
 extension EnvironmentValues {
@@ -64,8 +115,6 @@ struct ComposerBlockActions {
     var onEditCarousel: () -> Void
     var onSelectTabs: () -> Void
     var onEditSocial: () -> Void
-    /// Nil for a group nested inside another group, which can't be ungrouped in place.
-    var onUngroup: (() -> Void)?
     var onPresentMedia: ((URL, ComposerMediaCrop?) -> Void)?
     var onBodyTap: (() -> Void)?
     var onOpenSocial: (() -> Void)?
@@ -109,6 +158,10 @@ struct ComposerCanvasBlockView: View {
     var cornerResizing: Binding<Bool> = .constant(false)
     var mediaMenuBlockID: ComposerBlockID? = nil
     var pinsTabsToPageEdges: Bool = true
+    var isDrawing: Bool = false
+    var drawingByteLimit: Int = ComposerDrawingMetrics.maximumBytes
+    var onDrawingFullChange: (Bool) -> Void = { _ in }
+    var inkSession: ComposerInkSession?
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
@@ -119,12 +172,12 @@ struct ComposerCanvasBlockView: View {
     var body: some View {
         canvasContent
         .frame(
-            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook ? nil : 280,
+            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook,
+            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing || block.kind == .unsupported,
             editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
             isViewing: isViewing,
             onTap: actions.onBeginEditing,
@@ -241,8 +294,7 @@ struct ComposerCanvasBlockView: View {
                     onOpenScrapbook: actions.onOpenScrapbook,
                     onStyleMenuChange: actions.onStyleMenuChange,
                     onClaimFormatTap: actions.onClaimFormatTap,
-                    onActivate: actions.onSelectTabs,
-                    onUngroup: actions.onUngroup
+                    onActivate: actions.onSelectTabs
                 )
             case .social:
                 ComposerSocialCanvasBlock(
@@ -297,6 +349,19 @@ struct ComposerCanvasBlockView: View {
                 }
             case .node, .pursuit:
                 pursuitView
+            case .drawing:
+                ComposerDrawingCanvasBlock(
+                    block: $block,
+                    livePinchScale: livePinchScale,
+                    isSelected: isSelected,
+                    isDrawing: isDrawing,
+                    isViewing: isViewing,
+                    byteLimit: drawingByteLimit,
+                    onFullChange: onDrawingFullChange,
+                    inkSession: inkSession
+                )
+            case .unsupported:
+                EmptyView()
         }
     }
 

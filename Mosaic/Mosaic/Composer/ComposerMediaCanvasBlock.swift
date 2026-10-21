@@ -266,6 +266,8 @@ struct ComposerMediaCrop: Equatable {
     var zoom: Double
     var panX: Double
     var panY: Double
+    /// Drawings grouped in front of this media, placed on its frame (see `ComposerMediaMarkup`).
+    var markup: Data?
 
     init(block: ComposerBlock) {
         shape = block.mediaShape
@@ -660,6 +662,12 @@ struct ComposerMediaLightbox: View {
                         max(proxy.size.height - 56, 1) * crop.aspect(contentAspect: contentAspect)
                     )
                     crop.framed(croppedContent, width: width, contentAspect: contentAspect)
+                        .overlay {
+                            if let markup = crop.markup {
+                                ComposerMediaMarkupOverlay(data: markup)
+                                    .clipShape(mediaClipShape(crop.shape))
+                            }
+                        }
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 }
                 .allowsHitTesting(false)

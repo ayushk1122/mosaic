@@ -239,7 +239,7 @@ struct ComposerStoreTests {
         let social = BlockMenuOption.menuOptions(matching: "social")
         #expect(social == [.social])
         let instagram = BlockMenuOption.menuOptions(matching: "instagram")
-        #expect(instagram == [.social, .content])
+        #expect(instagram == [.content, .social])
         #expect(mosaicMenu.contains(.social))
         #expect(pursuitPage.contains(.social))
 
@@ -256,8 +256,19 @@ struct ComposerStoreTests {
             includingBackground: false
         )
         #expect(Set(journalMenu) == [
-            .text, .media, .group, .social, .content, .list, .heading, .calendar
+            .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing
         ])
+
+        let sketch = BlockMenuOption.menuOptions(matching: "sketch")
+        #expect(sketch == [.drawing])
+
+        // Every composer lists its pieces A to Z.
+        for menu in [all, pursuitPage, mosaicMenu, journalMenu] {
+            let titles = menu.map(\.title)
+            #expect(titles == titles.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
+        }
+        #expect(all.first == .background)
+        #expect(journalMenu.map(\.title) == ["Calendar", "Content", "Draw", "Group", "Heading", "List", "Media", "Socials", "Text"])
     }
 
     @Test

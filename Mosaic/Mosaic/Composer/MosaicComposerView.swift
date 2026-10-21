@@ -34,6 +34,20 @@ struct MosaicComposerView: View {
     @State private var viewingOverrides: [ComposerBlockID: ComposerBlock] = [:]
     /// A trim made inside the crop editor, applied only when the editor's Done is tapped.
     @State private var pendingTrimmedFile: String?
+    /// Two-finger twist on the selected piece, in degrees added to its saved angle.
+    @GestureState private var twistVisual = TwistVisual.inactive
+    /// Dragging the rotate handle: the absolute angle being shown.
+    @State private var handleRotation: (blockID: ComposerBlockID, degrees: Double)?
+    @State private var lastRotationSnap: Double?
+    /// Measured sizes of floating controls, so they can be kept on screen.
+    @State private var floatingSizes: [String: CGSize] = [:]
+    /// Where a long press landed on a piece taller than the screen; its menu opens there.
+    @State private var clipboardAnchorY: CGFloat?
+    @State private var groupMemberSizes: [ComposerBlockID: [ComposerBlockID: CGSize]] = [:]
+    /// The drawing taking ink right now. The board holds still while it's set.
+    @State private var drawingBlockID: ComposerBlockID?
+    @State private var drawingIsFull = false
+    @State private var inkSession = ComposerInkSession()
     @GestureState private var textPinchVisual = TextPinchVisual.inactive
     @State private var trashDropZoneFrame: CGRect = .zero
     @State private var showMediaPicker = false
@@ -88,7 +102,9 @@ struct MosaicComposerView: View {
 
     private var scrollingBlocks: [ComposerBlock] {
         let display = privacyDisplay
-        return visibleBlocks.filter { $0.kind != .banner && display.look(of: $0) != .removed }
+        return visibleBlocks.filter {
+            $0.kind != .banner && $0.kind != .unsupported && display.look(of: $0) != .removed
+        }
     }
 
     /// Only the owner's own boards show privacy, once the levels have loaded.
@@ -309,6 +325,7 @@ struct MosaicComposerView: View {
             .onPreferenceChange(ComposerResizeCornerFrameKey.self) { resizeCornerFrames = $0 }
             .onPreferenceChange(ComposerMediaChromeFrameKey.self) { mediaChromeFrames = $0 }
             .onPreferenceChange(ComposerSocialCornerFrameKey.self) { socialCornerFrames = $0 }
+            .onPreferenceChange(ComposerGroupMemberSizesKey.self) { groupMemberSizes = $0 }
             .onPreferenceChange(ComposerBlockFrameKey.self) { frames in
                 let next = frames.mapValues { $0.integral }
                 guard next != blockFrames else { return }
@@ -348,6 +365,16 @@ struct MosaicComposerView: View {
             }
             .onChange(of: neededCanvasHeight) { _, needed in
                 grownCanvasHeight = max(grownCanvasHeight, needed)
+            }
+            .onChange(of: selectedBlockID) { _, selected in
+                // Selecting anything else, tapping the board, Undo removing the drawing, or
+                // switching to view mode all finish drawing.
+                if let drawingBlockID, selected != drawingBlockID {
+                    endDrawing()
+                }
+            }
+            .onDisappear {
+                endDrawing()
             }
             .onChange(of: chrome.isViewing) { _, viewing in
                 guard viewing else {
@@ -567,13 +594,14 @@ struct MosaicComposerView: View {
         }
     }
 
-    /// Edit mode only; visitors and view mode scroll the usual way.
+    /// Edit mode only, on boards and journal pages; visitors and view mode scroll the usual way.
     private var showsScrollBubble: Bool {
-        !chrome.isViewing && !chrome.isVisiting && !isBookPage && !isGrouping && !textDragVisual.isMoving
+        !chrome.isViewing && !chrome.isVisiting && !isGrouping && !textDragVisual.isMoving
     }
 
     private var showsSelectionTrash: Bool {
-        selectedBlockID != nil && !textDragVisual.isMoving && !chrome.isViewing && !isGrouping
+        guard let selectedBlockID, !textDragVisual.isMoving, !chrome.isViewing, !isGrouping else { return false }
+        return blocks.first(where: { $0.id == selectedBlockID })?.isLocked != true
     }
 
     private var eyeTrailingPadding: CGFloat {
@@ -646,7 +674,11 @@ struct MosaicComposerView: View {
                             }
                     }
                 )
-                .background(ComposerCanvasZoomLock(onOffset: { canvasScrollPosition.scrollTo(y: $0) }))
+                .background(ComposerCanvasZoomLock(
+                    // While drawing, one finger draws and two fingers move the board.
+                    scrollsWithTwoFingers: drawingBlockID != nil,
+                    onOffset: { canvasScrollPosition.scrollTo(y: $0) }
+                ))
                 .coordinateSpace(name: composerSpace + ".canvas")
                 .modifier(
                     PlacementGestureModifier(
@@ -687,11 +719,16 @@ struct MosaicComposerView: View {
                 placedBlock(block)
             }
 
+            ForEach(chromeBlocks) { block in
+                blockChrome(for: block)
+                    .zIndex(3)
+            }
+
             if isGrouping {
                 ComposerGroupingCatcher(
                     targets: scrollingBlocks.compactMap { block in
                         guard ComposerGroupMath.canGroup(block.kind), let frame = blockFrames[block.id], frame.width > 1 else { return nil }
-                        return (block.id, frame)
+                        return ComposerGroupingTarget(block: block, frame: frame)
                     }
                 ) { blockID in
                     toggleGroupSelection(blockID)
@@ -721,14 +758,17 @@ struct MosaicComposerView: View {
     @ViewBuilder
     private func placedBlock(_ block: ComposerBlock) -> some View {
         let preview = resizePreview?.blockID == block.id ? resizePreview : nil
+        let angle = Angle.degrees(liveRotation(for: block))
         ZStack(alignment: .topLeading) {
             blockView(for: block)
                 .id(block.id)
                 .scaleEffect(
                     x: preview?.scaleX ?? 1,
                     y: preview?.scaleY ?? 1,
-                    anchor: preview?.corner.anchor ?? .topLeading
+                    anchor: resizeAnchor(for: block, preview: preview)
                 )
+                // Measured after rotating, so frames stay the piece's own untilted box.
+                .rotationEffect(angle)
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -746,7 +786,7 @@ struct MosaicComposerView: View {
                             || (block.kind == .tabs && selectedBlockID != block.id),
                         pinchEnabled: block.kind != .table && block.kind != .social,
                         gesture: textPressGesture(for: block),
-                        pinch: textPinchGesture(for: block)
+                        pinch: textPinchGesture(for: block).simultaneously(with: textRotateGesture(for: block))
                     )
                 )
                 .modifier(
@@ -755,46 +795,167 @@ struct MosaicComposerView: View {
                         onTap: { handleViewingTap(on: block) }
                     )
                 )
-            if showsResizeChrome(for: block), let frame = blockFrames[block.id], frame.width > 1, frame.height > 1 {
-                // Tables and tabs keep controls near their edges, so the grab sits
-                // slightly outside the box instead of over those controls.
-                let clearsEdgeControls = block.kind == .table || block.kind == .tabs
-                ComposerResizeChrome(
-                    blockID: block.id,
-                    layout: frame.size,
-                    scaleX: preview?.scaleX ?? 1,
-                    scaleY: preview?.scaleY ?? 1,
-                    anchor: preview?.corner.anchor ?? .topLeading,
-                    grabPull: clearsEdgeControls ? -10 : 18,
-                    catcherSide: clearsEdgeControls ? 36 : 52,
-                    onChanged: { corner, translation in
-                        updateResizePreview(for: block, corner: corner, translation: translation)
-                    },
-                    onEnded: { _, _ in
-                        commitResizePreview()
-                    }
-                )
-            }
-            if clipboardMenuBlockID == block.id {
-                clipboardActionMenu(for: block.id)
-                    .fixedSize()
-                    .offset(y: -46)
-            }
         }
         .overlay(alignment: .topTrailing) {
             visitBadge(for: block)
         }
-        .modifier(SelectedCornerPencil(
-            isShown: showsResizeChrome(for: block) && isFolder(block.kind) && !chrome.isViewing,
-            pencil: pursuitBoardPencil(block)
-        ))
-        .zIndex(clipboardMenuBlockID == block.id || styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
+        .environment(\.composerBlockLocked, block.isLocked)
+        .zIndex(styleMenuBlockID == block.id ? 2 : (block.kind == .tabs ? 1 : 0))
         .offset(liveOffset(for: block))
         .modifier(DragFollowOffset(
             relay: dragScrollRelay,
             enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
         ))
         .opacity(blockOpacity(for: block))
+    }
+
+    /// Pieces whose controls are showing: the selected one, plus any piece mid-turn or with its menu open.
+    private var chromeBlocks: [ComposerBlock] {
+        guard !chrome.isViewing, !isGrouping else { return [] }
+        return scrollingBlocks.filter { block in
+            block.id == selectedBlockID
+                || block.id == clipboardMenuBlockID
+                || block.id == handleRotation?.blockID
+                || block.id == twistVisual.blockID
+        }
+    }
+
+    /// A piece's controls, drawn in a layer above every piece so overlapping pieces never cover
+    /// them. The piece itself stays at its own layer.
+    @ViewBuilder
+    private func blockChrome(for block: ComposerBlock) -> some View {
+        if let frame = blockFrames[block.id], frame.width > 1, frame.height > 1 {
+            let preview = resizePreview?.blockID == block.id ? resizePreview : nil
+            let angle = Angle.degrees(liveRotation(for: block))
+            ZStack(alignment: .topLeading) {
+                if showsResizeChrome(for: block) {
+                    resizeChrome(for: block, frame: frame, preview: preview, angle: angle)
+                }
+                if let degrees = rotationReadout(for: block) {
+                    Text("\(Int(degrees.rounded()))°")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+                        .fixedSize()
+                        .measuredFloating("rotationReadout", into: $floatingSizes)
+                        .offset(floatingOffset("rotationReadout", for: block, fallback: CGSize(width: 48, height: 24), gap: 52))
+                        .allowsHitTesting(false)
+                }
+                if clipboardMenuBlockID == block.id {
+                    clipboardActionMenu(for: block.id)
+                        .fixedSize()
+                        .measuredFloating("clipboardMenu", into: $floatingSizes)
+                        .offset(floatingOffset(
+                            "clipboardMenu",
+                            for: block,
+                            fallback: CGSize(width: 210, height: 34),
+                            anchorY: clipboardAnchorY
+                        ))
+                }
+                if drawingBlockID == block.id {
+                    drawingDoneButton
+                        .fixedSize()
+                        .measuredFloating("drawingDone", into: $floatingSizes)
+                        .offset(floatingOffset(
+                            "drawingDone",
+                            for: block,
+                            fallback: CGSize(width: 64, height: 30),
+                            gap: 8,
+                            trailing: true
+                        ))
+                }
+                if showsUngroup(for: block) {
+                    ungroupButton(for: block)
+                        .fixedSize()
+                        .measuredFloating("ungroup", into: $floatingSizes)
+                        .offset(floatingOffset(
+                            "ungroup",
+                            for: block,
+                            fallback: CGSize(width: 76, height: 28),
+                            gap: 8,
+                            trailing: true
+                        ))
+                }
+            }
+            .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .overlay(alignment: .topLeading) {
+                if block.isLocked, selectedBlockID == block.id, !chrome.isViewing {
+                    lockBadge
+                }
+            }
+            .modifier(SelectedCornerPencil(
+                // Locking fixes the piece in place; its board can still be edited.
+                isShown: (showsResizeChrome(for: block) || (block.isLocked && selectedBlockID == block.id))
+                    && isFolder(block.kind) && !chrome.isViewing,
+                pencil: pursuitBoardPencil(block)
+            ))
+            .offset(liveOffset(for: block))
+            .modifier(DragFollowOffset(
+                relay: dragScrollRelay,
+                enabled: textDragVisual.blockID == block.id && textDragVisual.isMoving
+            ))
+            .opacity(blockOpacity(for: block))
+        }
+    }
+
+    private func showsUngroup(for block: ComposerBlock) -> Bool {
+        block.kind == .group
+            && selectedBlockID == block.id
+            && !chrome.isViewing
+            && !isGrouping
+            && !(textDragVisual.blockID == block.id && textDragVisual.lifted)
+    }
+
+    private func ungroupButton(for block: ComposerBlock) -> some View {
+        Button {
+            ungroup(block.id, memberSizes: groupMemberSizes[block.id] ?? [:])
+        } label: {
+            Text("Ungroup")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ungroup")
+    }
+
+    @ViewBuilder
+    private func resizeChrome(
+        for block: ComposerBlock,
+        frame: CGRect,
+        preview: ComposerResizePreview?,
+        angle: Angle
+    ) -> some View {
+        // Tables and tabs keep controls near their edges, so the grab sits
+        // slightly outside the box instead of over those controls.
+        let clearsEdgeControls = block.kind == .table || block.kind == .tabs
+        ZStack(alignment: .topLeading) {
+            ComposerResizeChrome(
+                blockID: block.id,
+                layout: frame.size,
+                scaleX: preview?.scaleX ?? 1,
+                scaleY: preview?.scaleY ?? 1,
+                anchor: resizeAnchor(for: block, preview: preview),
+                grabPull: clearsEdgeControls ? -10 : 18,
+                catcherSide: clearsEdgeControls ? 36 : 52,
+                onChanged: { corner, translation in
+                    updateResizePreview(for: block, corner: corner, translation: translation)
+                },
+                onEnded: { _, _ in
+                    commitResizePreview()
+                }
+            )
+            if block.canRotate, preview == nil {
+                rotateHandle(for: block, frame: frame)
+            }
+        }
+        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+        // The outline, corners, and handle turn with the piece.
+        .rotationEffect(angle)
     }
 
     @ViewBuilder
@@ -820,7 +981,13 @@ struct MosaicComposerView: View {
                 isViewing: chrome.isViewing,
                 canvasSize: CGSize(width: canvasSize.width, height: layoutHeight),
                 cornerResizing: $socialCornerResizing,
-                mediaMenuBlockID: styleMenuBlockID
+                mediaMenuBlockID: styleMenuBlockID,
+                isDrawing: drawingBlockID == block.id,
+                drawingByteLimit: drawingBlockID == block.id
+                    ? ComposerDrawingMetrics.byteLimit(for: block.id, on: blocks)
+                    : ComposerDrawingMetrics.maximumBytes,
+                onDrawingFullChange: { drawingIsFull = $0 },
+                inkSession: drawingBlockID == block.id ? inkSession : nil
             )
         }
     }
@@ -887,9 +1054,6 @@ struct MosaicComposerView: View {
             onEditSocial: {
                 beginSocialEdit(block.id)
             },
-            onUngroup: {
-                ungroup(block.id)
-            },
             onPresentMedia: chrome.isViewing ? { url, crop in
                 presentMedia(at: url, crop: crop)
             } : nil,
@@ -945,6 +1109,8 @@ struct MosaicComposerView: View {
                     placeMedia(at: point)
                 } else if placingOption.blockKind == .carousel {
                     placeCarousel(at: point)
+                } else if placingOption.blockKind == .drawing {
+                    placeDrawing(at: point)
                 } else {
                     place(option: placingOption, at: point)
                 }
@@ -953,6 +1119,7 @@ struct MosaicComposerView: View {
     }
 
     private func beginPlacement(for option: BlockMenuOption) {
+        endDrawing()
         if option == .background {
             menuExpanded = false
             showsBackgroundEditor = true
@@ -967,7 +1134,7 @@ struct MosaicComposerView: View {
         if isBookPage {
             // Journal keeps a smaller set so page editing stays light.
             let journalOptions: Set<BlockMenuOption> = [
-                .text, .media, .group, .social, .content, .list, .heading, .calendar
+                .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing
             ]
             guard journalOptions.contains(option) else { return }
         }
@@ -1031,6 +1198,114 @@ struct MosaicComposerView: View {
         let newID = store.addBlock(.carousel, at: position, to: documentID)
         selectedBlockID = newID
         openCarouselEditor(newID)
+    }
+
+    /// Spans the page with a small margin, centered on the drop, and opens straight into drawing.
+    private func placeDrawing(at point: CGPoint) {
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        let margin = ComposerDrawingMetrics.pageMargin
+        let width = max(canvasSize.width - margin * 2, 120)
+        let height = ComposerDrawingMetrics.defaultSize.height
+        var origin = CGPoint(x: margin, y: max(point.y - height / 2, margin))
+        if isBookPage, pageViewportHeight > 1 {
+            origin = ComposerTabEdge.clampedOrigin(
+                origin,
+                size: CGSize(width: width, height: height),
+                viewportWidth: max(canvasSize.width, 1),
+                viewportHeight: pageViewportHeight
+            )
+        }
+        let newID = store.addBlock(.drawing, at: normalizedPosition(from: origin), to: documentID) { block in
+            block.drawingWidth = Double(width)
+            block.drawingHeight = Double(height)
+        }
+        beginDrawing(newID)
+    }
+
+    private func beginDrawing(_ blockID: ComposerBlockID) {
+        guard !chrome.isViewing, drawingBlockID != blockID else { return }
+        // Strokes this device can't read would be replaced by the first new stroke.
+        guard ComposerDrawingMetrics.isReadable(store.block(with: blockID, in: documentID)?.drawingData) else { return }
+        endDrawing()
+        editingBlockID = nil
+        focusedTextBlockID = nil
+        styleMenuBlockID = nil
+        clipboardMenuBlockID = nil
+        selectedBlockID = blockID
+        drawingIsFull = false
+        openDrawingRoom(blockID)
+        drawingBlockID = blockID
+    }
+
+    /// While drawing, the box spans the page so new ink isn't cut off at the old edges.
+    private func openDrawingRoom(_ blockID: ComposerBlockID) {
+        reframeDrawing(blockID) { block, origin in
+            ComposerDrawingMetrics.drawingRoomFrame(of: block, origin: origin, pageWidth: canvasSize.width)
+        }
+    }
+
+    /// Once drawing ends, the box shrinks to the ink, so it doesn't cover pieces beside it or
+    /// make a group larger than what's drawn.
+    private func fitDrawingToInk(_ blockID: ComposerBlockID) {
+        reframeDrawing(blockID) { block, _ in
+            ComposerDrawingMetrics.inkFrame(of: block)
+        }
+    }
+
+    private func reframeDrawing(_ blockID: ComposerBlockID, to frame: (ComposerBlock, CGPoint) -> CGRect?) {
+        // Not gated on view mode: switching to it is one of the ways drawing ends.
+        guard canvasSize.width > 1,
+              let block = blocks.first(where: { $0.id == blockID }), block.kind == .drawing else { return }
+        let origin = canvasPoint(for: block.position)
+        guard let target = frame(block, origin) else { return }
+        var (updated, newOrigin) = ComposerDrawingMetrics.reframed(block, to: target, origin: origin)
+        updated.position = normalizedPosition(from: newOrigin)
+        store.reshapeDrawing(updated, in: documentID)
+    }
+
+    /// Drawings Undo brought back with a drawing-sized box are fitted to their ink again.
+    private func fitIdleDrawingsToInk() {
+        for block in blocks where block.kind == .drawing && block.id != drawingBlockID && block.drawingData != nil {
+            fitDrawingToInk(block.id)
+        }
+    }
+
+    /// A drawing left without ink is removed without an undo step of its own, so Undo brings back
+    /// the ink it had rather than an empty box.
+    private func endDrawing() {
+        guard let blockID = drawingBlockID else { return }
+        inkSession.commitPendingInk()
+        drawingBlockID = nil
+        drawingIsFull = false
+        store.flushPendingSave()
+        guard let block = store.block(with: blockID, in: documentID) else { return }
+        if block.drawingData == nil {
+            store.discardEmptyDrawing(blockID, in: documentID)
+            clearInteraction(with: blockID)
+        } else {
+            fitDrawingToInk(blockID)
+        }
+    }
+
+    private var drawingDoneButton: some View {
+        Button {
+            endDrawing()
+        } label: {
+            HStack(spacing: 6) {
+                if drawingIsFull {
+                    Text("Drawing is full")
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                Text("Done")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.drawing.done")
     }
 
     /// A carousel placed and closed before anything was added is removed.
@@ -1198,25 +1473,93 @@ struct MosaicComposerView: View {
 
     private func presentClipboardMenu(for blockID: ComposerBlockID) {
         guard !chrome.isViewing, !isGrouping else { return }
+        clipboardAnchorY = nil
+        // On a piece taller than half the screen, the menu opens at the finger instead of the piece's edge.
+        if let press = textDragSession.pressLocation,
+           let frame = blockFrames[blockID],
+           let visible = visibleCanvasRect,
+           frame.height > visible.height * 0.5 {
+            clipboardAnchorY = press.y - dragScrollRelay.viewportMinY + scrollBubbleRail.metrics.offset
+        }
         clipboardMenuBlockID = blockID
         pasteAnchor = nil
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
     }
 
+    /// Copy and cut, then layer order, then lock. The banner is pinned, so it only offers copy and cut.
     private func clipboardActionMenu(for blockID: ComposerBlockID) -> some View {
-        HStack(spacing: 0) {
-            clipboardMenuButton("Copy") {
+        let block = store.blocks(for: documentID).first { $0.id == blockID }
+        let arranges = block.map { $0.kind != .banner } ?? false
+        let locked = block?.isLocked ?? false
+        return HStack(spacing: 0) {
+            clipboardMenuIcon("doc.on.doc", label: "Copy") {
                 store.copyBlock(blockID, in: documentID)
                 clipboardMenuBlockID = nil
             }
-            clipboardMenuButton("Cut") {
+            clipboardMenuIcon("scissors", label: "Cut", enabled: !locked) {
                 store.cutBlock(blockID, in: documentID)
                 clearInteraction(with: blockID)
             }
+            if arranges {
+                clipboardMenuDivider
+                clipboardMenuIcon("square.3.layers.3d.top.filled", label: "Bring to front") {
+                    store.bringToFront(blockID, in: documentID)
+                    clipboardMenuBlockID = nil
+                }
+                clipboardMenuIcon("square.3.layers.3d.bottom.filled", label: "Send to back") {
+                    store.sendToBack(blockID, in: documentID)
+                    clipboardMenuBlockID = nil
+                }
+                clipboardMenuDivider
+                clipboardMenuIcon(locked ? "lock.open" : "lock", label: locked ? "Unlock" : "Lock") {
+                    store.setLocked(!locked, for: blockID, in: documentID)
+                    clipboardMenuBlockID = nil
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            }
         }
+        .padding(.horizontal, 4)
         .fixedSize()
         .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func clipboardMenuIcon(
+        _ systemImage: String,
+        label: String,
+        enabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(enabled ? 1 : 0.3))
+                .frame(width: 38, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+    }
+
+    /// Shown on a selected locked piece in place of the resize handles.
+    private var lockBadge: some View {
+        Image(systemName: "lock.fill")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(Color(red: 0.20, green: 0.21, blue: 0.23), in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .offset(x: -8, y: -8)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Locked")
+    }
+
+    private var clipboardMenuDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.16))
+            .frame(width: 1, height: 18)
+            .padding(.horizontal, 2)
     }
 
     private func clipboardMenuButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -1262,6 +1605,7 @@ struct MosaicComposerView: View {
                         clipboardMenuBlockID = nil
                     }
                 } else {
+                    textDragSession.pressLocation = value.startLocation
                     armClipboardPress(for: block.id)
                 }
                 guard let corner = textDragSession.resizeCorner else { return }
@@ -1349,7 +1693,8 @@ struct MosaicComposerView: View {
         let distance = hypot(value.translation.width, value.translation.height)
         var next = TextDragVisual(blockID: block.id, lifted: false, isMoving: false, translation: .zero, hoveringTrash: false)
 
-        if elapsed >= 0.28 {
+        // A locked piece never lifts or moves; the hold still opens its menu, which can unlock it.
+        if elapsed >= 0.28, !block.isLocked {
             next.lifted = true
             if !session.didHaptic {
                 session.didHaptic = true
@@ -1357,7 +1702,7 @@ struct MosaicComposerView: View {
             }
         }
 
-        if elapsed >= 0.32, distance > 6 {
+        if elapsed >= 0.32, distance > 6, !block.isLocked {
             if session.baseline == nil {
                 session.baseline = value.translation
                 session.dragFrame = blockFrames[block.id]
@@ -1523,6 +1868,9 @@ struct MosaicComposerView: View {
             openScrapbook(block)
         } else if isTap, block.kind == .tabs || block.kind == .table || block.kind == .group {
             selectedBlockID = block.id
+        } else if isTap, block.kind == .drawing {
+            // Like text: a tap opens it for drawing. Done leaves it selected to resize or turn.
+            beginDrawing(block.id)
         } else if isTap, block.kind == .social, tappedPencil {
             beginSocialEdit(block.id)
         } else if isTap, block.kind == .social {
@@ -1539,7 +1887,7 @@ struct MosaicComposerView: View {
     private func textPinchGesture(for block: ComposerBlock) -> some Gesture {
         MagnificationGesture()
             .updating($textPinchVisual) { value, visual, _ in
-                guard selectedBlockID == block.id else { return }
+                guard selectedBlockID == block.id, !block.isLocked else { return }
                 textDragSession.isPinching = true
                 textDragSession.baseline = nil
                 visual = TextPinchVisual(blockID: block.id, scale: value)
@@ -1547,14 +1895,15 @@ struct MosaicComposerView: View {
             .onEnded { value in
                 textDragSession.isPinching = false
                 textDragSession.baseline = nil
-                guard selectedBlockID == block.id, var current = store.block(with: block.id, in: documentID) else { return }
+                guard selectedBlockID == block.id, var current = store.block(with: block.id, in: documentID),
+                      !current.isLocked else { return }
                 if current.kind == .graph {
                     let width = current.graphWidthScale * current.style.scale * Double(value)
                     let height = current.graphHeightScale * current.style.scale * Double(value)
                     current.graphWidthScale = ComposerGraphStretch.clamped(width)
                     current.graphHeightScale = ComposerGraphStretch.clamped(height)
                     current.style.scale = 1
-                } else if current.isContent || current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook {
+                } else if current.isContent || current.kind == .media || current.kind == .pursuit || current.kind == .node || current.kind == .carousel || current.kind == .calendar || current.kind == .tabs || current.kind == .group || current.kind == .scrapbook || current.kind == .drawing {
                     let next = current.style.scale * Double(value)
                     current.style.scale = min(max(next, minimumScale(for: current)), 3.2)
                 } else {
@@ -1564,6 +1913,175 @@ struct MosaicComposerView: View {
                 }
                 store.updateBlock(current, in: documentID)
             }
+    }
+
+    /// The board's on-screen area in board coordinates, less the bottom row of buttons while editing.
+    /// Read only while a control is showing, so scrolling alone doesn't redraw the board.
+    private var visibleCanvasRect: CGRect? {
+        guard var rect = scrollBubbleRail.metrics.visibleContentRect(width: canvasSize.width) else { return nil }
+        if !chrome.isViewing {
+            rect.size.height = max(rect.height - (ComposerAddMenuMetrics.button + 28), 1)
+        }
+        return rect
+    }
+
+    /// Offset from a piece's top-left that keeps a floating control on screen around it.
+    private func floatingOffset(
+        _ key: String,
+        for block: ComposerBlock,
+        fallback: CGSize,
+        gap: CGFloat = 10,
+        anchorY: CGFloat? = nil,
+        trailing: Bool = false
+    ) -> CGSize {
+        let size = floatingSizes[key] ?? fallback
+        guard let frame = blockFrames[block.id], frame.width > 1, let visible = visibleCanvasRect else {
+            let x = trailing ? (blockFrames[block.id]?.width ?? size.width) - size.width : 0
+            return CGSize(width: x, height: -(size.height + gap))
+        }
+        // Trailing controls center over a strip at the piece's right edge, so they line up with it.
+        let around = trailing
+            ? CGRect(x: frame.maxX - size.width, y: frame.minY, width: size.width, height: frame.height)
+            : frame
+        let placement = ComposerChromePlacement.floating(
+            size: size,
+            around: around,
+            visible: visible,
+            gap: gap,
+            anchorY: anchorY
+        )
+        return CGSize(width: placement.origin.x - frame.minX, height: placement.origin.y - frame.minY)
+    }
+
+    /// The angle to draw right now: the saved one, or the one a twist or handle drag is showing.
+    private func liveRotation(for block: ComposerBlock) -> Double {
+        // A tilted drawing straightens while taking ink, so strokes land where the pencil is.
+        if drawingBlockID == block.id { return 0 }
+        if let handleRotation, handleRotation.blockID == block.id { return handleRotation.degrees }
+        if twistVisual.blockID == block.id {
+            return ComposerRotation.snapped(block.rotation + twistVisual.degrees).angle
+        }
+        return block.rotation
+    }
+
+    /// Shown above the piece only while it is being turned.
+    private func rotationReadout(for block: ComposerBlock) -> Double? {
+        let turning = handleRotation?.blockID == block.id || twistVisual.blockID == block.id
+        return turning ? liveRotation(for: block) : nil
+    }
+
+    /// A tilted piece resizes around its center, so it grows evenly instead of drifting off its corner.
+    private func resizeAnchor(for block: ComposerBlock, preview: ComposerResizePreview?) -> UnitPoint {
+        block.rotation != 0 ? .center : (preview?.corner.anchor ?? .topLeading)
+    }
+
+    private func textRotateGesture(for block: ComposerBlock) -> some Gesture {
+        RotateGesture(minimumAngleDelta: .degrees(3))
+            .updating($twistVisual) { value, visual, _ in
+                guard selectedBlockID == block.id, block.canRotate, !block.isLocked else { return }
+                visual = TwistVisual(blockID: block.id, degrees: value.rotation.degrees)
+            }
+            .onChanged { value in
+                guard selectedBlockID == block.id, block.canRotate, !block.isLocked else { return }
+                noteRotationSnap(block.rotation + value.rotation.degrees)
+            }
+            .onEnded { value in
+                lastRotationSnap = nil
+                guard selectedBlockID == block.id, block.canRotate, !block.isLocked else { return }
+                commitRotation(block.id, to: block.rotation + value.rotation.degrees)
+            }
+    }
+
+    /// A light tap each time the angle settles onto 0°, ±15°, ±45°, ±90°, or 180°.
+    private func noteRotationSnap(_ degrees: Double) {
+        let snap = ComposerRotation.snapped(degrees)
+        guard snap.didSnap else {
+            lastRotationSnap = nil
+            return
+        }
+        guard lastRotationSnap != snap.angle else { return }
+        lastRotationSnap = snap.angle
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func commitRotation(_ blockID: ComposerBlockID, to degrees: Double) {
+        store.setRotation(ComposerRotation.snapped(degrees).angle, for: blockID, in: documentID)
+    }
+
+    /// A small round handle above the piece's top edge. Drag it around to turn the piece;
+    /// double-tap it to straighten.
+    private func rotateHandle(for block: ComposerBlock, frame: CGRect) -> some View {
+        let lift: CGFloat = 30
+        let below = rotateHandleGoesBelow(block, frame: frame, lift: lift)
+        return ZStack {
+            Circle()
+                .fill(Color(red: 0.20, green: 0.21, blue: 0.23))
+                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            Image(systemName: "arrow.clockwise")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 28, height: 28)
+        .overlay {
+            ComposerCornerCatcher(
+                onChanged: { translation in
+                    let angle = handleAngle(for: block, frame: frame, lift: lift, below: below, translation: translation)
+                    noteRotationSnap(angle)
+                    handleRotation = (block.id, ComposerRotation.snapped(angle).angle)
+                },
+                onEnded: { translation in
+                    let angle = handleAngle(for: block, frame: frame, lift: lift, below: below, translation: translation)
+                    handleRotation = nil
+                    lastRotationSnap = nil
+                    commitRotation(block.id, to: angle)
+                },
+                onDoubleTap: {
+                    store.setRotation(0, for: block.id, in: documentID)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            )
+            .frame(width: 44, height: 44)
+        }
+        .position(x: frame.width / 2, y: below ? frame.height + lift : -lift)
+        .accessibilityElement()
+        .accessibilityLabel("Rotate")
+        .accessibilityValue("\(Int(block.rotation.rounded())) degrees")
+        .accessibilityHint("Double-tap to straighten")
+        .accessibilityAdjustableAction { direction in
+            let step: Double = direction == .increment ? 15 : -15
+            commitRotation(block.id, to: block.rotation + step)
+        }
+        .accessibilityIdentifier("composer.rotateHandle")
+    }
+
+    /// The handle starts straight above (or below) the center, turned by the saved angle; the finger's
+    /// direction from the center is the new angle, half a turn apart when the handle sits below.
+    private func handleAngle(
+        for block: ComposerBlock,
+        frame: CGRect,
+        lift: CGFloat,
+        below: Bool,
+        translation: CGSize
+    ) -> Double {
+        let reach = (frame.height / 2 + lift) * (below ? -1 : 1)
+        let radians = block.rotation * .pi / 180
+        let start = CGSize(width: reach * CGFloat(sin(radians)), height: -reach * CGFloat(cos(radians)))
+        let angle = ComposerRotation.handleAngle(
+            fromCenterTo: CGSize(width: start.width + translation.width, height: start.height + translation.height)
+        )
+        return ComposerRotation.normalized(below ? angle + 180 : angle)
+    }
+
+    /// The handle moves below the piece when its spot above would be off screen.
+    private func rotateHandleGoesBelow(_ block: ComposerBlock, frame: CGRect, lift: CGFloat) -> Bool {
+        guard let visible = visibleCanvasRect else { return false }
+        let radians = block.rotation * .pi / 180
+        let reach = frame.height / 2 + lift
+        let handle = CGPoint(
+            x: frame.midX + reach * CGFloat(sin(radians)),
+            y: frame.midY - reach * CGFloat(cos(radians))
+        )
+        return !visible.insetBy(dx: 22, dy: 22).contains(handle)
     }
 
     private func deleteBlock(_ blockID: ComposerBlockID) {
@@ -1596,6 +2114,8 @@ struct MosaicComposerView: View {
         stopDragFollow()
         resizePreview = nil
         socialCornerResizing = false
+        handleRotation = nil
+        lastRotationSnap = nil
     }
 
     private func moveBlock(_ blockID: ComposerBlockID, to canvasPoint: CGPoint) {
@@ -1736,7 +2256,8 @@ struct MosaicComposerView: View {
     }
 
     private func relocateEnabled(for block: ComposerBlock) -> Bool {
-        guard !chrome.isViewing, (block.isContent || supportsCanvasGestures(block.kind)), placingOption == nil else { return false }
+        guard !chrome.isViewing, (block.isContent || supportsCanvasGestures(block.kind)), placingOption == nil,
+              drawingBlockID != block.id else { return false }
         if styleMenuBlockID == nil { return true }
         return block.kind == .media && styleMenuBlockID == block.id
     }
@@ -1745,7 +2266,9 @@ struct MosaicComposerView: View {
         if block.kind == .calendar || block.kind == .graph || block.kind == .group { return false }
         // A selected table or tab bar owns the press so a hold moves it instead of scrolling the board.
         if block.kind == .table || block.kind == .tabs { return selectedBlockID == block.id }
-        if block.kind == .media { return true }
+        // Like media, a drawing keeps its touches when selected, so a tap opens it instead of
+        // being taken by the board's scrolling.
+        if block.kind == .media || block.kind == .drawing { return true }
         return selectedBlockID != block.id
     }
 
@@ -1771,14 +2294,15 @@ struct MosaicComposerView: View {
     }
 
     private func showsResizeChrome(for block: ComposerBlock) -> Bool {
-        guard !chrome.isViewing, selectedBlockID == block.id else { return false }
+        guard !chrome.isViewing, selectedBlockID == block.id, !block.isLocked else { return false }
         guard textDragVisual.blockID != block.id || !textDragVisual.isMoving else { return false }
+        guard drawingBlockID != block.id else { return false }
         switch block.kind {
-        case .text, .heading, .list, .media, .pursuit, .node, .carousel, .calendar, .graph, .tabs, .table, .group, .scrapbook:
+        case .text, .heading, .list, .media, .pursuit, .node, .carousel, .calendar, .graph, .tabs, .table, .group, .scrapbook, .drawing:
             return true
         case .link:
             return block.isContent
-        case .social, .banner:
+        case .social, .banner, .unsupported:
             return false
         }
     }
@@ -1793,7 +2317,7 @@ struct MosaicComposerView: View {
             return
         }
         guard let current = store.block(with: block.id, in: documentID) else { return }
-        let factors = resizeFactors(for: current, frame: frame, corner: corner, translation: translation)
+        let factors = resizeFactors(for: current, frame: frame, corner: corner, translation: localResizeTranslation(translation, for: current))
         if !socialCornerResizing {
             socialCornerResizing = true
         }
@@ -1830,11 +2354,17 @@ struct MosaicComposerView: View {
         let widthChange = preview.frame.width * (preview.scaleX - 1)
         let heightChange = preview.frame.height * (preview.scaleY - 1)
         var point = canvasPoint(for: block.position)
-        if preview.corner.movesLeading {
-            point.x -= widthChange
-        }
-        if preview.corner.movesTop {
-            point.y -= heightChange
+        if block.rotation != 0 {
+            // Tilted pieces resize around their center.
+            point.x -= widthChange / 2
+            point.y -= heightChange / 2
+        } else {
+            if preview.corner.movesLeading {
+                point.x -= widthChange
+            }
+            if preview.corner.movesTop {
+                point.y -= heightChange
+            }
         }
         block.position = normalizedPosition(from: point)
         var transaction = Transaction()
@@ -1845,6 +2375,19 @@ struct MosaicComposerView: View {
             textDragSession.graphResizing = false
             store.updateBlock(block, in: documentID)
         }
+    }
+
+    /// A corner drag on a tilted piece, turned into the piece's own axes. Doubled because the piece
+    /// grows around its center, so the dragged corner moves half as far as a corner-anchored resize.
+    private func localResizeTranslation(_ translation: CGSize, for block: ComposerBlock) -> CGSize {
+        guard block.rotation != 0 else { return translation }
+        let radians = -block.rotation * .pi / 180
+        let cosine = CGFloat(cos(radians))
+        let sine = CGFloat(sin(radians))
+        return CGSize(
+            width: 2 * (translation.width * cosine - translation.height * sine),
+            height: 2 * (translation.width * sine + translation.height * cosine)
+        )
     }
 
     private func resizeFactors(
@@ -1876,7 +2419,11 @@ struct MosaicComposerView: View {
     }
 
     private func minimumScale(for block: ComposerBlock) -> Double {
-        block.kind == .carousel ? CarouselLayout.minimumScale : 0.45
+        switch block.kind {
+        case .carousel: CarouselLayout.minimumScale
+        case .drawing: ComposerDrawingMetrics.minimumScale
+        default: 0.45
+        }
     }
 
     private func finite(_ value: CGFloat) -> CGFloat {
@@ -1934,7 +2481,7 @@ struct MosaicComposerView: View {
     }
 
     private func supportsCanvasGestures(_ kind: BlockKind) -> Bool {
-        isTextLikeKind(kind) || kind == .media || isFolder(kind) || kind == .carousel || kind == .calendar || kind == .graph || kind == .tabs || kind == .table || kind == .social || kind == .group || kind == .scrapbook
+        isTextLikeKind(kind) || kind == .media || isFolder(kind) || kind == .carousel || kind == .calendar || kind == .graph || kind == .tabs || kind == .table || kind == .social || kind == .group || kind == .scrapbook || kind == .drawing
     }
 
     private func beginCarouselEdit(_ blockID: ComposerBlockID) {
@@ -2207,6 +2754,10 @@ struct MosaicComposerView: View {
                 self.selectedBlockID = nil
                 resetGestureState()
             }
+            if let drawingBlockID {
+                openDrawingRoom(drawingBlockID)
+            }
+            fitIdleDrawingsToInk()
             editingBlockID = nil
             focusedTextBlockID = nil
             styleMenuBlockID = nil
@@ -2299,12 +2850,13 @@ struct MosaicComposerView: View {
         selectedBlockID = group.id
     }
 
-    private func ungroup(_ blockID: ComposerBlockID) {
+    private func ungroup(_ blockID: ComposerBlockID, memberSizes: [ComposerBlockID: CGSize] = [:]) {
         guard let group = store.block(with: blockID, in: documentID), group.kind == .group else { return }
         let restored = ComposerGroupMath.ungroupedMembers(
             of: group,
             canvasWidth: max(canvasSize.width, 1),
-            layoutHeight: layoutHeight
+            layoutHeight: layoutHeight,
+            memberSizes: memberSizes
         )
         var next = blocks
         next.removeAll { $0.id == blockID }
@@ -2427,6 +2979,8 @@ private final class TextDragSession {
     var dragFrame: CGRect?
     var lastEnded = Date.distantPast
     var pressID: UUID?
+    /// Where the current press started, in the composer's coordinates.
+    var pressLocation: CGPoint?
     private var lastMediaChromeKey = ""
     private var lastMediaChromeTap = Date.distantPast
 
@@ -2458,6 +3012,7 @@ private final class TextDragSession {
         resizeCorner = nil
         dragFrame = nil
         pressID = nil
+        pressLocation = nil
     }
 }
 
@@ -2466,6 +3021,25 @@ private struct TextPinchVisual: Equatable {
     var scale: CGFloat
 
     static let inactive = TextPinchVisual(blockID: nil, scale: 1)
+}
+
+private extension View {
+    /// Records this control's size under `key`.
+    func measuredFloating(_ key: String, into sizes: Binding<[String: CGSize]>) -> some View {
+        onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            guard sizes.wrappedValue[key] != size else { return }
+            sizes.wrappedValue[key] = size
+        }
+    }
+}
+
+private struct TwistVisual: Equatable {
+    var blockID: ComposerBlockID?
+    var degrees: Double
+
+    static let inactive = TwistVisual(blockID: nil, degrees: 0)
 }
 
 private struct FocusedComposerMedia: Identifiable, Equatable {
@@ -2489,7 +3063,7 @@ private struct ViewingMediaTapModifier: ViewModifier {
 
 /// Hits only on block frames so empty paper still scrolls while grouping.
 private struct ComposerGroupingCatcher: UIViewRepresentable {
-    var targets: [(ComposerBlockID, CGRect)]
+    var targets: [ComposerGroupingTarget]
     var onTap: (ComposerBlockID) -> Void
 
     func makeUIView(context: Context) -> ComposerGroupingCatcherView {
@@ -2506,7 +3080,7 @@ private struct ComposerGroupingCatcher: UIViewRepresentable {
 }
 
 private final class ComposerGroupingCatcherView: UIView {
-    var targets: [(ComposerBlockID, CGRect)] = []
+    var targets: [ComposerGroupingTarget] = []
     var onTap: (ComposerBlockID) -> Void = { _ in }
     private var start: CGPoint?
     private var pressed: ComposerBlockID?
@@ -2538,7 +3112,7 @@ private final class ComposerGroupingCatcherView: UIView {
     }
 
     private func blockID(at point: CGPoint) -> ComposerBlockID? {
-        targets.reversed().first { $0.1.insetBy(dx: -4, dy: -4).contains(point) }?.0
+        targets.reversed().first { $0.contains(point) }?.id
     }
 }
 
@@ -2576,6 +3150,7 @@ private struct RelocateGestureModifier<Drag: Gesture, Pinch: Gesture>: ViewModif
 
 /// Keeps the composer page at its normal scale. Pinching a block must not zoom the scroll view.
 private struct ComposerCanvasZoomLock: UIViewRepresentable {
+    var scrollsWithTwoFingers = false
     var onOffset: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> ComposerCanvasZoomLockView {
@@ -2587,12 +3162,14 @@ private struct ComposerCanvasZoomLock: UIViewRepresentable {
 
     func updateUIView(_ uiView: ComposerCanvasZoomLockView, context: Context) {
         uiView.onOffset = onOffset
+        uiView.scrollsWithTwoFingers = scrollsWithTwoFingers
         uiView.lockEnclosingScrollView()
     }
 }
 
 private final class ComposerCanvasZoomLockView: UIView {
     var onOffset: (CGFloat) -> Void = { _ in }
+    var scrollsWithTwoFingers = false
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -2617,6 +3194,7 @@ private final class ComposerCanvasZoomLockView: UIView {
                 scrollView.showsHorizontalScrollIndicator = false
                 scrollView.showsVerticalScrollIndicator = false
                 scrollView.isDirectionalLockEnabled = true
+                scrollView.panGestureRecognizer.minimumNumberOfTouches = scrollsWithTwoFingers ? 2 : 1
                 if let systemPinch = scrollView.pinchGestureRecognizer,
                    systemPinch.name != "mosaic.table.pinch" {
                     systemPinch.isEnabled = false

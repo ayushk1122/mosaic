@@ -292,6 +292,7 @@ struct ComposerSocialCanvasBlock: View {
     var onOpen: (() -> Void)? = nil
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerBlockLocked) private var isLocked
     @State private var cornerDrag: SocialCornerDrag?
     @State private var cornerFrames = ComposerSocialCornerFrames()
 
@@ -303,7 +304,7 @@ struct ComposerSocialCanvasBlock: View {
     }
 
     private var showsHandles: Bool {
-        isSelected && !isLifted && !isRelocating && !isViewing
+        isSelected && !isLifted && !isRelocating && !isViewing && !isLocked
     }
 
     private var baseSide: CGFloat {
@@ -690,6 +691,7 @@ private enum SocialLogoCorner: Equatable, Hashable, CaseIterable, Identifiable {
 struct ComposerCornerCatcher: UIViewRepresentable {
     var onChanged: (CGSize) -> Void
     var onEnded: (CGSize) -> Void
+    var onDoubleTap: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -704,6 +706,7 @@ struct ComposerCornerCatcher: UIViewRepresentable {
     func updateUIView(_ uiView: ComposerCornerCatcherView, context: Context) {
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
+        context.coordinator.onDoubleTap = onDoubleTap
         uiView.coordinator = context.coordinator
     }
 
@@ -717,11 +720,13 @@ struct ComposerCornerCatcher: UIViewRepresentable {
         }
         coordinator.onEnded = { _ in }
         coordinator.onChanged = { _ in }
+        coordinator.onDoubleTap = nil
     }
 
     final class Coordinator: NSObject {
         var onChanged: (CGSize) -> Void = { _ in }
         var onEnded: (CGSize) -> Void = { _ in }
+        var onDoubleTap: (() -> Void)?
     }
 }
 
@@ -738,6 +743,13 @@ final class ComposerCornerCatcherView: UIView, UIGestureRecognizerDelegate {
         pan.delegate = self
         pan.cancelsTouchesInView = true
         addGestureRecognizer(pan)
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
+    }
+
+    @objc private func doubleTapped() {
+        coordinator?.onDoubleTap?()
     }
 
     required init?(coder: NSCoder) {

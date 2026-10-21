@@ -53,6 +53,9 @@ enum ComposerMediaCatalog {
                         add(item.fileName, documentID: documentID)
                     }
                 }
+                for name in possibleFileNames(in: block) {
+                    add(name, documentID: documentID)
+                }
                 walk(block.groupMembers, documentID: documentID)
             }
         }
@@ -81,6 +84,15 @@ enum ComposerMediaCatalog {
         "\(ownerID.uuidString.lowercased())/\(assetID.uuidString.lowercased())/\(name)"
     }
 
+    /// Text in a newer piece that could be one of its media files, so its cloud copy stays linked.
+    /// Names that aren't files on this phone are skipped by uploads.
+    private static func possibleFileNames(in block: ComposerBlock) -> [String] {
+        guard block.kind == .unsupported else { return [] }
+        return block.preservedStrings.filter { name in
+            name.count < 200 && name.contains(".") && !name.contains(" ") && !name.contains("/")
+        }.sorted()
+    }
+
     private static func fileNames(in body: ComposerBoardBody) -> Set<String> {
         var names: Set<String> = []
         func walk(_ blocks: [ComposerBlock]) {
@@ -95,6 +107,7 @@ enum ComposerMediaCatalog {
                         names.insert(item.fileName)
                     }
                 }
+                names.formUnion(possibleFileNames(in: block))
                 walk(block.groupMembers)
             }
         }

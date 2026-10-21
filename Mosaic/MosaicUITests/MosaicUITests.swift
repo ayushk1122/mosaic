@@ -102,6 +102,57 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
+    func testDrawPieceTakesFingerInkAndStaysAfterDone() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        // The screen's identifier covers its children's, so controls are found by label.
+        let plus = app.buttons["Add to Mosaic"]
+        XCTAssertTrue(plus.waitForExistence(timeout: 3))
+        plus.tap()
+        let search = app.textFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.tap()
+        search.typeText("draw")
+        let draw = app.buttons["Draw"]
+        XCTAssertTrue(draw.waitForExistence(timeout: 2))
+        draw.tap()
+
+        // Drop the piece mid-screen; it opens straight into drawing.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        let done = app.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 3))
+        attachScreenshot(app, named: "Drawing open")
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.42))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.48))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        attachScreenshot(app, named: "After a stroke")
+
+        done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 2))
+        let drawing = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Drawing'")).firstMatch
+        XCTAssertTrue(drawing.waitForExistence(timeout: 2), "A drawing with ink stays on the board after Done")
+        attachScreenshot(app, named: "After Done")
+
+        // Tapping the drawing opens it for drawing again.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        let reopened = done.waitForExistence(timeout: 3)
+        attachScreenshot(app, named: "Drawing reopened")
+        XCTAssertTrue(reopened, "Tapping a drawing opens it for drawing")
+        done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 2))
+
+        let undo = app.buttons["Undo"]
+        for _ in 0..<4 where drawing.exists && undo.isEnabled {
+            undo.tap()
+        }
+        XCTAssertTrue(drawing.waitForNonExistence(timeout: 2))
+    }
+
+    @MainActor
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

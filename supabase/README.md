@@ -35,6 +35,8 @@ supabase test db
 
 When applying later migrations to Mosaic-dev, prefer additive files under `migrations/` and apply them through the usual migration path. Do not re-apply the baseline to a database that already has the historical migration versions.
 
+**Current repository fact:** From 2026-10-30, Supabase no longer grants Data API access to new tables in `public` automatically, including in `supabase db reset` and preview branches. A migration that creates a table must also grant it explicitly (and revoke anything a role shouldn't have), for example `GRANT SELECT ON public.t TO authenticated; GRANT ALL ON public.t TO service_role;`. `tests/03-data-api-grants.sql` fails when a public table lacks those grants.
+
 ## Auth providers (Mosaic-dev dashboard)
 
 After pulling onboarding work, configure the hosted project manually:
