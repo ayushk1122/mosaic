@@ -754,11 +754,25 @@ final class ComposerStore {
         frameStyle: ComposerFrameStyle? = nil,
         frameCaption: String? = nil,
         photoShape: MediaFrameShape? = nil,
+        tabStyle: ComposerTabStyle? = nil,
+        tabColor: ComposerRGBColor? = nil,
+        resetsTabColor: Bool = false,
+        tabShape: ComposerTabShape? = nil,
+        tabWidth: ComposerTabWidth? = nil,
+        tabSticky: Bool? = nil,
         for blockID: ComposerBlockID,
         in documentID: ComposerDocumentID?
     ) {
         guard var block = self.block(with: blockID, in: documentID) else { return }
         let current = block
+        if block.kind == .tabs {
+            if let tabStyle { block.tabStyle = tabStyle }
+            if let tabColor { block.tabColor = tabColor }
+            if resetsTabColor { block.tabColor = nil }
+            if let tabShape { block.tabShape = tabShape }
+            if let tabWidth { block.tabWidth = tabWidth }
+            if let tabSticky { block.tabSticky = tabSticky }
+        }
         if block.kind == .media {
             if let frameStyle { block.frameStyle = frameStyle }
             if let frameCaption { block.frameCaption = String(frameCaption.prefix(ComposerFrameStyle.captionLimit)) }

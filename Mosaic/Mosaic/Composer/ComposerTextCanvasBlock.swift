@@ -457,6 +457,7 @@ struct ComposerTextStylePanel: View {
 
 struct ComposerColorSquare: View {
     let color: Color
+    var height: CGFloat = 112
     var onPick: (Double, Double, Double) -> Void
 
     var body: some View {
@@ -492,7 +493,7 @@ struct ComposerColorSquare: View {
                     }
             )
         }
-        .frame(height: 112)
+        .frame(height: height)
         .accessibilityLabel("Color")
     }
 

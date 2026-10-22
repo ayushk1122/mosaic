@@ -1338,9 +1338,17 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
     var frameStyle: ComposerFrameStyle
     /// Handwritten line under a Polaroid.
     var frameCaption: String
+    /// How a tab bar draws its tabs, the open tab's color (nil is the original white), the shape of
+    /// its mark, and whether the bar spans the page.
+    var tabStyle: ComposerTabStyle
+    var tabColor: ComposerRGBColor?
+    var tabShape: ComposerTabShape
+    var tabWidth: ComposerTabWidth
+    /// Scrolls with the board until it reaches the top, then stays there, under the banner if any.
+    var tabSticky: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked, drawingData, drawingWidth, drawingHeight, opacity, shadow, shadowColor, stickerWidth, stickerHeight, stickerBorder, frameStyle, frameCaption
+        case id, kind, text, style, position, mediaFileName, mediaShape, mediaWarp, mediaZoom, mediaPanX, mediaPanY, linkURL, pursuitID, pursuitShape, pursuitLayout, pursuitFrameAspect, pursuitTextX, pursuitTextY, pursuitTexts, pursuitImageZoom, pursuitImagePanX, pursuitImagePanY, pursuitFill, pursuitImageFileName, carouselItems, carouselIndex, calendarEntries, listItems, listMarker, graphTitle, graphKind, graphXAxis, graphYAxis, graphXUnitName, graphYUnitName, graphPoints, graphWidthScale, graphHeightScale, tabs, selectedTabID, tabID, mediaFrameAspect, bannerHeight, tableColumns, tableRows, tableEntries, selectedTableEntryID, socialPlatform, groupMembers, groupWidth, groupHeight, scrapbookPageIDs, scrapbookIndex, rotation, isLocked, drawingData, drawingWidth, drawingHeight, opacity, shadow, shadowColor, stickerWidth, stickerHeight, stickerBorder, frameStyle, frameCaption, tabStyle, tabColor, tabShape, tabWidth, tabSticky
     }
 
     init(
@@ -1409,7 +1417,12 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         stickerHeight: Double = 0,
         stickerBorder: Bool = true,
         frameStyle: ComposerFrameStyle = .none,
-        frameCaption: String = ""
+        frameCaption: String = "",
+        tabStyle: ComposerTabStyle = .pill,
+        tabColor: ComposerRGBColor? = nil,
+        tabShape: ComposerTabShape = .capsule,
+        tabWidth: ComposerTabWidth = .fit,
+        tabSticky: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -1478,6 +1491,11 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         self.stickerBorder = stickerBorder
         self.frameStyle = frameStyle
         self.frameCaption = frameCaption
+        self.tabStyle = tabStyle
+        self.tabColor = tabColor
+        self.tabShape = tabShape
+        self.tabWidth = tabWidth
+        self.tabSticky = tabSticky
     }
 
     init(from decoder: Decoder) throws {
@@ -1573,6 +1591,18 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
             .flatMap { $0 }
             .flatMap(ComposerFrameStyle.init(rawValue:)) ?? .none
         frameCaption = try container.decodeIfPresent(String.self, forKey: .frameCaption) ?? ""
+        // A style or color from a newer version shows as the default rather than failing the board.
+        tabStyle = (try? container.decodeIfPresent(String.self, forKey: .tabStyle))
+            .flatMap { $0 }
+            .flatMap(ComposerTabStyle.init(rawValue:)) ?? .pill
+        tabColor = (try? container.decodeIfPresent(ComposerRGBColor.self, forKey: .tabColor)) ?? nil
+        tabShape = (try? container.decodeIfPresent(String.self, forKey: .tabShape))
+            .flatMap { $0 }
+            .flatMap(ComposerTabShape.init(rawValue:)) ?? .capsule
+        tabWidth = (try? container.decodeIfPresent(String.self, forKey: .tabWidth))
+            .flatMap { $0 }
+            .flatMap(ComposerTabWidth.init(rawValue:)) ?? .fit
+        tabSticky = (try? container.decodeIfPresent(Bool.self, forKey: .tabSticky)) ?? false
         preserved = nil
         if kind == .table {
             ComposerTable.ensure(&self)
@@ -1661,6 +1691,19 @@ struct ComposerBlock: Identifiable, Codable, Equatable, Sendable {
         }
         if !frameCaption.isEmpty {
             try container.encode(frameCaption, forKey: .frameCaption)
+        }
+        if tabStyle != .pill {
+            try container.encode(tabStyle.rawValue, forKey: .tabStyle)
+        }
+        try container.encodeIfPresent(tabColor, forKey: .tabColor)
+        if tabShape != .capsule {
+            try container.encode(tabShape.rawValue, forKey: .tabShape)
+        }
+        if tabWidth != .fit {
+            try container.encode(tabWidth.rawValue, forKey: .tabWidth)
+        }
+        if tabSticky {
+            try container.encode(true, forKey: .tabSticky)
         }
         if kind == .sticker {
             try container.encode(stickerWidth, forKey: .stickerWidth)
@@ -2089,6 +2132,56 @@ enum ComposerFrameStyle: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     static let captionLimit = 40
+}
+
+/// How a tab bar draws its tabs. The open tab's mark slides between tabs in every style.
+enum ComposerTabStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// The open tab in a filled capsule.
+    case pill
+    /// All tabs in one shared track, the open one on a sliding thumb.
+    case segmented
+    /// Plain titles with a line under the open one.
+    case underline
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pill: "Pill"
+        case .segmented: "Segmented"
+        case .underline: "Underline"
+        }
+    }
+}
+
+/// The open tab's mark: fully round ends, or a rounded rectangle.
+enum ComposerTabShape: String, Codable, CaseIterable, Identifiable, Sendable {
+    case capsule
+    case rounded
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .capsule: "Capsule"
+        case .rounded: "Rounded"
+        }
+    }
+}
+
+/// Tabs hug their titles, or share the page's width evenly at the same height.
+enum ComposerTabWidth: String, Codable, CaseIterable, Identifiable, Sendable {
+    case fit
+    case full
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fit: "Fit"
+        case .full: "Full width"
+        }
+    }
 }
 
 /// Black reads as depth on light boards; white reads as a glow on dark ones.

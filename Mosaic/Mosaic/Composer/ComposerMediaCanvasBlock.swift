@@ -672,8 +672,51 @@ struct ComposerMediaLightbox: View {
     @State private var image: UIImage?
     @State private var videoAspect: CGFloat?
     @State private var loadFailed = false
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var drag: CGSize = .zero
+
+    private static let maximumZoom: CGFloat = 5
+    private static let doubleTapZoom: CGFloat = 2.5
 
     private var isVideo: Bool { ComposerMediaStill.isVideo(url) }
+
+    private var canZoom: Bool {
+        !loadFailed && (isVideo || image != nil)
+    }
+
+    private var scale: CGFloat {
+        min(max(zoom * pinch, 1), Self.maximumZoom)
+    }
+
+    /// Keeps the zoomed media covering the screen: it can't be dragged past its own edges.
+    private static func clamped(_ offset: CGSize, scale: CGFloat, in size: CGSize) -> CGSize {
+        let limitX = max(size.width * (scale - 1) / 2, 0)
+        let limitY = max(size.height * (scale - 1) / 2, 0)
+        return CGSize(
+            width: min(max(offset.width, -limitX), limitX),
+            height: min(max(offset.height, -limitY), limitY)
+        )
+    }
+
+    private func zoomOut() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            zoom = 1
+            pan = .zero
+        }
+    }
+
+    /// Zooms in on the tapped spot, or back out.
+    private func toggleZoom(at point: CGPoint, in size: CGSize) {
+        guard zoom <= 1.01 else { return zoomOut() }
+        let target = Self.doubleTapZoom
+        let toward = CGSize(width: (size.width / 2 - point.x) * (target - 1), height: (size.height / 2 - point.y) * (target - 1))
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            zoom = target
+            pan = Self.clamped(toward, scale: target, in: size)
+        }
+    }
 
     private var contentAspect: CGFloat? {
         if isVideo { return videoAspect }
@@ -682,11 +725,93 @@ struct ComposerMediaLightbox: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.94)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onClose)
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(0.94)
+                    .ignoresSafeArea()
+                media
+                    .scaleEffect(scale)
+                    .offset(Self.clamped(
+                        CGSize(width: pan.width + drag.width, height: pan.height + drag.height),
+                        scale: scale,
+                        in: proxy.size
+                    ))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .contentShape(Rectangle())
+            // A double tap zooms; a single tap zooms back out, or closes when not zoomed.
+            .gesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { value in
+                        guard canZoom else { return }
+                        toggleZoom(at: value.location, in: proxy.size)
+                    }
+                    .exclusively(before: TapGesture().onEnded {
+                        if zoom > 1.01 { zoomOut() } else { onClose() }
+                    })
+            )
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .updating($pinch) { value, state, _ in state = value.magnification }
+                    .onEnded { value in
+                        let next = min(max(zoom * value.magnification, 1), Self.maximumZoom)
+                        if next <= 1.01 {
+                            zoomOut()
+                        } else {
+                            zoom = next
+                            pan = Self.clamped(pan, scale: next, in: proxy.size)
+                        }
+                    },
+                isEnabled: canZoom
+            )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8)
+                    .updating($drag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        pan = Self.clamped(
+                            CGSize(width: pan.width + value.translation.width, height: pan.height + value.translation.height),
+                            scale: zoom,
+                            in: proxy.size
+                        )
+                    },
+                isEnabled: canZoom && zoom > 1.01
+            )
+        }
+        .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
+            if isVideo {
+                loadFailed = !FileManager.default.fileExists(atPath: url.path)
+                guard crop != nil else { return }
+                let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
+                guard !Task.isCancelled else { return }
+                videoAspect = loaded
+            } else {
+                let loaded = await ComposerMediaStill.image(at: url)
+                guard !Task.isCancelled else { return }
+                image = loaded
+                loadFailed = loaded == nil
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityLabel(isVideo ? "Video" : "Photo")
+        .accessibilityValue(zoom > 1.01 ? "Zoomed \(Int((zoom * 100).rounded())) percent" : "")
+        .accessibilityZoomAction { action in
+            guard canZoom else { return }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                switch action.direction {
+                case .zoomIn: zoom = min(zoom * 1.5, Self.maximumZoom)
+                case .zoomOut: zoom = max(zoom / 1.5, 1)
+                @unknown default: break
+                }
+                if zoom <= 1.01 { pan = .zero }
+            }
+        }
+        .accessibilityAction(.escape, onClose)
+    }
+
+    @ViewBuilder
+    private var media: some View {
+        Group {
             if loadFailed, !mediaWaiting.includes(url) {
                 ComposerMediaUnavailable(isVideo: isVideo)
                     .frame(width: 220, height: 220)
@@ -723,24 +848,6 @@ struct ComposerMediaLightbox: View {
                     .tint(.white)
             }
         }
-        .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
-            if isVideo {
-                loadFailed = !FileManager.default.fileExists(atPath: url.path)
-                guard crop != nil else { return }
-                let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
-                guard !Task.isCancelled else { return }
-                videoAspect = loaded
-            } else {
-                let loaded = await ComposerMediaStill.image(at: url)
-                guard !Task.isCancelled else { return }
-                image = loaded
-                loadFailed = loaded == nil
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isModal)
-        .accessibilityLabel(isVideo ? "Video" : "Photo")
-        .accessibilityAction(.escape, onClose)
     }
 
     @ViewBuilder

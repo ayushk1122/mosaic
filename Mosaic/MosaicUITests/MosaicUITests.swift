@@ -287,6 +287,67 @@ final class MosaicUITests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testFullScreenPhotoPinchesToZoom() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        app.buttons["Add to Mosaic"].tap()
+        let search = app.textFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.tap()
+        search.typeText("media")
+        app.buttons["Media"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).tap()
+        let deadline = Date().addingTimeInterval(25)
+        while app.images.count < 3, Date() < deadline { sleep(1) }
+        guard app.images.count >= 3 else { throw XCTSkip("No photos in this simulator's library") }
+        sleep(1)
+        let banner = app.staticTexts["Private Access to Photos"].exists
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: banner ? 0.46 : 0.27)).tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.905, dy: 0.153)).tap()
+        sleep(10)
+
+        // In view mode, a tap opens the photo full screen.
+        app.buttons["View Mosaic"].tap()
+        sleep(1)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36)).tap()
+        let viewer = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Photo'")).firstMatch
+        XCTAssertTrue(viewer.waitForExistence(timeout: 3))
+        attachScreenshot(app, named: "Full screen")
+
+        viewer.pinch(withScale: 3, velocity: 2)
+        sleep(1)
+        attachScreenshot(app, named: "Pinched in")
+        XCTAssertTrue((viewer.value as? String)?.hasPrefix("Zoomed") == true, "Pinching zooms in")
+
+        viewer.swipeLeft()
+        sleep(1)
+        attachScreenshot(app, named: "Panned while zoomed")
+        XCTAssertTrue(viewer.exists, "Dragging a zoomed photo pans it rather than closing")
+
+        // A tap zooms back out; the next tap closes.
+        viewer.tap()
+        sleep(1)
+        XCTAssertEqual(viewer.value as? String, "")
+        viewer.doubleTap()
+        sleep(1)
+        attachScreenshot(app, named: "Double-tapped in")
+        XCTAssertTrue((viewer.value as? String)?.hasPrefix("Zoomed") == true, "A double tap zooms in")
+        viewer.doubleTap()
+        sleep(1)
+        viewer.tap()
+        XCTAssertTrue(viewer.waitForNonExistence(timeout: 2), "A tap closes the photo when not zoomed")
+
+        app.buttons["Edit Mosaic"].tap()
+        let undo = app.buttons["Undo"]
+        for _ in 0..<4 where undo.isEnabled {
+            undo.tap()
+        }
+    }
+
     /// Needs a video in the simulator's library (`xcrun simctl addmedia`); skipped otherwise.
     @MainActor
     func testFadedShadowedVideoStillPlays() throws {
@@ -337,6 +398,100 @@ final class MosaicUITests: XCTestCase {
 
         let undo = app.buttons["Undo"]
         for _ in 0..<10 where undo.isEnabled {
+            undo.tap()
+        }
+    }
+
+    @MainActor
+    func testTabStylesAndAccentColor() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSkipLaunchAnimation"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
+        app.buttons["Add to Mosaic"].tap()
+        let search = app.textFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.tap()
+        search.typeText("tabs")
+        app.buttons["Tabs"].tap()
+        // Near the top, so even this short board scrolls far enough for the bar to stick.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.2)).tap()
+        let first = app.buttons["Tab 1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        sleep(1)
+        attachScreenshot(app, named: "Tabs placed")
+
+        first.press(forDuration: 0.8)
+        let style = app.buttons["Tab style"]
+        XCTAssertTrue(style.waitForExistence(timeout: 3))
+        style.tap()
+        let segmented = app.buttons["Tab style Segmented"]
+        XCTAssertTrue(segmented.waitForExistence(timeout: 2))
+        attachScreenshot(app, named: "Tab style panel")
+        segmented.tap()
+        attachScreenshot(app, named: "Segmented")
+        // A color from the square, partway along the hues and in the saturated middle.
+        let square = app.descendants(matching: .any)["composer.look.tabColor"]
+        XCTAssertTrue(square.waitForExistence(timeout: 2))
+        square.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.55)).tap()
+        sleep(1)
+        attachScreenshot(app, named: "Segmented with a picked color")
+        app.buttons["Tab shape Rounded"].tap()
+        sleep(1)
+        attachScreenshot(app, named: "Segmented rounded")
+        app.buttons["Tab width Full width"].tap()
+        sleep(1)
+        attachScreenshot(app, named: "Segmented rounded full width")
+        app.buttons["Tab style Underline"].tap()
+        sleep(1)
+        attachScreenshot(app, named: "Underline full width")
+        XCTAssertFalse(app.buttons["Tab shape Rounded"].exists, "Underline has no shape choice")
+        app.buttons["Original tab color"].tap()
+        app.buttons["Tab style Pill"].tap()
+        sleep(1)
+        attachScreenshot(app, named: "Pill rounded full width white")
+
+        // Close the panel; switching tabs slides the mark across.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
+        XCTAssertTrue(segmented.waitForNonExistence(timeout: 2))
+        app.buttons["Tab 2"].tap()
+        sleep(1)
+        attachScreenshot(app, named: "Second tab open")
+        XCTAssertTrue(app.buttons["Tab 2"].isSelected)
+
+        // Pinned from the long-press menu, next to Lock. A hold on a selected tab bar moves it, so
+        // tap off it first.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
+        sleep(1)
+        app.buttons["Tab 1"].press(forDuration: 0.8)
+        let pin = app.buttons["Pin to top"]
+        let pinShown = pin.waitForExistence(timeout: 3)
+        attachScreenshot(app, named: "After long press for pin")
+        XCTAssertTrue(pinShown)
+        attachScreenshot(app, named: "Menu with pin")
+        pin.tap()
+        XCTAssertTrue(pin.waitForNonExistence(timeout: 2))
+
+        // Scrolled far enough that the bar's own place is off screen, the sticky bar stays at the top,
+        // under the status bar; scrolled back, it returns to its place. (The board's identifier hides
+        // the bar's own, so the tab is found by its label.)
+        let secondTab = app.buttons["Tab 2"]
+        let placedY = secondTab.frame.minY
+        let board = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.75))
+        board.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)))
+        sleep(1)
+        attachScreenshot(app, named: "Sticky tabs at the top")
+        XCTAssertTrue(secondTab.exists && secondTab.isHittable, "The tab bar sticks at the top")
+        XCTAssertGreaterThan(secondTab.frame.minY, 40, "Below the status bar")
+        XCTAssertLessThan(secondTab.frame.minY, placedY, "Held at the top, above where it was placed")
+        board.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.95)))
+        sleep(1)
+        attachScreenshot(app, named: "Tabs back in place")
+        XCTAssertEqual(secondTab.frame.minY, placedY, accuracy: 4, "Back in its place once scrolled back")
+
+        let undo = app.buttons["Undo"]
+        for _ in 0..<8 where undo.isEnabled {
             undo.tap()
         }
     }

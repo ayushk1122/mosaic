@@ -93,6 +93,8 @@ struct MosaicComposerView: View {
     @State private var scrollBubbleRail = ComposerScrollBubbleRail()
     /// Whether the selected piece's rotate handle sits below it; changes only when the side does.
     @State private var rotateHandleBelow = false
+    /// A sticky tab bar has scrolled up to the top and is drawn there instead of in the board.
+    @State private var tabsStuck = false
     @State private var clipboardMenuBlockID: ComposerBlockID?
     @State private var pasteAnchor: CGPoint?
     @State private var clipboardPressTask: Task<Void, Never>?
@@ -636,6 +638,7 @@ struct MosaicComposerView: View {
             }
             ZStack(alignment: .bottomTrailing) {
                 canvasScroll
+                    .overlay(alignment: .topLeading) { stickyTabs }
                 ComposerDragScrollDriver(relay: dragScrollRelay) {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
@@ -875,6 +878,10 @@ struct MosaicComposerView: View {
                 .rotationEffect(angle)
                 // The live drawing canvas draws plain: a faded or shadowed canvas is hard to draw on.
                 .composerPieceLook(block, plain: drawingBlockID == block.id)
+                // Stuck at the top, the sticky tab bar is drawn over the board instead.
+                .opacity(isStuckTabs(block) ? 0 : 1)
+                .allowsHitTesting(!isStuckTabs(block))
+                .accessibilityHidden(isStuckTabs(block))
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -919,7 +926,8 @@ struct MosaicComposerView: View {
     private var chromeBlocks: [ComposerBlock] {
         guard !chrome.isViewing, !isGrouping else { return [] }
         return scrollingBlocks.filter { block in
-            block.id == selectedBlockID
+            guard !isStuckTabs(block) else { return false }
+            return block.id == selectedBlockID
                 || block.id == clipboardMenuBlockID
                 || block.id == handleRotation?.blockID
                 || block.id == twistVisual.blockID
@@ -1718,8 +1726,20 @@ struct MosaicComposerView: View {
                 }
                 clipboardMenuDivider
                 // Opacity and shadow change how the piece looks, so they stay available when locked.
-                clipboardMenuIcon("circle.lefthalf.filled", label: "Opacity and shadow") {
+                clipboardMenuIcon(
+                    block?.kind == .tabs ? "paintbrush.pointed" : "circle.lefthalf.filled",
+                    label: block?.kind == .tabs ? "Tab style" : "Opacity and shadow"
+                ) {
                     clipboardMenuShowsLook = true
+                }
+                // Pinned tabs stay at the top of the page while the board scrolls; lock only stops moving.
+                if let block, block.kind == .tabs {
+                    let pinned = block.tabSticky
+                    clipboardMenuIcon(pinned ? "pin.slash" : "pin", label: pinned ? "Unpin" : "Pin to top") {
+                        store.setLook(tabSticky: !pinned, for: blockID, in: documentID)
+                        clipboardMenuBlockID = nil
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
                 }
                 clipboardMenuIcon(locked ? "lock.open" : "lock", label: locked ? "Unlock" : "Lock") {
                     store.setLocked(!locked, for: blockID, in: documentID)
@@ -1830,6 +1850,52 @@ struct MosaicComposerView: View {
                         .accessibilityLabel("Caption")
                         .accessibilityIdentifier("composer.look.caption")
                     }
+                }
+            }
+            if block.kind == .tabs {
+                lookRow(icon: "rectangle.split.3x1") {
+                    ForEach(ComposerTabStyle.allCases) { style in
+                        lookChip(style.title, chosen: block.tabStyle == style, label: "Tab style \(style.title)") {
+                            store.setLook(tabStyle: style, for: block.id, in: documentID)
+                        }
+                    }
+                }
+                if block.tabStyle != .underline {
+                    lookRow(icon: "capsule") {
+                        ForEach(ComposerTabShape.allCases) { shape in
+                            lookChip(shape.title, chosen: block.tabShape == shape, label: "Tab shape \(shape.title)") {
+                                store.setLook(tabShape: shape, for: block.id, in: documentID)
+                            }
+                        }
+                    }
+                }
+                lookRow(icon: "arrow.left.and.right") {
+                    ForEach(ComposerTabWidth.allCases) { width in
+                        lookChip(width.title, chosen: block.tabWidth == width, label: "Tab width \(width.title)") {
+                            store.setLook(tabWidth: width, for: block.id, in: documentID)
+                        }
+                    }
+                }
+                lookRow(icon: "paintpalette") {
+                    // The same color square as text and backgrounds, kept short for the menu.
+                    ComposerColorSquare(color: ComposerTabPaint(color: block.tabColor).fill, height: 48) { red, green, blue in
+                        store.setLook(tabColor: ComposerRGBColor(red: red, green: green, blue: blue), for: block.id, in: documentID)
+                    }
+                    .frame(width: 210)
+                    .accessibilityIdentifier("composer.look.tabColor")
+                    Button {
+                        store.setLook(resetsTabColor: true, for: block.id, in: documentID)
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    } label: {
+                        Circle()
+                            .fill(Color.white.opacity(0.92))
+                            .frame(width: 20, height: 20)
+                            .padding(3)
+                            .overlay(Circle().stroke(Color.white, lineWidth: block.tabColor == nil ? 2 : 0))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Original tab color")
+                    .accessibilityAddTraits(block.tabColor == nil ? .isSelected : [])
                 }
             }
             if block.kind == .sticker {
@@ -2317,6 +2383,52 @@ struct MosaicComposerView: View {
                 }
                 store.updateBlock(current, in: documentID)
             }
+    }
+
+    private func isStuckTabs(_ block: ComposerBlock) -> Bool {
+        tabsStuck && block.kind == .tabs && block.tabSticky
+    }
+
+    /// The sticky tab bar, once scrolled to the top: held just under the banner (or the top of the
+    /// page) while the board scrolls beneath it. Tapping a tab still switches tabs; editing happens
+    /// on the bar in the board.
+    @ViewBuilder
+    private var stickyTabs: some View {
+        if let tabs = scrollingBlocks.first(where: { $0.kind == .tabs && $0.tabSticky }) {
+            let frame = blockFrames[tabs.id]
+            ZStack(alignment: .topLeading) {
+                ComposerStickyTabsWatcher(rail: scrollBubbleRail, frame: frame, stuck: $tabsStuck)
+                if tabsStuck, let frame {
+                    ComposerTabsCanvasBlock(
+                        documentID: documentID,
+                        block: blockBinding(for: tabs.id, fallback: tabs),
+                        livePinchScale: 1,
+                        isSelected: false,
+                        isLifted: false,
+                        isRelocating: false,
+                        isViewing: chrome.isViewing,
+                        onActivate: {},
+                        pinsToPageEdges: false,
+                        identifier: "composer.tabs.sticky"
+                    )
+                    .composerPieceLook(tabs)
+                    .environment(\.composerViewportWidth, viewportWidth)
+                    .padding(.leading, frame.minX)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Board content passes beneath, so the strip keeps the titles readable. Its
+                    // background runs up behind the status bar, like a header.
+                    .background(.ultraThinMaterial.opacity(0.9))
+                    .background(Color.black.opacity(0.25))
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: tabsStuck)
+        } else {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .onAppear { tabsStuck = false }
+        }
     }
 
     private var visibleArea: ComposerVisibleArea {
