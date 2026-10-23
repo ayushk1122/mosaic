@@ -219,8 +219,27 @@ struct ComposerCarouselCanvasBlock: View {
     @Environment(\.composerMediaWaiting) private var mediaWaiting
     @Environment(\.composerMediaPreviews) private var mediaPreviews
     @Environment(\.composerPieceOpacity) private var pieceOpacity
+    @Environment(\.composerUpdateAddresses) private var updateAddresses
+    @Environment(ComposerUpdateGuide.self) private var updateGuide: ComposerUpdateGuide?
     @State private var itemFrame: CGRect = .zero
     @State private var editFrame: CGRect = .zero
+
+    private var pieceKey: String { block.id.rawValue.lowercased() }
+
+    private func address(of item: CarouselMediaItem) -> String {
+        "\(pieceKey)/carouselitems/\(item.id.lowercased())"
+    }
+
+    /// On a board opened from Orbit, the cards with updates, by address and place in the carousel.
+    private var updatedCards: [String: Int] {
+        guard updateGuide != nil, !updateAddresses.isEmpty else { return [:] }
+        var cards: [String: Int] = [:]
+        for (index, item) in block.carouselItems.enumerated() {
+            let address = address(of: item)
+            if updateAddresses.contains(where: { ComposerUpdateAddress.isWithin($0, address) }) { cards[address] = index }
+        }
+        return cards
+    }
 
     private var layout: CarouselLayout {
         CarouselLayout(scale: scale * livePinchScale)
@@ -247,6 +266,8 @@ struct ComposerCarouselCanvasBlock: View {
 
     var body: some View {
         face
+            // Cards turned away still have a place in the navigator's order, at the carousel.
+            .hiddenUpdateAnchors(updatedCards)
             .compositingGroup()
             .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
@@ -269,6 +290,17 @@ struct ComposerCarouselCanvasBlock: View {
             .onChange(of: centerIndex) { _, _ in
                 playing = false
             }
+            // Orbit's navigator: a card turned away is shown by turning to it.
+            .revealHost("carousel:\(pieceKey)", claim: { address in
+                address.hasPrefix("\(pieceKey)/carouselitems/") ? pieceKey.count + 1 : nil
+            }, reveal: { address in
+                guard let index = block.carouselItems.firstIndex(where: { ComposerUpdateAddress.isWithin(address, self.address(of: $0)) }),
+                      index != centerIndex else { return }
+                playing = false
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    block.carouselIndex = index
+                }
+            })
             .onChange(of: isSelected) { _, selected in
                 if !selected { playing = false }
             }
@@ -365,6 +397,11 @@ struct ComposerCarouselCanvasBlock: View {
         .frame(width: size.width, height: size.height)
         .clipped()
         .modifier(CarouselCardFrame(isFramed: !isSocial, isCenter: isCenter))
+        .updateAnchor(
+            address(of: item),
+            isPresented: isCenter,
+            order: block.carouselItems.firstIndex { $0.id == item.id } ?? 0
+        )
         .overlay(alignment: .bottom) {
             if isSocial, let platform = item.socialPlatform {
                 Text(platform.handle(from: item.link))

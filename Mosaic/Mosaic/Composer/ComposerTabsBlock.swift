@@ -97,8 +97,9 @@ struct ComposerTabsCanvasBlock: View {
     private var chips: some View {
         let segmentedInset = block.tabStyle == .segmented ? 3 * metric : 0
         return HStack(spacing: (block.tabStyle == .underline ? 6 : 2) * metric) {
-            ForEach(block.tabs) { tab in
+            ForEach(Array(block.tabs.enumerated()), id: \.element.id) { index, tab in
                 tabChip(tab)
+                    .updateAnchor("\(block.id.rawValue.lowercased())/tabs/\(tab.id.lowercased())", order: index)
             }
         }
         .padding(.vertical, 2 * metric)

@@ -9,16 +9,37 @@ struct ComposerRestoredDocument: Codable, Sendable {
     var title: String
     var body: ComposerBoardBody
     var revision: Int64
+    /// When the server saved this revision, as Postgres writes it; decides which of two edits is newer.
+    var updatedAtText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, role, title, body, revision
         case ownerID = "owner_id"
         case parentID = "parent_id"
+        case updatedAtText = "updated_at"
     }
+
+    var updatedAt: Date? { updatedAtText.flatMap(ComposerServerTime.date(from:)) }
 
     var document: ComposerSyncDocument {
         ComposerSyncDocument(id: id, parentID: parentID, role: role, title: title,
                              visibility: ComposerBoardSync.privateVisibility, body: body)
+    }
+}
+
+/// Reads Postgres timestamps (`2026-10-22T21:49:12.123456+00:00`); Foundation's ISO 8601 parser
+/// doesn't take six fractional digits.
+enum ComposerServerTime {
+    nonisolated static func date(from text: String) -> Date? {
+        var text = text
+        if let dot = text.firstIndex(of: "."),
+           let zone = text[dot...].firstIndex(where: { $0 == "+" || $0 == "-" || $0 == "Z" }) {
+            let digits = text[text.index(after: dot)..<zone]
+            text.replaceSubrange(dot..<zone, with: "." + digits.prefix(3).padding(toLength: 3, withPad: "0", startingAt: 0))
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = text.contains(".") ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+        return formatter.date(from: text)
     }
 }
 

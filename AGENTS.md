@@ -48,6 +48,12 @@ Use a thin app shell with feature-owned Pursuit destinations. The approved share
 
 Treat the exact navigation container, composition mechanism, fixture shape, review-device size, and eventual persistence implementation as reversible. Follow the acceptance gates and deterministic-fixture policy in the [feature brief](docs/features/golf/iteration-0.md) and [testing strategy](docs/quality/testing.md).
 
+**Decision:** Every new board component works with Orbit's update navigator (product owner, 2026-10-23). Before handing off a component, follow the [checklist for new components](docs/architecture/update-navigation.md#checklist-for-new-components):
+- keep what people add in lists with ids, and add look and layout keys to `board_key_ignored`;
+- anchor what the component shows with `updateAnchor`;
+- give it a reveal host if it shows only part of what it holds;
+- add the database and unit tests the checklist names.
+
 ## Change discipline
 
 - Keep the change within the requested scope and preserve unrelated work.

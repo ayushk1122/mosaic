@@ -165,6 +165,14 @@ final class ComposerScrollBubbleRail {
         CATransaction.commit()
     }
 
+    /// Glides the board so a spot on it sits in the middle of the screen, as far as the board allows.
+    func glide(toCenter y: CGFloat) {
+        guard let scroll else { return }
+        let visible = max(metrics.containerHeight - metrics.topInset - metrics.bottomInset, 1)
+        let offset = min(max(y - metrics.topInset - visible / 2, metrics.minOffset), metrics.maxOffset)
+        scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: offset), animated: true)
+    }
+
     /// Gives the board its own pan back. The offset isn't handed to SwiftUI's scroll position:
     /// SwiftUI follows the scroll view's offset itself, and its scroll position clamps short of
     /// the bottom, which jumped the board back up when the bubble was let go.

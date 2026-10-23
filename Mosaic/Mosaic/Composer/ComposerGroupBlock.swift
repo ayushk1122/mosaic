@@ -193,6 +193,7 @@ struct ComposerGroupCanvasBlock: View {
     @FocusState private var childFocus: ComposerBlockID?
     @State private var editingMemberID: ComposerBlockID?
     @State private var activeMemberID: ComposerBlockID?
+    @Environment(\.composerNewBoards) private var newBoards
     @State private var contentEditMemberID: ComposerBlockID?
     @State private var playingMediaIDs: Set<ComposerBlockID> = []
     /// Each member's untilted size inside the group, so ungrouping a tilted group can place them.
@@ -206,6 +207,10 @@ struct ComposerGroupCanvasBlock: View {
         ZStack(alignment: .topLeading) {
             ForEach(block.groupMembers) { member in
                 memberView(member.id)
+                    .updateAnchor(
+                        member.id.rawValue.lowercased(),
+                        leadsElsewhere: newBoards.contains { ComposerBoardSync.references(member, target: $0) }
+                    )
                     .onGeometryChange(for: CGSize.self) { proxy in
                         proxy.size
                     } action: { size in

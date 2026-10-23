@@ -99,6 +99,6 @@ enum ComposerLegacyStorage {
             return
         }
         guard shouldClaim(legacyMosaicID: legacyMosaicID(in: legacy), serverMosaicID: serverMosaicID) else { return }
-        try? claim(from: legacy, to: target, fileManager: fileManager)
+        _ = try? claim(from: legacy, to: target, fileManager: fileManager)
     }
 }

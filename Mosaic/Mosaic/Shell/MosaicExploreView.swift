@@ -2,8 +2,15 @@ import SwiftUI
 import UIKit
 
 /// Public Mosaics and Pursuits their owners chose to share, in a shuffled grid. Tapping one opens
-/// that person's Mosaic, on the Pursuit when the tile is one.
+/// that person's Mosaic, on the Pursuit when the tile is one. The search bar finds people by name
+/// or username, then shared boards; while it's in use the grid steps aside for the results.
 struct MosaicExploreView: View {
+    /// Set by a `mosaic://@username` link; Explore opens that person's Mosaic and clears it.
+    var linked: Binding<MosaicLink.Target?> = .constant(nil)
+    /// Bumped when the Explore tab is tapped while open: back to the top of the feed.
+    var resetCount = 0
+    var onOpenOwnMosaic: () -> Void = {}
+
     @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var tabBarHidden
 
@@ -14,12 +21,17 @@ struct MosaicExploreView: View {
         case signedOut
     }
 
+    private enum SearchPhase: Equatable {
+        case idle
+        case searching
+        case done
+        case failed
+    }
+
     @State private var filter = MosaicExploreClient.Filter.all
     @State private var sort = MosaicExploreClient.Sort.shuffle
     /// Explore is for finding new people; what they follow is already in Circle. Remembered.
     @AppStorage("explore.hideFollowed") private var hideFollowed = true
-    @State private var query = ""
-    @FocusState private var searching: Bool
     @State private var items: [MosaicExploreItem] = []
     /// The same seed pages without repeats; pulling to refresh picks a new one.
     @State private var seed = UUID().uuidString
@@ -36,57 +48,66 @@ struct MosaicExploreView: View {
     /// The tile whose owner's profile card is open.
     @State private var card: MosaicExploreItem?
 
+    /// On from a tap in the search bar until Cancel; the grid waits underneath, where it was.
+    @State private var isSearching = false
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
+    @State private var people: [MosaicPersonResult] = []
+    @State private var boards: [MosaicExploreItem] = []
+    @State private var searchPhase = SearchPhase.idle
+    @State private var feedPosition = ScrollPosition(edge: .top)
+
     private let muted = Color.white.opacity(0.55)
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 3)
     private static let handwriting = "BradleyHandITCTT-Bold"
 
-    /// What to fetch: a new filter, sort, or search starts over from the first page.
+    /// What to fetch: a new filter or sort starts over from the first page.
     private struct Request: Equatable {
         var filter: MosaicExploreClient.Filter
         var sort: MosaicExploreClient.Sort
         var hideFollowed: Bool
-        var query: String
     }
 
     private var request: Request {
-        Request(filter: filter, sort: sort, hideFollowed: hideFollowed,
-                query: query.trimmingCharacters(in: .whitespacesAndNewlines))
+        Request(filter: filter, sort: sort, hideFollowed: hideFollowed)
+    }
+
+    /// The search text without a leading @, which people often type before a username.
+    private var cleaned: String {
+        MosaicSettingsList.typedUsername(query).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 14) {
-                    Text("Explore")
-                        .font(.custom(Self.handwriting, size: 40, relativeTo: .largeTitle))
-                        .foregroundStyle(.white)
-                        .fixedSize()
-                        .accessibilityAddTraits(.isHeader)
-                    searchField
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            ZStack(alignment: .top) {
+                feed
+                    .opacity(isSearching ? 0 : 1)
+                    .allowsHitTesting(!isSearching)
+                    .accessibilityHidden(isSearching)
+                if isSearching {
+                    searchResults
+                        .transition(.opacity)
                 }
-                .padding(.horizontal, 16)
-                HStack(spacing: 8) {
-                    sortMenu
-                    filterChips
-                }
-                .padding(.horizontal, 16)
-                content
             }
-            .padding(.top, 8)
-            // Room to scroll the last row above the Customize page button.
-            .padding(.bottom, ComposerAddMenuMetrics.button + 32)
         }
-        .refreshable { await reload(reshuffle: true) }
+        .padding(.top, 8)
+        .animation(.easeOut(duration: 0.2), value: isSearching)
         .task(id: request) {
             guard loadedRequest != request || items.isEmpty else { return }
-            // Typing waits for a pause; a filter or sort tap loads at once.
-            if !request.query.isEmpty {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-            }
             await reload(reshuffle: false)
         }
-        .scrollDismissesKeyboard(.immediately)
+        .task(id: cleaned) { await search(cleaned) }
+        .task(id: linked.wrappedValue) { await openLink() }
+        .onChange(of: searchFocused) { _, focused in
+            if focused { isSearching = true }
+        }
+        .onChange(of: resetCount) {
+            card = nil
+            opened = nil
+            endSearch()
+            withAnimation { feedPosition.scrollTo(edge: .top) }
+        }
         .environment(\.colorScheme, .dark)
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(tabBarHidden || card != nil ? .hidden : .visible, for: .tabBar)
@@ -95,6 +116,8 @@ struct MosaicExploreView: View {
                 // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
                 .id(target)
         }
+        // A container, so the pinned header's own identifiers aren't replaced by the screen's.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(MosaicTab.explore.screenAccessibilityIdentifier)
         .mosaicPageBackground(.explore)
         .overlay {
@@ -121,22 +144,54 @@ struct MosaicExploreView: View {
         withAnimation(.easeOut(duration: 0.2)) { card = nil }
     }
 
+    private var header: some View {
+        HStack(spacing: 14) {
+            if !isSearching {
+                Text("Explore")
+                    .font(.custom(Self.handwriting, size: 40, relativeTo: .largeTitle))
+                    .foregroundStyle(.white)
+                    .fixedSize()
+                    .accessibilityAddTraits(.isHeader)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            searchField
+            if isSearching {
+                Button("Cancel", action: endSearch)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .buttonStyle(.plain)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityIdentifier("explore.search.cancel")
+            }
+        }
+        .frame(minHeight: 48)
+        .padding(.horizontal, 16)
+    }
+
+    private func endSearch() {
+        searchFocused = false
+        query = ""
+        isSearching = false
+    }
+
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.subheadline)
                 .foregroundStyle(muted)
-            TextField("Search", text: $query)
+            TextField("", text: $query, prompt: Text("Search").foregroundStyle(muted))
                 .font(.subheadline)
                 .foregroundStyle(.white)
+                .tint(.white)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
-                .focused($searching)
+                .focused($searchFocused)
                 .accessibilityIdentifier("explore.search")
             if !query.isEmpty {
                 Button {
                     query = ""
+                    searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(muted)
@@ -149,6 +204,27 @@ struct MosaicExploreView: View {
         .frame(height: 36)
         .frame(maxWidth: .infinity)
         .background(Color.white.opacity(0.1), in: Capsule())
+        .contentShape(Capsule())
+        .onTapGesture { searchFocused = true }
+    }
+
+    // MARK: Feed
+
+    private var feed: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    sortMenu
+                    filterChips
+                }
+                .padding(.horizontal, 16)
+                content
+            }
+            // Room to scroll the last row above the Customize page button.
+            .padding(.bottom, ComposerAddMenuMetrics.button + 32)
+        }
+        .scrollPosition($feedPosition)
+        .refreshable { await reload(reshuffle: true) }
     }
 
     private var sortMenu: some View {
@@ -226,20 +302,7 @@ struct MosaicExploreView: View {
             if items.isEmpty {
                 message(emptyText)
             } else {
-                LazyVGrid(columns: columns, spacing: 3) {
-                    ForEach(items) { item in
-                        MosaicExploreTile(
-                            item: item,
-                            onOpen: { opened = item.target },
-                            onOpenOwner: {
-                                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { card = item }
-                            }
-                        )
-                        .onAppear {
-                            if item.id == items.last?.id { Task { await loadMore() } }
-                        }
-                    }
-                }
+                grid(items, loadsMore: true)
                 if loadingMore {
                     ProgressView()
                         .tint(.white)
@@ -250,10 +313,28 @@ struct MosaicExploreView: View {
         }
     }
 
-    private var emptyText: String {
-        if !request.query.isEmpty {
-            return "Nothing matches “\(request.query)”."
+    private func grid(_ tiles: [MosaicExploreItem], loadsMore: Bool) -> some View {
+        LazyVGrid(columns: columns, spacing: 3) {
+            ForEach(tiles) { item in
+                MosaicExploreTile(
+                    item: item,
+                    onOpen: {
+                        searchFocused = false
+                        opened = item.target
+                    },
+                    onOpenOwner: {
+                        searchFocused = false
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { card = item }
+                    }
+                )
+                .onAppear {
+                    if loadsMore, item.id == items.last?.id { Task { await loadMore() } }
+                }
+            }
         }
+    }
+
+    private var emptyText: String {
         if hideFollowed {
             return "You follow everything here. Turn off Hide boards I follow to see it all again."
         }
@@ -273,6 +354,119 @@ struct MosaicExploreView: View {
             .padding(.horizontal, 32)
             .padding(.top, 60)
     }
+
+    // MARK: Search
+
+    private var searchResults: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if account == nil {
+                    message("Sign in to find people.")
+                } else if cleaned.isEmpty {
+                    message("Search for people by name or username.")
+                } else if searchPhase == .failed {
+                    message("Search is not available right now.")
+                } else if searchPhase != .done {
+                    ProgressView()
+                        .tint(muted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 24)
+                } else if people.isEmpty && boards.isEmpty {
+                    message("No one matches “\(cleaned)” yet.")
+                } else {
+                    if !people.isEmpty {
+                        sectionTitle("People")
+                        LazyVStack(spacing: 0) {
+                            ForEach(people) { person in
+                                MosaicPersonRow(person: person, isSelf: person.id == account?.session?.userID) {
+                                    searchFocused = false
+                                    opened = MosaicVisitTarget(person: person)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                    if !boards.isEmpty {
+                        sectionTitle("Boards")
+                            .padding(.top, people.isEmpty ? 0 : 10)
+                        grid(boards, loadsMore: false)
+                    }
+                }
+            }
+            .padding(.bottom, ComposerAddMenuMetrics.button + 32)
+        }
+        .scrollDismissesKeyboard(.immediately)
+        .accessibilityIdentifier("explore.results")
+    }
+
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(muted)
+            .padding(.horizontal, 16)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// People first, then shared boards whose titles or owners match, most followed first.
+    private func search(_ text: String) async {
+        guard !text.isEmpty else {
+            people = []
+            boards = []
+            searchPhase = .idle
+            return
+        }
+        searchPhase = .searching
+        try? await Task.sleep(for: .milliseconds(250))
+        guard !Task.isCancelled,
+              let account,
+              let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken()
+        else { return }
+        async let foundPeople = MosaicSearchClient(config: config).people(matching: text, accessToken: token)
+        async let foundBoards = MosaicExploreClient(config: config)
+            .feed(filter: .all, sort: .popular, query: text, seed: seed, offset: 0, accessToken: token)
+        do {
+            let (matchedPeople, matchedBoards) = try await (foundPeople, foundBoards)
+            guard !Task.isCancelled else { return }
+            people = matchedPeople
+            boards = matchedBoards
+            searchPhase = .done
+        } catch {
+            guard !Task.isCancelled else { return }
+            people = []
+            boards = []
+            searchPhase = .failed
+        }
+    }
+
+    /// Opens the Mosaic a link names, on its Pursuit when it names one. An unknown name is left in
+    /// the search bar.
+    private func openLink() async {
+        guard let target = linked.wrappedValue,
+              let account,
+              let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken()
+        else { return }
+        let name = target.username
+        let match = try? await MosaicSearchClient(config: config)
+            .people(matching: name, accessToken: token)
+            .first { $0.username == name }
+        guard !Task.isCancelled else { return }
+        if let match {
+            if match.id == account.session?.userID {
+                onOpenOwnMosaic()
+            } else {
+                searchFocused = false
+                opened = MosaicVisitTarget(person: match, pursuitID: target.pursuitID)
+            }
+        } else {
+            isSearching = true
+            query = name
+        }
+        linked.wrappedValue = nil
+    }
+
+    // MARK: Loading
 
     private func reload(reshuffle: Bool) async {
         if reshuffle { seed = UUID().uuidString }
@@ -319,8 +513,8 @@ struct MosaicExploreView: View {
         do {
             let page = try await MosaicExploreClient(config: config)
                 .feed(filter: requested.filter, sort: requested.sort, hideFollowed: requested.hideFollowed,
-                      query: requested.query, seed: seed, offset: offset, accessToken: token)
-            // A filter, sort, or search changed while this page loaded belongs to the newer request.
+                      seed: seed, offset: offset, accessToken: token)
+            // A filter or sort changed while this page loaded belongs to the newer request.
             guard requested == request, !Task.isCancelled else { return nil }
             return page
         } catch {

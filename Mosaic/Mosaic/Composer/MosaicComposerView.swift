@@ -15,6 +15,13 @@ struct MosaicComposerView: View {
     @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var mosaicTabBarHidden
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.composerShowsBack) private var showsBack
+    @Environment(\.composerTopInset) private var topInset
+    @Environment(\.composerClose) private var close
+    @Environment(\.composerNewBoards) private var newBoards
+    @Environment(ComposerUpdateGuide.self) private var updateGuide: ComposerUpdateGuide?
+    @Environment(\.composerUpdateAddresses) private var updateAddresses
+    @Environment(\.composerAddedAddresses) private var addedAddresses
     @Environment(\.openURL) private var openURL
     @State private var visitMediaAttempt = 0
     @State private var menuExpanded = false
@@ -72,6 +79,8 @@ struct MosaicComposerView: View {
     @State private var viewportWidth: CGFloat = 0
     @State private var openedPursuitID: ComposerDocumentID?
     @State private var openScrapbookID: ComposerBlockID?
+    /// The page a journal opens on when the navigator opens it; otherwise where it was left.
+    @State private var journalStartPage: ComposerDocumentID?
     @State private var pencilFrames: [ComposerBlockID: CGRect] = [:]
     @State private var textStyleIconFrames: [ComposerBlockID: CGRect] = [:]
     @State private var resizeCornerFrames: [ComposerBlockID: ComposerResizeCornerFrames] = [:]
@@ -114,6 +123,154 @@ struct MosaicComposerView: View {
         return blocks.filter { $0.kind == .tabs || $0.kind == .banner || $0.tabID == selected }
     }
 
+    /// On a board opened from Orbit: the updates on this board's pieces, inside groups too, each
+    /// with its piece's place in reading order (a group's pieces right after it), and the pieces
+    /// that open nodes or pages with updates. Where each one is comes from the anchors its views place.
+    private var updatePlan: ComposerUpdateGuide.Plan {
+        guard updateGuide != nil, !updateAddresses.isEmpty || !newBoards.isEmpty else { return ComposerUpdateGuide.Plan() }
+        var placed: [(block: ComposerBlock, order: Int)] = []
+        func place(_ blocks: [ComposerBlock]) {
+            for block in blocks {
+                placed.append((block, placed.count))
+                place(Self.readingOrder(block.groupMembers))
+            }
+        }
+        // Every tab's pieces, tab by tab: one that isn't showing is revealed when the navigator gets there.
+        let display = privacyDisplay
+        let tabOrder = Dictionary(
+            (blocks.first { $0.kind == .tabs }?.tabs ?? []).enumerated().map { ($1.id, $0) }
+        ) { first, _ in first }
+        // The banner, above the board, comes first.
+        place(blocks.filter { $0.kind == .banner })
+        place(blocks
+            .filter { $0.kind != .banner && $0.kind != .unsupported && display.look(of: $0) != .removed }
+            .sorted { a, b in
+                let first = a.tabID.flatMap { tabOrder[$0] } ?? -1
+                let second = b.tabID.flatMap { tabOrder[$0] } ?? -1
+                if first != second { return first < second }
+                return (a.position.y, a.position.x) < (b.position.y, b.position.x)
+            })
+        let byPiece = Dictionary(placed.map { ($0.block.id.rawValue.lowercased(), $0) }) { first, _ in first }
+        var plan = ComposerUpdateGuide.Plan(added: addedAddresses)
+        for address in updateAddresses.sorted() {
+            guard let piece = byPiece[ComposerUpdateAddress.piece(of: address)] else { continue }
+            plan.updates.append(.init(address: address, piece: piece.block.id, order: piece.order))
+        }
+        for piece in placed {
+            for board in newBoards.sorted(by: { $0.uuidString < $1.uuidString })
+            where ComposerBoardSync.references(piece.block, target: board) {
+                plan.openers.append(.init(
+                    piece: piece.block.id,
+                    board: board,
+                    opens: piece.block.kind == .pursuit || piece.block.kind == .node || piece.block.kind == .scrapbook,
+                    order: piece.order
+                ))
+            }
+        }
+        return plan
+    }
+
+    private static func readingOrder(_ blocks: [ComposerBlock]) -> [ComposerBlock] {
+        blocks.sorted { ($0.position.y, $0.position.x) < ($1.position.y, $1.position.x) }
+    }
+
+    /// A piece on this board, or one inside a group on it.
+    private func boardPiece(_ id: ComposerBlockID) -> ComposerBlock? {
+        func find(_ blocks: [ComposerBlock]) -> ComposerBlock? {
+            for block in blocks {
+                if block.id == id { return block }
+                if let member = find(block.groupMembers) { return member }
+            }
+            return nil
+        }
+        return find(blocks)
+    }
+
+    /// A piece that opens a node or page with updates inside glows too.
+    private func opensUpdates(_ block: ComposerBlock) -> Bool {
+        !newBoards.isEmpty && newBoards.contains { ComposerBoardSync.references(block, target: $0) }
+    }
+
+    private var updateBoardKey: String { ComposerUpdateGuide.key(for: documentID) }
+
+    /// Brings a stop into view, or opens the node, Pursuit, or journal page it leads to.
+    private func follow(_ request: ComposerUpdateGuide.Request?) {
+        guard let request, let updateGuide, updateGuide.board == updateBoardKey,
+              let block = boardPiece(request.piece) else { return }
+        if request.opens {
+            if block.kind == .scrapbook, let page = request.board {
+                openScrapbook(block, at: page)
+            } else {
+                openPursuit(block)
+            }
+        } else {
+            Task { await reveal(request) }
+        }
+    }
+
+    /// Glides to an address when it's shown. Otherwise glides to what holds it, asks the host that
+    /// holds it most closely to show it, waits (up to half a second) for it to appear, and goes
+    /// again: a card in a carousel on another tab takes two reveals.
+    private func reveal(_ request: ComposerUpdateGuide.Request) async {
+        guard let updateGuide else { return }
+        let address = request.address
+        func current() -> Bool { updateGuide.board == updateBoardKey && updateGuide.request?.nonce == request.nonce }
+        for _ in 0..<3 {
+            guard current() else { return }
+            if let anchor = updateGuide.anchors[address], anchor.isPresented {
+                if !anchor.isPinned { scrollBubbleRail.glide(toCenter: anchor.frame.midY) }
+                // There: a host that shows details, like a calendar day, opens them.
+                updateGuide.host(for: address)?.open?(address)
+                return
+            }
+            if let holder = ComposerUpdateGuide.placement(of: address, anchors: updateGuide.anchors) {
+                scrollBubbleRail.glide(toCenter: holder.frame.midY)
+            } else if let frame = blockFrames[request.piece] {
+                scrollBubbleRail.glide(toCenter: frame.midY)
+            }
+            guard let host = updateGuide.host(for: address) else { return }
+            host.reveal(address)
+            for _ in 0..<10 {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard current() else { return }
+                if updateGuide.anchors[address]?.isPresented == true { break }
+            }
+        }
+        if current(), let anchor = ComposerUpdateGuide.placement(of: address, anchors: updateGuide.anchors) {
+            if !anchor.isPinned { scrollBubbleRail.glide(toCenter: anchor.frame.midY) }
+            if updateGuide.anchors[address]?.isPresented == true { updateGuide.host(for: address)?.open?(address) }
+        }
+    }
+
+    /// The tab holding an address's piece, when it isn't the tab showing.
+    private func hiddenTab(of address: String) -> String? {
+        let key = ComposerUpdateAddress.piece(of: address)
+        guard let tabs = blocks.first(where: { $0.kind == .tabs }), let selected = tabs.selectedTabID,
+              let piece = blocks.first(where: { block in
+                  block.id.rawValue.lowercased() == key || boardPieceIDs(in: block).contains(key)
+              }),
+              let tabID = piece.tabID, tabID != selected
+        else { return nil }
+        return tabID
+    }
+
+    private func boardPieceIDs(in block: ComposerBlock) -> [String] {
+        block.groupMembers.flatMap { [$0.id.rawValue.lowercased()] + boardPieceIDs(in: $0) }
+    }
+
+    /// Shows a tab, as tapping it would: on someone else's board only for this visit.
+    private func selectTab(_ tabID: String) {
+        guard var tabs = blocks.first(where: { $0.kind == .tabs }) else { return }
+        tabs.selectedTabID = tabID
+        withAnimation(.easeInOut(duration: 0.25)) {
+            if chrome.isViewing {
+                viewingOverrides[tabs.id] = tabs
+            } else {
+                store.updateBlock(tabs, in: documentID)
+            }
+        }
+    }
+
     private var scrollingBlocks: [ComposerBlock] {
         let display = privacyDisplay
         return visibleBlocks.filter {
@@ -136,7 +293,8 @@ struct MosaicComposerView: View {
 
     private var backButton: some View {
         Button {
-            dismiss()
+            // The Mosaic over an Orbit page closes; anything else goes back on its stack.
+            if documentID == nil, let close { close() } else { dismiss() }
         } label: {
             // Sits over the board's content, so it is frosted glass rather than solid.
             Image(systemName: "chevron.left")
@@ -281,6 +439,8 @@ struct MosaicComposerView: View {
                     .environment(store)
                     .environment(chrome)
                     .environment(visit)
+                    // A board opened from this one always goes back to it.
+                    .environment(\.composerShowsBack, true)
             }
             .fullScreenCover(isPresented: $showsSettings, onDismiss: {
                 profileRefresh += 1
@@ -308,6 +468,35 @@ struct MosaicComposerView: View {
             // Leaving the visit, or opening another board in it, stops the quiet fetching; the
             // next board to finish loading starts it again.
             .onDisappear { visit?.media?.pausePrefetch() }
+            // Opened from Orbit: this board's updates are the ones the guide walks through while it's on screen.
+            .onAppear { updateGuide?.show(board: updateBoardKey, plan: updatePlan) }
+            .onChange(of: updatePlan) { _, plan in
+                guard let updateGuide, updateGuide.board == updateBoardKey else { return }
+                updateGuide.show(board: updateBoardKey, plan: plan)
+            }
+            .onPreferenceChange(ComposerUpdateAnchorKey.self) { anchors in
+                updateGuide?.setAnchors(anchors, board: updateBoardKey)
+            }
+            .onChange(of: updateGuide?.request) { _, request in follow(request) }
+            // The journal's pages are boards of their own and take over the guide while open;
+            // closing it hands the guide back to this board.
+            .onChange(of: openScrapbookID) { _, open in
+                if open == nil { updateGuide?.show(board: updateBoardKey, plan: updatePlan) }
+            }
+            // A journal open on an Orbit board takes the screen; Orbit steps aside while it's up.
+            .preference(key: ComposerJournalOpenKey.self, value: openScrapbookID != nil)
+            .onChange(of: updateGuide?.leaveCount) {
+                guard let updateGuide, updateGuide.board == updateBoardKey, !updateGuide.isAtRoot else { return }
+                // A journal page closes its journal; a node or Pursuit goes back.
+                if isBookPage, let close { close() } else { dismiss() }
+            }
+            // Orbit's navigator: a piece on a tab that isn't showing is shown by switching tabs.
+            .revealHost("tabs", claim: { address in
+                hiddenTab(of: address) == nil ? nil : 0
+            }, reveal: { address in
+                if let tabID = hiddenTab(of: address) { selectTab(tabID) }
+            })
+            .environment(\.composerUpdateBoard, updateBoardKey)
             .preference(key: ComposerGroupingPreferenceKey.self, value: isGrouping)
             .task(id: documentID) {
                 visit?.recordVisit(to: documentID.flatMap(ComposerBoardSync.uuid))
@@ -342,6 +531,7 @@ struct MosaicComposerView: View {
 
     private var measuredComposerContent: some View {
         AnyView(composerBody)
+            .safeAreaPadding(.top, topInset)
             .coordinateSpace(name: composerSpace)
             .environment(\.composerCoordinateSpace, composerSpace)
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -584,10 +774,11 @@ struct MosaicComposerView: View {
                     }
                     .padding(.leading, 20)
                     .padding(.bottom, 20)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
                 }
             }
             .overlay(alignment: .topLeading) {
-                if documentID != nil || chrome.isVisiting, !isBookPage, focusedMedia == nil, openScrapbookID == nil {
+                if documentID != nil || chrome.isVisiting, showsBack, !isBookPage, focusedMedia == nil, openScrapbookID == nil {
                     // The 44pt tap area centers the circle 12pt down, level with the scroll bubble's top.
                     backButton
                         .padding(.leading, 8)
@@ -604,9 +795,10 @@ struct MosaicComposerView: View {
             }
             .overlay {
                 if let openScrapbookID {
-                    ScrapbookBookView(parentDocumentID: documentID, blockID: openScrapbookID) {
+                    ScrapbookBookView(parentDocumentID: documentID, blockID: openScrapbookID, startPage: journalStartPage) {
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                             self.openScrapbookID = nil
+                            journalStartPage = nil
                         }
                     }
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
@@ -637,6 +829,8 @@ struct MosaicComposerView: View {
         VStack(spacing: 0) {
             if let banner = blocks.first(where: { $0.kind == .banner }) {
                 bannerHeader(banner)
+                    // Above the board and always in view while it's open.
+                    .updateAnchor(banner.id.rawValue.lowercased(), isPinned: true)
             }
             ZStack(alignment: .bottomTrailing) {
                 canvasScroll
@@ -645,6 +839,14 @@ struct MosaicComposerView: View {
                     grownCanvasHeight = max(grownCanvasHeight, canvasHeight + 320)
                 }
                 .allowsHitTesting(false)
+                if let updateGuide, !updatePlan.isEmpty {
+                    ComposerUpdateWatcher(
+                        rail: scrollBubbleRail,
+                        width: canvasSize.width,
+                        guide: updateGuide,
+                        board: updateBoardKey
+                    )
+                }
                 if showsScrollBubble {
                     ComposerScrollBubble(rail: scrollBubbleRail)
                         // On a journal page the top-right corner turns the page and would take the
@@ -654,39 +856,45 @@ struct MosaicComposerView: View {
                         .padding(.bottom, 20 + ComposerAddMenuMetrics.button + 16)
                         .transition(.opacity)
                 }
-                if isGrouping {
-                    groupingBar
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 20)
-                }
+                // The add menu rises above the keyboard, for its search field.
                 if !chrome.isViewing, !isGrouping {
                     addMenu
                 }
-                if showsSelectionTrash {
-                    selectionTrashButton
-                        .padding(.trailing, 20 + ComposerAddMenuMetrics.button + 12)
-                        .padding(.bottom, 20)
-                }
-                if !isGrouping, !chrome.isVisiting {
-                    viewEyeButton
-                        .padding(.trailing, eyeTrailingPadding)
-                        .padding(.bottom, 20)
-                    if chrome.isViewing, documentID == nil {
-                        HStack(alignment: .bottom, spacing: 12) {
-                            MosaicOwnProfileButton(size: ComposerAddMenuMetrics.button, refresh: profileRefresh)
-                            if showsViewAs {
-                                MosaicViewAsToggle(
-                                    viewAs: Bindable(chrome).viewAs,
-                                    isChecking: pursuitPrivacy?.isLoaded != true
-                                )
+                // Pinned to the bottom of the screen: the keyboard covers them while typing rather than
+                // lifting them, so they can't be left stranded mid-board if it goes away unseen.
+                Group {
+                    if isGrouping {
+                        groupingBar
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 20)
+                    }
+                    if showsSelectionTrash {
+                        selectionTrashButton
+                            .padding(.trailing, 20 + ComposerAddMenuMetrics.button + 12)
+                            .padding(.bottom, 20)
+                    }
+                    if !isGrouping, !chrome.isVisiting {
+                        viewEyeButton
+                            .padding(.trailing, eyeTrailingPadding)
+                            .padding(.bottom, 20)
+                        if chrome.isViewing, documentID == nil {
+                            HStack(alignment: .bottom, spacing: 12) {
+                                MosaicOwnProfileButton(size: ComposerAddMenuMetrics.button, refresh: profileRefresh)
+                                if showsViewAs {
+                                    MosaicViewAsToggle(
+                                        viewAs: Bindable(chrome).viewAs,
+                                        isChecking: pursuitPrivacy?.isLoaded != true
+                                    )
+                                }
                             }
+                            .padding(.trailing, eyeTrailingPadding + ComposerAddMenuMetrics.button + 12)
+                            .padding(.bottom, 20)
+                            .transition(.opacity)
                         }
-                        .padding(.trailing, eyeTrailingPadding + ComposerAddMenuMetrics.button + 12)
-                        .padding(.bottom, 20)
-                        .transition(.opacity)
                     }
                 }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
             }
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .named(composerSpace))
@@ -782,6 +990,12 @@ struct MosaicComposerView: View {
                     scrollsWithTwoFingers: drawingBlockID != nil,
                     rail: scrollBubbleRail
                 ))
+                // Opened from Orbit: the board dims slightly around the update the navigator brought up.
+                .overlay(alignment: .topLeading) {
+                    if let updateGuide, !updatePlan.isEmpty {
+                        ComposerSpotlightDim(guide: updateGuide, board: updateBoardKey)
+                    }
+                }
                 .coordinateSpace(name: composerSpace + ".canvas")
                 .modifier(
                     PlacementGestureModifier(
@@ -1109,6 +1323,7 @@ struct MosaicComposerView: View {
                 onDrawingFullChange: { drawingIsFull = $0 },
                 inkSession: drawingBlockID == block.id ? inkSession : nil
             )
+            .updateAnchor(block.id.rawValue.lowercased(), leadsElsewhere: opensUpdates(block))
         }
     }
 
@@ -2086,7 +2301,7 @@ struct MosaicComposerView: View {
             return
         }
         let session = textDragSession
-        if session.graphResizing, let corner = session.resizeCorner {
+        if session.graphResizing, session.resizeCorner != nil {
             visual = .inactive
             return
         }
@@ -3030,6 +3245,12 @@ struct MosaicComposerView: View {
         } else if block.kind == .scrapbook {
             openScrapbook(block)
         }
+    }
+
+    /// Opens a journal at the page the navigator is going to.
+    private func openScrapbook(_ block: ComposerBlock, at page: UUID) {
+        journalStartPage = block.scrapbookPageIDs.first { ComposerBoardSync.uuid($0) == page }
+        openScrapbook(block)
     }
 
     private func openScrapbook(_ block: ComposerBlock) {

@@ -98,6 +98,8 @@ struct ComposerCalendarCanvasBlock: View {
     let isViewing: Bool
 
     @Environment(\.composerPaperPage) private var onPaper
+    @Environment(\.composerUpdateAddresses) private var updateAddresses
+    @Environment(ComposerUpdateGuide.self) private var updateGuide: ComposerUpdateGuide?
     @State private var year = CalendarMonthModel.entryCalendar().component(.year, from: .now)
     @State private var month = CalendarMonthModel.entryCalendar().component(.month, from: .now)
     @State private var showsYear = false
@@ -106,6 +108,33 @@ struct ComposerCalendarCanvasBlock: View {
     @State private var dayTick = 0
 
     private var calendar: Calendar { CalendarMonthModel.entryCalendar() }
+    private var pieceKey: String { block.id.rawValue.lowercased() }
+
+    private var daysPrefix: String { "\(pieceKey)/calendarentries/" }
+
+    private func address(of day: CalendarMonthModel.Day) -> String {
+        daysPrefix + ComposerUpdateAddress.day(year: day.year, month: day.month, day: day.day)
+    }
+
+    /// On a board opened from Orbit, the days with updates by address, ordered by date.
+    private var updatedDays: [String: Int] {
+        guard updateGuide != nil else { return [:] }
+        var days: [String: Int] = [:]
+        for address in updateAddresses where address.hasPrefix(daysPrefix) {
+            let part = String(address.dropFirst(daysPrefix.count).split(separator: "/").first ?? "")
+            guard let date = ComposerUpdateAddress.date(of: part) else { continue }
+            days[daysPrefix + part] = date.year * 10_000 + date.month * 100 + date.day
+        }
+        return days
+    }
+
+    /// Days with updates outside the month shown, which have a place in the navigator's order at the calendar.
+    private var hiddenDays: [String: Int] {
+        updatedDays.filter { address, _ in
+            guard !showsYear, let date = ComposerUpdateAddress.date(of: String(address.dropFirst(daysPrefix.count))) else { return true }
+            return date.year != year || date.month != month
+        }
+    }
     private var metric: CGFloat { max(0.45, scale * livePinchScale) }
     private var width: CGFloat { 332 * metric }
     private var canTap: Bool { !isLifted && !isRelocating }
@@ -130,6 +159,7 @@ struct ComposerCalendarCanvasBlock: View {
         .padding(.bottom, 6 * metric)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .frame(width: width)
+        .hiddenUpdateAnchors(hiddenDays)
         .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -153,6 +183,34 @@ struct ComposerCalendarCanvasBlock: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             Task { @MainActor in dayTick += 1 }
         }
+        .onChange(of: selectedDay) { _, day in
+            // Opening a day shows what was added to it.
+            guard let day else { return }
+            let seen = updateAddresses.filter { ComposerUpdateAddress.isWithin($0, address(of: day)) }
+            if !seen.isEmpty { updateGuide?.markSeen(Set(seen)) }
+        }
+        // Orbit's navigator: a day in another month is shown by turning to its month.
+        .revealHost("calendar:\(pieceKey)", claim: { address in
+            address.hasPrefix(daysPrefix) ? pieceKey.count + 1 : nil
+        }, reveal: { address in
+            guard let asked = ComposerUpdateAddress.date(of: String(
+                address.dropFirst(daysPrefix.count).split(separator: "/").first ?? ""
+            )) else { return }
+            showsYear = false
+            withAnimation(.easeInOut(duration: 0.25)) {
+                year = asked.year
+                month = asked.month
+            }
+        }, open: { address in
+            // There: open the day, to see what was added to it. Opening it checks it off.
+            guard let asked = ComposerUpdateAddress.date(of: String(
+                address.dropFirst(daysPrefix.count).split(separator: "/").first ?? ""
+            )) else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                selectedDay = CalendarMonthModel.Day(year: asked.year, month: asked.month, day: asked.day)
+            }
+        })
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Calendar")
         .accessibilityIdentifier("composer.calendar")
@@ -241,6 +299,8 @@ struct ComposerCalendarCanvasBlock: View {
                 }
             }
             .frame(height: 28 * metric)
+            // A day with an update glows; the address is empty for the grid's blank cells.
+            .updateAnchor(day.map(address(of:)) ?? "", order: day.map { $0.year * 10_000 + $0.month * 100 + $0.day } ?? 0)
             Circle()
                 .fill(Color.white.opacity(marked ? 0.9 : 0))
                 .frame(width: 4 * metric, height: 4 * metric)

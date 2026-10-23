@@ -13,7 +13,7 @@ Mosaic helps people capture the work they put into meaningful Pursuits and turn 
 
 **Current repository fact:** Visits to other people’s boards open after access checks and layout loading, while media downloads per opened board. Repeat visits reuse unchanged media; failed files offer Retry without blocking navigation.
 
-**Current repository fact:** Explore lists Mosaics and Pursuits their owners chose to share, with sorting and search. Profile and Pursuit cards handle following, and Discover marks followed boards that changed since you last opened them. See [Explore, cards, and following updates](docs/features/explore-and-following.md).
+**Current repository fact:** The app has four tabs: Mosaic, Orbit ("your daily orbit", what people you follow added today), Circle (Me, and the boards you follow), and Explore (Mosaics and Pursuits their owners chose to share, with sorting, plus people search). Profile and Pursuit cards handle following, and Circle's Following lists mark followed boards that changed since you last opened them. See [Explore, cards, and following updates](docs/features/explore-and-following.md).
 
 **Current repository fact:** The Content composer item links to YouTube videos, Instagram posts/reels, TikTok posts, and Twitch clips/VODs. It stores a preview cover with the board and opens the source link when tapped in view mode. Existing photo and 10-second video uploads remain supported.
 
@@ -49,8 +49,8 @@ xcodebuild test \
 - Product: [vision and principles](docs/product/vision-and-principles.md), [glossary](docs/product/glossary.md), and [Pursuit model](docs/product/pursuit-model.md)
 - Design: [visual language](docs/design/visual-language.md)
 - Features: [Golf Iteration 0](docs/features/golf/iteration-0.md) and [Explore, cards, and following updates](docs/features/explore-and-following.md)
-- Architecture: [overview](docs/architecture/overview.md), [account restoration and sync](docs/architecture/account-sync.md)
-- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md), [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md), and [sync conflicts and the media queue](docs/decisions/0003-sync-conflict-and-media-queue.md)
+- Architecture: [overview](docs/architecture/overview.md), [account restoration and sync](docs/architecture/account-sync.md), [Orbit update navigation, spotlight, and trail (proposed)](docs/architecture/update-navigation.md)
+- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md), [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md), [sync conflicts and the media queue](docs/decisions/0003-sync-conflict-and-media-queue.md), and [newest edit wins](docs/decisions/0004-newest-edit-wins.md)
 - Quality: [testing strategy](docs/quality/testing.md)
 
 ## Status labels

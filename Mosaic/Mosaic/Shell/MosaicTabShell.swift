@@ -3,27 +3,35 @@ import UIKit
 
 enum MosaicTab: String, CaseIterable, Identifiable {
     case mosaic
+    case orbit
     case circle
     case explore
-    case search
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .mosaic: "Mosaic"
-        case .explore: "Explore"
+        case .orbit: "Orbit"
         case .circle: "Circle"
-        case .search: "Discover"
+        case .explore: "Explore"
+        }
+    }
+
+    /// The app's own drawings, as template images that take the tab bar's colors.
+    var assetImage: String? {
+        switch self {
+        case .mosaic: "MosaicMonogramTab"
+        case .orbit: "OrbitTab"
+        case .circle: "CircleTab"
+        case .explore: nil
         }
     }
 
     var systemImage: String {
         switch self {
-        case .mosaic: "square.grid.2x2"
         case .explore: "sparkles"
-        case .circle: "person.2"
-        case .search: "magnifyingglass"
+        default: "circle"
         }
     }
 
@@ -76,6 +84,8 @@ final class MosaicChrome {
 
 struct MosaicTabShell: View {
     @State private var selection: MosaicTab = .mosaic
+    /// Bumped when a tab is tapped while it's already open: it goes back to where it starts.
+    @State private var resets: [MosaicTab: Int] = [:]
     @State private var chrome = MosaicChrome()
     @State private var store: ComposerStore
     @Environment(\.scenePhase) private var scenePhase
@@ -86,8 +96,10 @@ struct MosaicTabShell: View {
     @State private var pursuitPrivacy = MosaicPursuitPrivacy()
     /// Images of the owner's boards shared to Explore; only when signed in.
     @State private var explorePreviews: MosaicExplorePreviews?
+    /// What people the owner follows added today, for Orbit; only when signed in.
+    @State private var orbit: MosaicOrbitModel?
     var account: MosaicAccount?
-    /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
+    /// Set by a `mosaic://@username` link; Explore opens that person's Mosaic and clears it.
     var linked: Binding<MosaicLink.Target?>
 
     init(
@@ -107,15 +119,23 @@ struct MosaicTabShell: View {
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
         _pageBackgrounds = State(initialValue: MosaicPageBackgrounds(location: location, persistToDisk: persistToDisk))
         _explorePreviews = State(initialValue: account.map { MosaicExplorePreviews(store: store, account: $0) })
+        _orbit = State(initialValue: account.map { MosaicOrbitModel(account: $0) })
     }
 
     var body: some View {
-        TabView(selection: $selection) {
+        TabView(selection: Binding(
+            get: { selection },
+            set: { tab in
+                if tab == selection { resets[tab, default: 0] += 1 }
+                selection = tab
+            }
+        )) {
             ForEach(MosaicTab.allCases) { tab in
                 tabRoot(for: tab)
                     .tabItem {
                         tabLabel(for: tab)
                     }
+                    .badge(tab == .orbit ? orbit?.unseenCount ?? 0 : 0)
                     .tag(tab)
             }
         }
@@ -179,6 +199,8 @@ struct MosaicTabShell: View {
             remoteSync.store = store
             // Shared boards edited since their Explore image was made get a new one.
             explorePreviews?.refreshStale()
+            // The Orbit badge counts what's new since the app was last open.
+            Task { await orbit?.refresh() }
             while !Task.isCancelled {
                 remoteSync.pullNow(account: account)
                 try? await Task.sleep(for: .seconds(60))
@@ -190,6 +212,8 @@ struct MosaicTabShell: View {
             if !downloads.isLoading { downloadAttempt += 1 }
         }
         .onChange(of: scenePhase) { _, phase in
+            // What was just seen in Orbit reaches the server before the app is put away.
+            if phase == .background { Task { await orbit?.sendSeen() } }
             if phase == .active {
                 if !downloads.isLoading { downloadAttempt += 1 }
                 if let account {
@@ -217,11 +241,6 @@ struct MosaicTabShell: View {
                 if let account {
                     remoteSync.flushNow(account: account)
                 }
-            }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let conflict = remoteSync.conflicts.first {
-                syncConflictBanner(conflict)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -264,7 +283,8 @@ struct MosaicTabShell: View {
         .environment(\.composerMediaVersions, store.mediaVersions)
         .environment(\.composerMediaWaiting, mediaWaiting)
         .onChange(of: linked.wrappedValue, initial: true) { _, target in
-            if target != nil { selection = .search }
+            // A `mosaic://@username` link opens from Explore, where people are searched.
+            if target != nil { selection = .explore }
         }
         .environment(store)
         .environment(chrome)
@@ -272,32 +292,9 @@ struct MosaicTabShell: View {
         .environment(pageBackgrounds)
         .environment(pursuitPrivacy)
         .environment(explorePreviews)
+        .environment(orbit)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
-    }
-
-    /// ADR 0003: the other device's version is showing; this device's is kept until the person chooses.
-    private func syncConflictBanner(_ conflict: ComposerSyncConflict) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(conflict.deleted == nil
-                 ? "“\(conflict.title)” was changed on another device too. Showing that version."
-                 : "“\(conflict.title)” was deleted on another device, but you’d edited it here.")
-                .font(.caption)
-            HStack(spacing: 16) {
-                Button("Keep my version") { remoteSync.keepMyVersion(conflict) }
-                    .accessibilityIdentifier("sync.conflict.keep")
-                Button("Discard") { remoteSync.discard(conflict) }
-                    .accessibilityIdentifier("sync.conflict.discard")
-            }
-            .font(.caption.bold())
-        }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(red: 0.16, green: 0.22, blue: 0.34))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sync.conflict")
     }
 
     /// After downloads fail, nothing is coming until Retry, so missing media shows as unavailable.
@@ -308,30 +305,44 @@ struct MosaicTabShell: View {
 
     @ViewBuilder
     private func tabRoot(for tab: MosaicTab) -> some View {
+        if tab == .orbit {
+            // Each of Orbit's pages has a navigation stack of its own: a board opened from one
+            // stays on that page, under Orbit's header, and goes back to it.
+            MosaicOrbitView(resetCount: resets[.orbit, default: 0]) { selection = .explore }
+                .toolbar(chrome.isViewing ? .hidden : .visible, for: .tabBar)
+        } else {
+            stackedTabRoot(for: tab)
+        }
+    }
+
+    private func stackedTabRoot(for tab: MosaicTab) -> some View {
         NavigationStack {
             Group {
                 switch tab {
                 case .mosaic:
                     MosaicComposerView(documentID: nil)
+                case .orbit:
+                    EmptyView()
                 case .explore:
-                    MosaicExploreView()
-                case .search:
-                    MosaicDiscoverView(linked: linked) { selection = .mosaic }
+                    MosaicExploreView(linked: linked, resetCount: resets[.explore, default: 0]) { selection = .mosaic }
                 case .circle:
-                    MosaicCircleView()
+                    MosaicCircleScreen()
                 }
             }
             .toolbar(chrome.isViewing ? .hidden : .visible, for: .tabBar)
         }
+        // Mosaic and Circle start over, closing whatever was opened; Explore keeps its feed and
+        // closes what's open itself.
+        .id(tab == .explore ? 0 : resets[tab, default: 0])
     }
 
     @ViewBuilder
     private func tabLabel(for tab: MosaicTab) -> some View {
-        if tab == .mosaic {
+        if let asset = tab.assetImage {
             Label {
                 Text(tab.title)
             } icon: {
-                Image("MosaicMonogramTab")
+                Image(asset)
                     .renderingMode(.template)
             }
         } else {

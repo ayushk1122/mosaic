@@ -1,7 +1,7 @@
 # ADR 0003: Sync conflict policy and media processing queue
 
 **Owner:** Architecture
-**Status:** Accepted
+**Status:** Accepted; the conflict policy is replaced by [ADR 0004](0004-newest-edit-wins.md), the media queue decision stands
 **Date:** 2026-10-16
 
 ## Context
@@ -12,7 +12,7 @@ Apple Developer Program access and a hosted staging environment are deferred. En
 
 ## Decision
 
-**Decision:** On a per-document sync conflict, the server revision wins presentation. The device’s conflicting local document is retained as a recoverable conflict copy. The board shows a banner offering Keep this version (push the local copy as a new revision) or Discard (drop the copy). Conflicts are not auto-merged.
+**Superseded by [ADR 0004](0004-newest-edit-wins.md):** On a per-document sync conflict, the server revision wins presentation. The device’s conflicting local document is retained as a recoverable conflict copy. The board shows a banner offering Keep this version (push the local copy as a new revision) or Discard (drop the copy). Conflicts are not auto-merged.
 
 **Decision:** Retire the unused media processing queue for the current product. Media readiness is established when the client-prepared upload is finalized. File-type limits, size limits, and account quotas are enforced at the Storage bucket and finalize RPC. A future server worker may be introduced when content validation, moderation, or server-side transcoding is required.
 

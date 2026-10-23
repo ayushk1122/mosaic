@@ -698,7 +698,7 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
-    func circleAndDiscoverKeepTheirOwnBackgroundsOnThePhone() throws {
+    func circleAndExploreKeepTheirOwnBackgroundsOnThePhone() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let location = ComposerStorageLocation(root: root)
@@ -712,19 +712,20 @@ struct ComposerBoardSyncTests {
 
         let saved = MosaicPageBackgrounds(location: location)
         saved.set(photo, for: .circle)
-        saved.set(teal, for: .discover)
-        saved.set(nil, for: .discover)
-        saved.set(teal, for: .discover)
+        saved.set(teal, for: .explore)
+        saved.set(nil, for: .explore)
+        saved.set(teal, for: .explore)
 
         let reopened = MosaicPageBackgrounds(location: location)
         #expect(reopened.background(for: .circle) == photo)
-        #expect(reopened.background(for: .discover) == teal)
+        #expect(reopened.background(for: .explore) == teal)
 
         reopened.set(nil, for: .circle)
         #expect(MosaicPageBackgrounds(location: location).background(for: .circle) == nil)
 
-        let newer = #"{"discover": {"kind": "solid", "color": {"red": 1, "green": 1, "blue": 1, "opacity": 1}, "secondaryColor": {"red": 1, "green": 1, "blue": 1, "opacity": 1}}, "feed": {}}"#
-        #expect(MosaicPageBackgrounds.decode(Data(newer.utf8)).keys.sorted { $0.rawValue < $1.rawValue } == [.discover])
+        // Discover's background, from before it joined Explore, is skipped like any unknown page.
+        let newer = #"{"explore": {"kind": "solid", "color": {"red": 1, "green": 1, "blue": 1, "opacity": 1}, "secondaryColor": {"red": 1, "green": 1, "blue": 1, "opacity": 1}}, "discover": {"kind": "solid", "color": {"red": 1, "green": 1, "blue": 1, "opacity": 1}, "secondaryColor": {"red": 1, "green": 1, "blue": 1, "opacity": 1}}, "feed": {}}"#
+        #expect(MosaicPageBackgrounds.decode(Data(newer.utf8)).keys.sorted { $0.rawValue < $1.rawValue } == [.explore])
         #expect(MosaicPageBackgrounds.decode(Data("not json".utf8)).isEmpty)
     }
 
