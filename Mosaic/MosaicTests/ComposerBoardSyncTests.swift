@@ -601,6 +601,28 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func followedBoardsCarryTheirUpdateMarkUntilOpened() throws {
+        let owner = UUID(), mosaic = UUID(), golf = UUID(), travel = UUID()
+        let row = { (kind: String, id: UUID, updated: Bool) in
+            #"{"target_type":"\#(kind)","target_id":"\#(id.uuidString.lowercased())","owner_id":"\#(owner.uuidString.lowercased())","username":"ada","has_update":\#(updated)}"#
+        }
+        let items = try MosaicFollowingClient.items(from: Data(
+            "[\(row("mosaic", mosaic, true)),\(row("pursuit", golf, true)),\(row("pursuit", travel, true))]".utf8
+        ))
+        #expect(items.map(\.hasUpdate) == [true, true, true])
+        let person = MosaicPersonResult(id: owner, username: "ada", displayName: "")
+
+        let afterGolf = MosaicFollowingClient.read(items, opening: MosaicVisitTarget(person: person, pursuitID: golf))
+        #expect(afterGolf.map(\.hasUpdate) == [true, false, true], "opening Golf clears only Golf here; the server decides the Mosaic")
+
+        let afterMosaic = MosaicFollowingClient.read(items, opening: MosaicVisitTarget(person: person))
+        #expect(afterMosaic.map(\.hasUpdate) == [false, true, true], "opening the Mosaic leaves its Pursuits marked")
+
+        let older = try MosaicFollowingClient.items(from: Data("[\(row("mosaic", mosaic, false).replacingOccurrences(of: #","has_update":false"#, with: ""))]".utf8))
+        #expect(older.first?.hasUpdate == false, "a server without marks shows none")
+    }
+
+    @Test
     func discoverReadsFollowsAndFiltersThem() throws {
         let owner = UUID()
         let mosaic = UUID()

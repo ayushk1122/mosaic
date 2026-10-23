@@ -144,6 +144,8 @@ struct MosaicDiscoverView: View {
 
     private let field = Color.white.opacity(0.08)
     private let muted = Color.white.opacity(0.55)
+    /// The mark on a followed board that changed since it was last opened.
+    private static let updateColor = Color(red: 0.32, green: 0.64, blue: 1)
 
     private var cleaned: String {
         MosaicSettingsList.typedUsername(query).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -265,29 +267,32 @@ struct MosaicDiscoverView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    /// A tap opens the board; following, unfollowing, and the owner's Mosaic are all there. Holding
+    /// it still offers a quick unfollow.
     private func followedRow(_ item: MosaicFollowedItem) -> some View {
-        Menu {
-            if item.kind == .pursuit {
-                Button("View Pursuit", systemImage: "square.grid.2x2") {
-                    opened = MosaicVisitTarget(person: item.owner, pursuitID: item.targetID)
-                }
-            }
-            Button("View Mosaic", systemImage: "person.crop.circle") {
-                opened = MosaicVisitTarget(person: item.owner)
-            }
-            Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
-                Task { await unfollow(item) }
-            }
+        Button {
+            focused = false
+            listFocus = nil
+            open(MosaicVisitTarget(person: item.owner, pursuitID: item.kind == .pursuit ? item.targetID : nil))
         } label: {
             followedRowLabel(item)
         }
-        .menuStyle(.button)
         .buttonStyle(.plain)
-        .simultaneousGesture(TapGesture().onEnded {
-            focused = false
-            listFocus = nil
-        })
+        .contextMenu {
+            Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
+                Task { await unfollow(item) }
+            }
+        }
+        .accessibilityValue(item.hasUpdate ? "Updated" : "")
+        .accessibilityAction(named: "Unfollow") {
+            Task { await unfollow(item) }
+        }
         .accessibilityIdentifier("discover.\(item.kind.rawValue).\(item.owner.username)")
+    }
+
+    private func open(_ target: MosaicVisitTarget) {
+        following = MosaicFollowingClient.read(following, opening: target)
+        opened = target
     }
 
     private func followedRowLabel(_ item: MosaicFollowedItem) -> some View {
@@ -313,7 +318,16 @@ struct MosaicDiscoverView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if item.hasUpdate {
+                Circle()
+                    .fill(Self.updateColor)
+                    .frame(width: 8, height: 8)
+                    .padding(.trailing, 4)
+                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityHidden(true)
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: item.hasUpdate)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
