@@ -10,6 +10,8 @@ struct MosaicVisitProfile: Equatable, Sendable {
     var canView: Bool
     var requestStatus: String?
     var followsMosaic: Bool
+    /// Only for someone who may see the Mosaic.
+    var followerCount: Int?
 
     var name: String { displayName.isEmpty ? username : displayName }
     var isRequested: Bool { requestStatus == "pending" }
@@ -22,6 +24,8 @@ struct MosaicVisitPursuit: Identifiable, Equatable, Sendable {
     var canOpen: Bool
     var requestStatus: String?
     var following: Bool
+    /// Only for a Pursuit the visitor may open.
+    var followerCount: Int? = nil
 
     var isRequested: Bool { requestStatus == "pending" }
     var displayTitle: String { title.isEmpty ? "Pursuit" : title }
@@ -109,12 +113,14 @@ struct MosaicVisitClient: Sendable {
         _ = try await rpc("record_visit", body: ["p_document_id": documentID.uuidString.lowercased()], accessToken: accessToken)
     }
 
-    /// One Storage object, or nil when it is missing or not readable.
-    func download(path: String, accessToken: String) async -> Data? {
+    /// One Storage object, or nil when it is missing or not readable. `inLowDataMode: false` skips
+    /// the download while Low Data Mode is on, for fetches nobody has asked to see yet.
+    func download(path: String, accessToken: String, inLowDataMode: Bool = true) async -> Data? {
         guard let url = URL(string: "\(config.url.absoluteString)/storage/v1/object/authenticated/media/\(path)") else {
             return nil
         }
         var request = URLRequest(url: url)
+        request.allowsConstrainedNetworkAccess = inLowDataMode
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         guard let (data, response) = try? await session.data(for: request),
@@ -140,7 +146,8 @@ struct MosaicVisitClient: Sendable {
             isPublic: row["mosaic_visibility"] as? String == "public",
             canView: row["can_view"] as? Bool ?? false,
             requestStatus: row["request_status"] as? String,
-            followsMosaic: row["follows_mosaic"] as? Bool ?? false
+            followsMosaic: row["follows_mosaic"] as? Bool ?? false,
+            followerCount: (row["follower_count"] as? NSNumber)?.intValue
         )
     }
 
@@ -156,7 +163,8 @@ struct MosaicVisitClient: Sendable {
                 level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: "pursuit"),
                 canOpen: row["can_open"] as? Bool ?? false,
                 requestStatus: row["request_status"] as? String,
-                following: row["following"] as? Bool ?? false
+                following: row["following"] as? Bool ?? false,
+                followerCount: (row["follower_count"] as? NSNumber)?.intValue
             )
         }
     }
@@ -184,12 +192,13 @@ struct MosaicVisitClient: Sendable {
         }
     }
 
-    /// Storage paths to try for one file, best first. Photos have a display copy;
-    /// a GIF's display copy is a still, so its original is used.
-    nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String) -> [String] {
+    /// Storage paths to try for one file, best first. Photos have a display copy; a GIF's display
+    /// copy is a still, and a sticker's is a JPEG without transparency (it would show on a solid
+    /// box), so their originals are used. Other PNGs use the smaller display copy.
+    nonisolated static func objectPaths(ownerID: UUID, assetID: String, fileName: String, isSticker: Bool = false) -> [String] {
         let owner = ownerID.uuidString.lowercased()
         let asset = assetID.lowercased()
-        let usesOriginal = ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
+        let usesOriginal = isSticker || ["mov", "mp4", "m4v", "gif"].contains((fileName as NSString).pathExtension.lowercased())
         return (usesOriginal ? ["original"] : ["display", "original"]).map { "\(owner)/\(asset)/\($0)" }
     }
 
@@ -227,8 +236,19 @@ final class MosaicVisit {
     var mosaicID: UUID?
     /// Called when a refresh opens or closes a Pursuit, so its board can be fetched or dropped.
     var onAccessChanged: (() -> Void)?
-    /// Bumped by every follow, unfollow, and request, so a refresh fetched before one can't undo it.
+    /// The Mosaic's owner, for the Pursuit cards' "by @owner".
+    var owner: MosaicPersonResult?
+    /// Set while the visit is on the Pursuit it opened on: moves up to the whole Mosaic.
+    var onVisitMosaic: (() -> Void)?
+    /// After the owner's card follows, unfollows, or requests, so the visit screen can catch up.
+    var onProfileChange: ((MosaicVisitProfile) -> Void)?
+    /// Bumped as every follow, unfollow, and request starts and again when it ends, so a refresh
+    /// fetched before or during one can't undo it.
     @ObservationIgnored private var changes = 0
+    /// What happened while the visit screen was covered by a Pursuit opened inside it, and so had
+    /// no callbacks attached; it catches up when it shows again.
+    @ObservationIgnored private var missedAccessChange = false
+    @ObservationIgnored private var missedProfile: MosaicVisitProfile?
     @ObservationIgnored private var reportedVisits: Set<UUID> = []
 
     private let account: MosaicAccount
@@ -315,44 +335,58 @@ final class MosaicVisit {
     }
 
     func follow(_ id: UUID) async {
-        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        guard !busy.contains(id) else { return }
         busy.insert(id)
         defer { busy.remove(id) }
         changes += 1
+        defer { changes += 1 }
+        guard let token = await account.accessToken() else { return }
         do {
             try await client.followPursuit(id: id, accessToken: token)
-            pursuits[id]?.following = true
+            setFollowing(true, for: id)
         } catch {
             problem = "That Pursuit could not be followed."
         }
     }
 
     func unfollow(_ id: UUID) async {
-        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        guard !busy.contains(id) else { return }
         busy.insert(id)
         defer { busy.remove(id) }
         changes += 1
+        defer { changes += 1 }
+        guard let token = await account.accessToken() else { return }
         do {
             try await client.unfollowPursuit(id: id, accessToken: token)
             let wasOpen = openIDs
-            pursuits[id]?.following = false
+            setFollowing(false, for: id)
             if openIDs != wasOpen {
-                onAccessChanged?()
+                accessChanged()
             }
         } catch {
             problem = "That Pursuit could not be unfollowed."
         }
     }
 
+    /// Changed on a copy and stored once: reading `pursuits` while an optional-chained write to it is
+    /// under way is an overlapping access, which traps.
+    private func setFollowing(_ following: Bool, for id: UUID) {
+        guard var pursuit = pursuits[id], pursuit.following != following else { return }
+        pursuit.following = following
+        pursuit.followerCount = pursuit.followerCount.map { max($0 + (following ? 1 : -1), 0) }
+        pursuits[id] = pursuit
+    }
+
     func request(_ id: UUID) async {
         guard !busy.contains(id) else { return }
+        busy.insert(id)
+        defer { busy.remove(id) }
+        changes += 1
+        defer { changes += 1 }
         guard let token = await account.accessToken() else {
             problem = "That request could not be sent."
             return
         }
-        busy.insert(id)
-        defer { busy.remove(id) }
-        changes += 1
         let reply: String?
         do {
             reply = try await client.requestPursuit(id: id, accessToken: token)
@@ -389,7 +423,7 @@ final class MosaicVisit {
         if let profile = try? await client.profile(userID: ownerID, accessToken: token),
            changes == started,
            !profile.canView {
-            onAccessChanged?()
+            accessChanged()
             return
         }
         guard let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token),
@@ -402,8 +436,36 @@ final class MosaicVisit {
         let wasOpen = openIDs
         pursuits = Dictionary(uniqueKeysWithValues: fresh.map { ($0.id, $0) })
         if openIDs != wasOpen {
-            onAccessChanged?()
+            accessChanged()
         }
+    }
+
+    private func accessChanged() {
+        if let onAccessChanged {
+            onAccessChanged()
+        } else {
+            missedAccessChange = true
+        }
+    }
+
+    /// The owner's card changed a follow or request.
+    func profileChanged(_ profile: MosaicVisitProfile) {
+        if let onProfileChange {
+            onProfileChange(profile)
+        } else {
+            missedProfile = profile
+            // Unfollowing the Mosaic also unfollows its Pursuits; the bubbles catch up now.
+            Task { await refresh() }
+        }
+    }
+
+    /// What the visit screen missed while it was covered, cleared as it is read.
+    func takeMissed() -> (accessChanged: Bool, profile: MosaicVisitProfile?) {
+        defer {
+            missedAccessChange = false
+            missedProfile = nil
+        }
+        return (missedAccessChange, missedProfile)
     }
 
     private var openIDs: Set<UUID> {
@@ -411,18 +473,23 @@ final class MosaicVisit {
     }
 }
 
-/// Bottom right of a visited Pursuit page: its cover, and follow or unfollow.
+/// Bottom right of a visited Pursuit page: its bubble, with a badge for whether the visitor follows
+/// it. Tapping it opens the Pursuit's card, where that changes.
 struct MosaicVisitPursuitControls: View {
     let pursuitID: UUID
 
     @Environment(ComposerStore.self) private var store
     @Environment(MosaicVisit.self) private var visit
+    @Environment(\.mosaicAccount) private var account
     @State private var cover: UIImage?
+    @State private var showsCard = false
+    /// The card switched to the owner's, from "by @owner".
+    @State private var showsOwner = false
 
     private var coverFile: String? {
         func find(_ blocks: [ComposerBlock]) -> String? {
             for block in blocks {
-                if block.kind == .pursuit, block.pursuitID.flatMap(ComposerBoardSync.uuid) == pursuitID {
+                if block.kind == .pursuit, block.pursuitID.flatMap({ ComposerBoardSync.uuid($0) }) == pursuitID {
                     return block.pursuitImageFileName
                 }
                 if let found = find(block.groupMembers) { return found }
@@ -434,17 +501,59 @@ struct MosaicVisitPursuitControls: View {
 
     var body: some View {
         if let pursuit = visit.pursuits[pursuitID] {
-            HStack(spacing: 12) {
-                logo(pursuit)
-                if pursuit.isOpen {
-                    toggle(pursuit)
-                }
+            Button {
+                showsOwner = false
+                MosaicCardPresentation.withoutSlide { showsCard = true }
+            } label: {
+                bubble(pursuit)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(pursuit.displayTitle)
+            .accessibilityValue(MosaicFollowStatus(pursuit).spoken)
+            .accessibilityHint("Shows the Pursuit, with a way to follow it")
+            .accessibilityIdentifier("visit.pursuitBubble")
             .task(id: ComposerMediaLoadKey(coverFile.map { store.mediaURL(for: $0) }, versions: store.mediaVersions)) { await loadCover() }
+            .mosaicCardCover(isPresented: $showsCard) { close in
+                card(close: close)
+                    .environment(visit)
+                    .environment(\.mosaicAccount, account)
+            }
         }
     }
 
-    private func logo(_ pursuit: MosaicVisitPursuit) -> some View {
+    @ViewBuilder
+    private func card(close: @escaping () -> Void) -> some View {
+        if showsOwner, let owner = visit.owner {
+            MosaicProfileCard(
+                person: owner,
+                onVisit: visit.onVisitMosaic.map { visitMosaic in
+                    {
+                        close()
+                        // After the card has gone, so the board it sits on isn't swapped out under it.
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(250))
+                            visitMosaic()
+                        }
+                    }
+                },
+                onProfileChange: { visit.profileChanged($0) },
+                onClose: close
+            )
+            .transition(.opacity)
+        } else {
+            MosaicPursuitCard(
+                pursuitID: pursuitID,
+                cover: cover,
+                coverURL: coverFile.map { store.mediaURL(for: $0) },
+                owner: visit.owner,
+                onShowOwner: { withAnimation(.easeInOut(duration: 0.2)) { showsOwner = true } },
+                onClose: close
+            )
+            .transition(.opacity)
+        }
+    }
+
+    private func bubble(_ pursuit: MosaicVisitPursuit) -> some View {
         ZStack {
             Circle()
                 .fill(MosaicBrand.inkBlack)
@@ -462,45 +571,10 @@ struct MosaicVisitPursuitControls: View {
         .clipShape(Circle())
         .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
         .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
-        .accessibilityLabel(pursuit.displayTitle)
-    }
-
-    @ViewBuilder
-    private func toggle(_ pursuit: MosaicVisitPursuit) -> some View {
-        Group {
-            if pursuit.following {
-                Menu {
-                    if pursuit.level != .public {
-                        Text("This Pursuit is private. You’ll need to request access again.")
-                    }
-                    Button("Unfollow", systemImage: "minus.circle", role: .destructive) {
-                        Task { await visit.unfollow(pursuitID) }
-                    }
-                } label: {
-                    glyph("minus")
-                }
-                .menuStyle(.button)
-            } else {
-                Button {
-                    Task { await visit.follow(pursuitID) }
-                } label: {
-                    glyph("plus")
-                }
-            }
+        .overlay(alignment: .bottomTrailing) {
+            MosaicFollowBadge(status: MosaicFollowStatus(pursuit))
+                .offset(x: 4, y: 4)
         }
-        .buttonStyle(.plain)
-        .disabled(visit.busy.contains(pursuitID))
-        .accessibilityLabel(pursuit.following ? "Unfollow \(pursuit.displayTitle)" : "Follow \(pursuit.displayTitle)")
-        .accessibilityIdentifier("visit.pursuitFollow")
-    }
-
-    private func glyph(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
-            .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
-            .background(MosaicBrand.inkBlack, in: Circle())
-            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
     }
 
     private func loadCover() async {
@@ -550,7 +624,6 @@ struct MosaicVisitView: View {
     @State private var phase = Phase.loading
     @State private var profile: MosaicVisitProfile?
     @State private var requesting = false
-    @State private var following = false
     /// The first appearance follows a fresh load, so only later returns refresh access.
     @State private var visitAppeared = false
     @State private var showsAvatar = false
@@ -561,13 +634,13 @@ struct MosaicVisitView: View {
         content
             .overlay {
                 if showsAvatar {
-                    MosaicAvatarPreview(
-                        path: avatarPath,
-                        name: profile?.name ?? person.username,
-                        username: person.username
-                    ) {
-                        withAnimation(.easeOut(duration: 0.2)) { showsAvatar = false }
-                    }
+                    MosaicProfileCard(
+                        person: person,
+                        profile: profile,
+                        onVisit: visitMosaicFromPursuit,
+                        onProfileChange: profileChanged,
+                        onClose: closeCard
+                    )
                     .transition(.opacity.combined(with: .scale(scale: 0.86)))
                 }
             }
@@ -575,6 +648,17 @@ struct MosaicVisitView: View {
             .environment(\.colorScheme, .dark)
             .toolbar(.hidden, for: .navigationBar)
             .task(id: loadAttempt) { await load() }
+            .onAppear {
+                // Back from a Pursuit opened inside the visit: follows and unfollows reload again.
+                if case .ready(let store, let chrome, let visit, let start) = phase, visit.onAccessChanged == nil {
+                    attach(visit, store: store, chrome: chrome, start: start)
+                }
+            }
+            .onDisappear {
+                if case .ready(_, _, let visit, _) = phase {
+                    detach(visit)
+                }
+            }
     }
 
     @ViewBuilder
@@ -606,17 +690,83 @@ struct MosaicVisitView: View {
 
     private var avatarPath: String? { profile?.avatarPath ?? person.avatarPath }
 
-    /// The owner's picture. Tapping it shows it larger, with a button to copy their Mosaic link.
-    private func ownerAvatar(size: CGFloat) -> some View {
-        Button {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { showsAvatar = true }
-        } label: {
+    private var mosaicFollowStatus: MosaicFollowStatus {
+        profile?.followsMosaic == true ? .following : .follow
+    }
+
+    /// The owner's picture. Tapping it opens their profile card, where they're followed.
+    private func ownerAvatar(size: CGFloat, badged: Bool = false) -> some View {
+        Button(action: openCard) {
             MosaicAvatarView(path: avatarPath, name: profile?.name ?? person.username, size: size)
+                .overlay(alignment: .bottomTrailing) {
+                    if badged {
+                        MosaicFollowBadge(status: mosaicFollowStatus)
+                            .offset(x: 4, y: 4)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel("@\(person.username)")
-        .accessibilityHint("Shows the profile picture larger")
+        .accessibilityValue(badged ? mosaicFollowStatus.spoken : "")
+        .accessibilityHint("Shows their profile")
         .accessibilityIdentifier("visit.ownerAvatar")
+    }
+
+    private func openCard() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { showsAvatar = true }
+    }
+
+    private func closeCard() {
+        withAnimation(.easeOut(duration: 0.2)) { showsAvatar = false }
+    }
+
+    /// Only a visit that opened on a Pursuit has somewhere further to go: the whole Mosaic.
+    private var visitMosaicFromPursuit: (() -> Void)? {
+        guard case .ready(let store, let chrome, let visit, let start) = phase, start != nil else { return nil }
+        return {
+            closeCard()
+            moveUpToMosaic(store: store, chrome: chrome, visit: visit)
+        }
+    }
+
+    private func moveUpToMosaic(store: ComposerStore, chrome: MosaicChrome, visit: MosaicVisit) {
+        visit.onVisitMosaic = nil
+        withAnimation(.easeInOut(duration: 0.25)) {
+            phase = .ready(store, chrome, visit, start: nil)
+        }
+    }
+
+    /// What the visit's cards need from this screen: who the owner is, how to catch up after the
+    /// owner's card changes something, and, on a visit that opened on a Pursuit, the way up.
+    private func attach(_ visit: MosaicVisit, store: ComposerStore, chrome: MosaicChrome, start: ComposerDocumentID?) {
+        visit.onAccessChanged = { loadAttempt += 1 }
+        visit.onProfileChange = { profileChanged($0) }
+        visit.onVisitMosaic = start == nil ? nil : { moveUpToMosaic(store: store, chrome: chrome, visit: visit) }
+        let missed = visit.takeMissed()
+        if let profile = missed.profile {
+            profileChanged(profile)
+        }
+        if missed.accessChanged {
+            loadAttempt += 1
+        }
+    }
+
+    /// The visit's callbacks hold this screen, which holds the visit: let both go.
+    private func detach(_ visit: MosaicVisit) {
+        visit.onAccessChanged = nil
+        visit.onProfileChange = nil
+        visit.onVisitMosaic = nil
+    }
+
+    private func profileChanged(_ changed: MosaicVisitProfile) {
+        let wasClosed = profile?.canView == false
+        profile = changed
+        if wasClosed, changed.canView {
+            closeCard()
+            loadAttempt += 1
+        } else if case .ready(_, _, let visit, _) = phase {
+            Task { await visit.refresh() }
+        }
     }
 
     private var backChevron: some View {
@@ -682,7 +832,7 @@ struct MosaicVisitView: View {
             }
         }
         .overlay(alignment: .topLeading) { backChevron }
-        .refreshable { await load() }
+        .refreshable { loadAttempt += 1 }
     }
 
     /// Stand-in tiles behind the blur. Nothing from the private Mosaic is downloaded.
@@ -713,19 +863,22 @@ struct MosaicVisitView: View {
 
     private func visitedMosaic(store: ComposerStore, chrome: MosaicChrome, visit: MosaicVisit, start: ComposerDocumentID?) -> some View {
         MosaicComposerView(documentID: start)
+            // Moving from a Pursuit up to the Mosaic is a fresh board, not the Pursuit's scroll and sizes.
+            .id(start)
             .environment(store)
             .environment(chrome)
             .environment(visit)
             .overlay(alignment: .bottomTrailing) {
                 if start == nil {
-                    HStack(spacing: 12) {
-                        ownerAvatar(size: ComposerAddMenuMetrics.button)
-                            .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
-                            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
-                        followButton(visit: visit)
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 20)
+                    ownerAvatar(size: ComposerAddMenuMetrics.button, badged: true)
+                        .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 20)
+                } else {
+                    // Left of the Pursuit's bubble, which the board shows in this corner.
+                    ownerMosaicButton
+                        .padding(.trailing, 20 + pursuitControlsWidth(start: start, visit: visit))
+                        .padding(.bottom, 20)
                 }
             }
             .alert(
@@ -774,43 +927,29 @@ struct MosaicVisitView: View {
             }
     }
 
-    @ViewBuilder
-    private func followButton(visit: MosaicVisit) -> some View {
-        let isFollowing = profile?.followsMosaic == true
-        Group {
-            if isFollowing {
-                Menu {
-                    Button(role: .destructive) {
-                        Task { await unfollow(visit: visit) }
-                    } label: {
-                        Label("Unfollow", systemImage: "person.badge.minus")
-                        Text("Also unfollows their Pursuits")
-                    }
-                } label: {
-                    followGlyph("person.fill.checkmark")
-                }
-                .menuStyle(.button)
-            } else {
-                Button {
-                    Task { await followMosaic(visit: visit) }
-                } label: {
-                    followGlyph("person.fill.badge.plus")
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(following)
-        .accessibilityLabel(isFollowing ? "Following" : "Follow")
-        .accessibilityIdentifier("visit.followMosaic")
+    /// `MosaicVisitPursuitControls`: the Pursuit's bubble.
+    private func pursuitControlsWidth(start: ComposerDocumentID?, visit: MosaicVisit) -> CGFloat {
+        guard start.flatMap({ ComposerBoardSync.uuid($0) }).flatMap({ visit.pursuits[$0] }) != nil else { return 0 }
+        return ComposerAddMenuMetrics.button + 12
     }
 
-    private func followGlyph(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
-            .frame(width: ComposerAddMenuMetrics.button, height: ComposerAddMenuMetrics.button)
-            .background(MosaicBrand.inkBlack, in: Circle())
-            .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+    /// On a visit that opened on a Pursuit, the owner's picture opens their card, which leads up to
+    /// their whole Mosaic.
+    private var ownerMosaicButton: some View {
+        Button(action: openCard) {
+            MosaicAvatarView(path: avatarPath, name: profile?.name ?? person.username, size: ComposerAddMenuMetrics.button)
+                .overlay(Circle().stroke(MosaicBrand.inkBlack, lineWidth: 2))
+                .shadow(color: .black.opacity(0.16), radius: 8, y: 4)
+                .overlay(alignment: .bottomTrailing) {
+                    MosaicFollowBadge(status: mosaicFollowStatus)
+                        .offset(x: 4, y: 4)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("@\(person.username)")
+        .accessibilityValue(mosaicFollowStatus.spoken)
+        .accessibilityHint("Shows their profile, with a way to their Mosaic")
+        .accessibilityIdentifier("visit.ownerMosaic")
     }
 
     // MARK: Loading and actions
@@ -824,6 +963,9 @@ struct MosaicVisitView: View {
     }
 
     private func load() async {
+        if case .ready(_, _, let previous, _) = phase {
+            detach(previous)
+        }
         phase = .loading
         guard let account, let viewerID = account.session?.userID,
               let link = await connection() else {
@@ -852,10 +994,12 @@ struct MosaicVisitView: View {
             async let pursuitsCall = client.pursuits(ownerID: found.userID, accessToken: token)
             let pursuits = try await pursuitsCall
             let documents = MosaicVisit.authorizedDocuments(try await boardsCall, pursuits: pursuits)
-            guard let snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
+            guard var snapshot = ComposerBoardSync.assemble(mosaicID: mosaicID, documents: documents) else {
                 phase = .failed
                 return
             }
+            // The server leaves saved stickers out of visitors' copy; never keep them if one slips in.
+            snapshot.stickerLibrary = []
 
             try Task.checkCancellation()
             guard account.session?.userID == viewerID else { throw CancellationError() }
@@ -867,14 +1011,18 @@ struct MosaicVisitView: View {
             let visit = MosaicVisit(ownerID: found.userID, pursuits: pursuits, account: account, client: client)
             visit.media = media
             visit.mosaicID = mosaicID
-            visit.onAccessChanged = { loadAttempt += 1 }
+            visit.owner = MosaicPersonResult(
+                id: found.userID, username: found.username, displayName: found.displayName, avatarPath: found.avatarPath
+            )
             let start = pursuitID.flatMap { wanted in
                 snapshot.pursuits.first { ComposerBoardSync.uuid($0.id) == wanted }?.id
             }
             if let pursuitID, start == nil, visit.access(pursuitID) != .open {
                 visit.askToRequest(pursuitID)
             }
-            phase = .ready(store, MosaicChrome(isVisiting: true), visit, start: start)
+            let chrome = MosaicChrome(isVisiting: true)
+            attach(visit, store: store, chrome: chrome, start: start)
+            phase = .ready(store, chrome, visit, start: start)
         } catch is CancellationError {
             return
         } catch {
@@ -884,40 +1032,16 @@ struct MosaicVisitView: View {
     }
 
     private func requestMosaic() async {
-        guard let link = await connection(), let ownerID = profile?.userID else { return }
+        guard !requesting else { return }
         requesting = true
         defer { requesting = false }
+        guard let link = await connection(), let ownerID = profile?.userID else { return }
         if let status = try? await link.client.requestMosaic(ownerID: ownerID, accessToken: link.token) {
             profile?.requestStatus = status
             if status == "accepted" {
-                await load()
+                // Through the screen's own load task, so it stops if the person has left.
+                loadAttempt += 1
             }
-        }
-    }
-
-    private func followMosaic(visit: MosaicVisit) async {
-        guard let link = await connection(), let ownerID = profile?.userID else { return }
-        following = true
-        defer { following = false }
-        do {
-            try await link.client.followMosaic(ownerID: ownerID, accessToken: link.token)
-            profile?.followsMosaic = true
-            await visit.refresh()
-        } catch {
-            visit.problem = "This Mosaic could not be followed."
-        }
-    }
-
-    private func unfollow(visit: MosaicVisit) async {
-        guard let link = await connection(), let ownerID = profile?.userID else { return }
-        following = true
-        defer { following = false }
-        do {
-            try await link.client.unfollowMosaic(ownerID: ownerID, accessToken: link.token)
-            profile?.followsMosaic = false
-            await visit.refresh()
-        } catch {
-            visit.problem = "This Mosaic could not be unfollowed."
         }
     }
 }

@@ -2,12 +2,13 @@ import SwiftUI
 
 enum MosaicPage: String, CaseIterable, Sendable {
     case circle
+    case explore
     case discover
 }
 
-/// Circle and Discover backgrounds. They stay on this phone, in the signed-in account's folder,
-/// and never sync; their photos sit in that folder's media but no board points to them, so they
-/// aren't uploaded either.
+/// Circle, Explore, and Discover backgrounds. They stay on this phone, in the signed-in account's
+/// folder, and never sync; their photos sit in that folder's media but no board points to them, so
+/// they aren't uploaded either.
 @MainActor
 @Observable
 final class MosaicPageBackgrounds {

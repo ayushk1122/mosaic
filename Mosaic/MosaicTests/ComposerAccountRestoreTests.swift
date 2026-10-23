@@ -28,6 +28,32 @@ struct ComposerAccountRestoreTests {
         }
     }
 
+    @Test
+    func afterARestoreUnchangedBoardsAreNotPushedAgain() throws {
+        // As if fetched from the server: encoded and decoded the way the restore reads rows.
+        let fetched = try JSONDecoder().decode([ComposerRestoredDocument].self, from: JSONEncoder().encode(rows()))
+        let (snapshot, state) = try ComposerAccountRestore.assemble(rows: fetched, ownerID: owner, mosaicID: mosaic)
+        let local = ComposerMediaCatalog.stamped(
+            ComposerBoardSync.split(snapshot: snapshot, mosaicID: mosaic),
+            assets: state.mediaAssets
+        )
+        #expect(local.count == fetched.count)
+        for document in local {
+            let key = document.id.uuidString.lowercased()
+            #expect(state.pushedHashes[key] != nil)
+            #expect(ComposerSyncState.contentHash(of: document) == state.pushedHashes[key], "\(document.role) would be pushed again")
+        }
+
+        // Editing one board afterwards marks only that board as changed.
+        var edited = snapshot
+        edited.mosaicBlocks.append(ComposerBlock.make(kind: .text, position: BlockPosition(x: 0.4, y: 0.4)))
+        let changed = ComposerMediaCatalog.stamped(
+            ComposerBoardSync.split(snapshot: edited, mosaicID: mosaic),
+            assets: state.mediaAssets
+        ).filter { ComposerSyncState.contentHash(of: $0) != state.pushedHashes[$0.id.uuidString.lowercased()] }
+        #expect(changed.map(\.id) == [mosaic])
+    }
+
     private func client(_ replies: [(Int, Data)]) -> SupabaseDocumentSync {
         RestoreURLProtocol.state.reset(replies)
         let config = URLSessionConfiguration.ephemeral
@@ -75,7 +101,7 @@ struct ComposerAccountRestoreTests {
         #expect(state.revisions[mosaic.uuidString.lowercased()] == 7)
         #expect(try Data(contentsOf: store.mediaURL(for: "photo.jpg")) == image)
         #expect(store.mediaVersions["photo.jpg"] == 1)
-        #expect(!ComposerBackgroundRestore.needsWork(store: store))
+        #expect(!(await ComposerBackgroundRestore.needsWork(store: store)))
         #expect(RestoreURLProtocol.state.requests.allSatisfy {
             $0.httpMethod == "GET" || $0.url?.path == "/rest/v1/rpc/own_mosaic_id"
         })
@@ -123,7 +149,7 @@ struct ComposerAccountRestoreTests {
         try await downloads.run(store: reopened, client: client, ownerID: owner, accessToken: "token")
         #expect(RestoreURLProtocol.state.requests.count == count + 1)
         #expect(downloads.failure == nil)
-        #expect(!ComposerBackgroundRestore.needsWork(store: reopened))
+        #expect(!(await ComposerBackgroundRestore.needsWork(store: reopened)))
     }
 
     @Test func failedChildrenResumeAfterRelaunchWithoutReplacingLocalEdits() async throws {

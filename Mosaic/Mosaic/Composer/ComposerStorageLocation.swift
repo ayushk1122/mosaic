@@ -5,7 +5,8 @@ struct ComposerStorageLocation: Equatable, Sendable {
     var root: URL
 
     var snapshotURL: URL { root.appendingPathComponent("composer.json") }
-    var mediaDirectory: URL { root.appendingPathComponent("Media", isDirectory: true) }
+    var mediaDirectory: URL { root.appendingPathComponent(Self.mediaFolderName, isDirectory: true) }
+    nonisolated static let mediaFolderName = "Media"
     var syncStateURL: URL { root.appendingPathComponent("sync-state.json") }
 
     /// The Documents folder itself. Used before accounts, and when no account is signed in.

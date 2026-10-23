@@ -4,6 +4,7 @@ import UIKit
 enum MosaicTab: String, CaseIterable, Identifiable {
     case mosaic
     case circle
+    case explore
     case search
 
     var id: String { rawValue }
@@ -11,6 +12,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .mosaic: "Mosaic"
+        case .explore: "Explore"
         case .circle: "Circle"
         case .search: "Discover"
         }
@@ -19,6 +21,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .mosaic: "square.grid.2x2"
+        case .explore: "sparkles"
         case .circle: "person.2"
         case .search: "magnifyingglass"
         }
@@ -81,17 +84,19 @@ struct MosaicTabShell: View {
     @State private var remoteSync: ComposerRemoteSync
     @State private var pageBackgrounds: MosaicPageBackgrounds
     @State private var pursuitPrivacy = MosaicPursuitPrivacy()
+    /// Images of the owner's boards shared to Explore; only when signed in.
+    @State private var explorePreviews: MosaicExplorePreviews?
     var account: MosaicAccount?
     /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
-    var linkedUsername: Binding<String?>
+    var linked: Binding<MosaicLink.Target?>
 
     init(
         account: MosaicAccount? = nil,
-        linkedUsername: Binding<String?> = .constant(nil),
+        linked: Binding<MosaicLink.Target?> = .constant(nil),
         persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
     ) {
         self.account = account
-        self.linkedUsername = linkedUsername
+        self.linked = linked
         let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
         let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
@@ -101,6 +106,7 @@ struct MosaicTabShell: View {
         _downloads = State(initialValue: downloads)
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
         _pageBackgrounds = State(initialValue: MosaicPageBackgrounds(location: location, persistToDisk: persistToDisk))
+        _explorePreviews = State(initialValue: account.map { MosaicExplorePreviews(store: store, account: $0) })
     }
 
     var body: some View {
@@ -122,7 +128,10 @@ struct MosaicTabShell: View {
         }
         .task {
             guard let account else { return }
-            store.onPersisted = { [weak store] in
+            remoteSync.store = store
+            // Captures only what it uses: holding the view (and through it the store) would keep
+            // the old store alive after signing out.
+            store.onPersisted = { [weak store, remoteSync, account] in
                 guard let store else { return }
                 remoteSync.schedule(
                     snapshot: store.snapshot,
@@ -140,7 +149,11 @@ struct MosaicTabShell: View {
         }
         .task(id: downloadAttempt) {
             guard let account, let owner = account.session?.userID,
-                  ComposerBackgroundRestore.needsWork(store: store) else { return }
+                  await ComposerBackgroundRestore.needsWork(store: store) else {
+                // Nothing left to download (the missing piece may have been deleted): clear an old failure.
+                downloads.failure = nil
+                return
+            }
             do {
                 guard let config = SupabaseSyncConfig.current(), let token = await account.accessToken(),
                       account.session?.userID == owner else { throw SupabaseDocumentSyncError.requestFailed }
@@ -160,27 +173,67 @@ struct MosaicTabShell: View {
                 downloads.failure = "Some content couldn’t load. Your edits are saved on this device."
             }
         }
+        .task(id: scenePhase) {
+            // Boards changed on another device: on open, on returning to the app, and every minute while open.
+            guard let account, scenePhase == .active else { return }
+            remoteSync.store = store
+            // Shared boards edited since their Explore image was made get a new one.
+            explorePreviews?.refreshStale()
+            while !Task.isCancelled {
+                remoteSync.pullNow(account: account)
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+        .onChange(of: remoteSync.pullCount) {
+            // Pulled boards may show photos this phone doesn't have yet.
+            if account?.session != nil { downloads.noteExpectedFiles(store: store) }
+            if !downloads.isLoading { downloadAttempt += 1 }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 if !downloads.isLoading { downloadAttempt += 1 }
-                // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
-                if let account, remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
-                    remoteSync.schedule(
-                        snapshot: store.snapshot,
-                        account: account,
-                        mediaFile: store.mediaURL(for:),
-                        protectingDocumentIDs: store.syncProtectedDocumentUUIDs
-                    )
-                } else if let account {
-                    // A push that failed while offline goes out once the app is back.
-                    remoteSync.resumeIfNeeded(account: account)
+                if let account {
+                    Task { @MainActor in
+                        // Keep retrying cloud upload for photos that exist on this phone but not for visitors.
+                        if await remoteSync.hasUnmappedLocalMedia(snapshot: store.snapshot, mediaFile: store.mediaURL(for:)) {
+                            remoteSync.schedule(
+                                snapshot: store.snapshot,
+                                account: account,
+                                mediaFile: store.mediaURL(for:),
+                                protectingDocumentIDs: store.syncProtectedDocumentUUIDs
+                            )
+                        } else {
+                            // A push that failed while offline goes out once the app is back.
+                            remoteSync.resumeIfNeeded(account: account)
+                        }
+                    }
                 }
+            } else if phase == .inactive {
+                // Swiping the app away from the switcher may never reach the background phase.
+                store.flushPendingSave()
             } else if phase == .background {
                 store.flushPendingSave()
                 // An edit still in its short pause would otherwise wait until the next launch.
                 if let account {
                     remoteSync.flushNow(account: account)
                 }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let conflict = remoteSync.conflicts.first {
+                syncConflictBanner(conflict)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let board = remoteSync.oversizedBoards.first {
+                Text("“\(board)” is too large to sync. Remove a drawing or photo from it to sync it again.")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.36, green: 0.28, blue: 0.12))
+                    .accessibilityIdentifier("sync.tooLarge")
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -210,16 +263,41 @@ struct MosaicTabShell: View {
         }
         .environment(\.composerMediaVersions, store.mediaVersions)
         .environment(\.composerMediaWaiting, mediaWaiting)
-        .onChange(of: linkedUsername.wrappedValue, initial: true) { _, name in
-            if name != nil { selection = .search }
+        .onChange(of: linked.wrappedValue, initial: true) { _, target in
+            if target != nil { selection = .search }
         }
         .environment(store)
         .environment(chrome)
         .environment(remoteSync)
         .environment(pageBackgrounds)
         .environment(pursuitPrivacy)
+        .environment(explorePreviews)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
+    }
+
+    /// ADR 0003: the other device's version is showing; this device's is kept until the person chooses.
+    private func syncConflictBanner(_ conflict: ComposerSyncConflict) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(conflict.deleted == nil
+                 ? "“\(conflict.title)” was changed on another device too. Showing that version."
+                 : "“\(conflict.title)” was deleted on another device, but you’d edited it here.")
+                .font(.caption)
+            HStack(spacing: 16) {
+                Button("Keep my version") { remoteSync.keepMyVersion(conflict) }
+                    .accessibilityIdentifier("sync.conflict.keep")
+                Button("Discard") { remoteSync.discard(conflict) }
+                    .accessibilityIdentifier("sync.conflict.discard")
+            }
+            .font(.caption.bold())
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(red: 0.16, green: 0.22, blue: 0.34))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sync.conflict")
     }
 
     /// After downloads fail, nothing is coming until Retry, so missing media shows as unavailable.
@@ -235,8 +313,10 @@ struct MosaicTabShell: View {
                 switch tab {
                 case .mosaic:
                     MosaicComposerView(documentID: nil)
+                case .explore:
+                    MosaicExploreView()
                 case .search:
-                    MosaicDiscoverView(linkedUsername: linkedUsername) { selection = .mosaic }
+                    MosaicDiscoverView(linked: linked) { selection = .mosaic }
                 case .circle:
                     MosaicCircleView()
                 }

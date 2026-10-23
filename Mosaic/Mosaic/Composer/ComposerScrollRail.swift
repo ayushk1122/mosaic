@@ -10,7 +10,6 @@ final class ComposerDragScrollRelay {
     var viewportMinY: CGFloat = 0
     var viewportHeight: CGFloat = 0
     var boost: CGFloat = 0
-    var intendedOffset: CGFloat?
     /// Dragged piece edges in canvas content space, without the follow boost.
     var tracksItem = false
     var itemMinY: CGFloat = 0
@@ -33,7 +32,6 @@ struct DragFollowOffset: ViewModifier {
 /// Scrolls the page when a dragged component reaches the top or bottom of the screen.
 struct ComposerDragScrollDriver: UIViewRepresentable {
     var relay: ComposerDragScrollRelay
-    var onOffset: (CGFloat) -> Void
     var onNeedRoom: () -> Void
 
     func makeUIView(context: Context) -> ComposerDragScrollDriverView {
@@ -45,7 +43,6 @@ struct ComposerDragScrollDriver: UIViewRepresentable {
 
     func updateUIView(_ uiView: ComposerDragScrollDriverView, context: Context) {
         uiView.relay = relay
-        uiView.onOffset = onOffset
         uiView.onNeedRoom = onNeedRoom
         uiView.sync()
     }
@@ -53,7 +50,6 @@ struct ComposerDragScrollDriver: UIViewRepresentable {
 
 final class ComposerDragScrollDriverView: UIView {
     weak var relay: ComposerDragScrollRelay?
-    var onOffset: (CGFloat) -> Void = { _ in }
     var onNeedRoom: () -> Void = {}
     private var displayLink: CADisplayLink?
     private weak var scroll: UIScrollView?
@@ -154,7 +150,6 @@ final class ComposerDragScrollDriverView: UIView {
         let applied = next - scroll.contentOffset.y
         guard abs(applied) > 0.05 else { return }
         intendedOffset = next
-        relay.intendedOffset = next
         relay.boost += applied
         assignOffset(next, to: scroll)
     }
@@ -230,21 +225,4 @@ extension UIView {
 
 enum ComposerCanvasScrollMark {
     static let id = "composer.canvas.scroll"
-    private static var syncKey: UInt8 = 0
-
-    static func installSync(on scroll: UIScrollView, _ onOffset: @escaping (CGFloat) -> Void) {
-        objc_setAssociatedObject(scroll, &syncKey, ComposerCanvasScrollSync(onOffset), .OBJC_ASSOCIATION_RETAIN)
-    }
-
-    static func report(_ scroll: UIScrollView, offset: CGFloat) {
-        (objc_getAssociatedObject(scroll, &syncKey) as? ComposerCanvasScrollSync)?.onOffset(offset)
-    }
-}
-
-private final class ComposerCanvasScrollSync: NSObject {
-    let onOffset: (CGFloat) -> Void
-
-    init(_ onOffset: @escaping (CGFloat) -> Void) {
-        self.onOffset = onOffset
-    }
 }

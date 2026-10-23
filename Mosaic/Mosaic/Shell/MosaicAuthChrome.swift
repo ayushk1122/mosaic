@@ -117,19 +117,29 @@ private struct MosaicAuthSocialIcon: View {
 struct MosaicAuthPrimaryButton: View {
     var title: String
     var disabled: Bool = false
+    /// Shows a spinner in place of the title, so a slow connection doesn't look like a missed tap.
+    var working: Bool = false
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .background(MosaicBrand.inkBlack.opacity(disabled ? 0.35 : 1), in: Capsule())
+            ZStack {
+                Text(title)
+                    .opacity(working ? 0 : 1)
+                if working {
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(MosaicBrand.inkBlack.opacity(disabled && !working ? 0.35 : 1), in: Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(disabled)
+        .disabled(disabled || working)
+        .accessibilityValue(working ? "Working" : "")
     }
 }
 

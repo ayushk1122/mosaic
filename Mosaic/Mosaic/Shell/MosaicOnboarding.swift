@@ -162,7 +162,7 @@ struct MosaicOnboardingClient: Sendable {
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await MosaicAccount.send(request, session: session)
         guard let http = response as? HTTPURLResponse else {
             throw MosaicOnboardingError.requestFailed
         }

@@ -30,6 +30,7 @@ struct ComposerTextCanvasBlock: View {
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @Environment(\.composerPaperPage) private var onPaper
 
     private var readingColor: Color {
@@ -111,6 +112,8 @@ struct ComposerTextCanvasBlock: View {
             }
             .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
             .clipped()
+            .compositingGroup()
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if showsFormatButton, isSelected, !isRelocating, !isLifted {
                     formatIconStack
@@ -454,6 +457,7 @@ struct ComposerTextStylePanel: View {
 
 struct ComposerColorSquare: View {
     let color: Color
+    var height: CGFloat = 112
     var onPick: (Double, Double, Double) -> Void
 
     var body: some View {
@@ -489,7 +493,7 @@ struct ComposerColorSquare: View {
                     }
             )
         }
-        .frame(height: 112)
+        .frame(height: height)
         .accessibilityLabel("Color")
     }
 

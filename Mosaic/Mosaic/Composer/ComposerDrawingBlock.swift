@@ -12,13 +12,13 @@ enum ComposerDrawingMetrics {
     static let minimumScale = 0.3
     static let pageMargin: CGFloat = 16
     /// Room around each stroke that still picks the drawing up, so thin lines are easy to grab.
-    static let touchPadding: CGFloat = 14
+    nonisolated static let touchPadding: CGFloat = 14
 
     static func baseSize(of block: ComposerBlock) -> CGSize {
         CGSize(width: max(block.drawingWidth, 40), height: max(block.drawingHeight, 40))
     }
 
-    static func drawing(from data: Data?) -> PKDrawing {
+    nonisolated static func drawing(from data: Data?) -> PKDrawing {
         guard let data, let drawing = try? PKDrawing(data: data) else { return PKDrawing() }
         return drawing
     }
@@ -111,8 +111,21 @@ enum ComposerDrawingMetrics {
         return max(min(maximumBytes, boardBudget - others), 0)
     }
 
+    /// Longest side of a drawing's rendered image, in pixels, and its whole area (about 24 MB). A
+    /// big drawing pinched large would otherwise render hundreds of megabytes; past these it's
+    /// scaled up on screen instead.
+    static let maximumRenderPixels: CGFloat = 4096
+    static let maximumRenderArea: CGFloat = 6_000_000
+
+    static func pixelScale(for size: CGSize, scale: CGFloat) -> CGFloat {
+        let longest = max(size.width, size.height)
+        guard longest > 0 else { return scale }
+        let byArea = (maximumRenderArea / max(size.width * size.height, 1)).squareRoot()
+        return min(scale, maximumRenderPixels / longest, byArea)
+    }
+
     /// Drawn as light-mode ink, so a black pen stays black on every board and in dark mode.
-    static func image(of drawing: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage? {
+    nonisolated static func image(of drawing: PKDrawing, size: CGSize, scale: CGFloat) -> UIImage? {
         guard !drawing.strokes.isEmpty, size.width > 0, size.height > 0 else { return nil }
         var image: UIImage?
         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
@@ -123,10 +136,33 @@ enum ComposerDrawingMetrics {
 
     /// The areas that pick the drawing up, in its own points: around each stroke, or around all
     /// of them once there are too many to test one by one.
-    static func touchRects(of drawing: PKDrawing) -> [CGRect] {
+    nonisolated static func touchRects(of drawing: PKDrawing) -> [CGRect] {
         let bounds = drawing.strokes.count > 400 ? [drawing.bounds] : drawing.strokes.map(\.renderBounds)
         return bounds.map { $0.insetBy(dx: -touchPadding, dy: -touchPadding) }
     }
+
+    /// The same areas for saved strokes, remembered per drawing so grouping mode, which rebuilds
+    /// its tap targets on every redraw, doesn't decode every drawing each time.
+    static func touchRects(of data: Data?) -> [CGRect] {
+        guard let data else { return [] }
+        let key = data as NSData
+        if let cached = touchRectCache.object(forKey: key) { return cached.rects }
+        let rects = touchRects(of: drawing(from: data))
+        touchRectCache.setObject(TouchRects(rects), forKey: key, cost: data.count)
+        return rects
+    }
+
+    private final class TouchRects {
+        let rects: [CGRect]
+        init(_ rects: [CGRect]) { self.rects = rects }
+    }
+
+    private static let touchRectCache: NSCache<NSData, TouchRects> = {
+        let cache = NSCache<NSData, TouchRects>()
+        // Keyed by the strokes themselves, so the cache holds them too: a few boards' worth.
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
 }
 
 /// Drawings grouped with a photo or video, moved onto that media's frame so the full-screen
@@ -142,15 +178,21 @@ enum ComposerMediaMarkup {
         memberSizes: [ComposerBlockID: CGSize]
     ) -> Data? {
         guard let mediaIndex = group.groupMembers.firstIndex(where: { $0.id == media.id }),
-              let mediaSize = memberSizes[media.id], mediaSize.width > 1, mediaSize.height > 1 else { return nil }
+              let measured = memberSizes[media.id], measured.width > 1, measured.height > 1 else { return nil }
         let base = CGSize(width: max(group.groupWidth, 1), height: max(group.groupHeight, 1))
-        let mediaCenter = CGPoint(
-            x: CGFloat(media.position.x) * base.width + mediaSize.width / 2,
-            y: CGFloat(media.position.y) * base.height + mediaSize.height / 2
+        // The member is measured with its frame (Polaroid, torn paper); the viewer shows the photo alone.
+        let photo = ComposerPhotoFrameModifier.mediaFrame(inPadded: measured, style: media.frameStyle)
+        let mediaSize = photo.size
+        let memberCenter = CGPoint(
+            x: CGFloat(media.position.x) * base.width + measured.width / 2,
+            y: CGFloat(media.position.y) * base.height + measured.height / 2
         )
-        let toMarkup = CGAffineTransform(translationX: -mediaCenter.x, y: -mediaCenter.y)
+        let toMarkup = CGAffineTransform(translationX: -memberCenter.x, y: -memberCenter.y)
             .concatenating(CGAffineTransform(rotationAngle: -radians(media.rotation)))
-            .concatenating(CGAffineTransform(translationX: mediaSize.width / 2, y: mediaSize.height / 2))
+            .concatenating(CGAffineTransform(
+                translationX: measured.width / 2 - photo.minX,
+                y: measured.height / 2 - photo.minY
+            ))
             .concatenating(CGAffineTransform(scaleX: referenceWidth / mediaSize.width, y: referenceWidth / mediaSize.width))
         let frame = CGRect(x: 0, y: 0, width: referenceWidth, height: referenceWidth * mediaSize.height / mediaSize.width)
 
@@ -207,11 +249,12 @@ struct ComposerMediaMarkupOverlay: View {
                 guard proxy.size.width > 1, proxy.size.height > 1 else { return }
                 let width = ComposerMediaMarkup.referenceWidth
                 let size = CGSize(width: width, height: width * proxy.size.height / proxy.size.width)
-                rendered = ComposerDrawingMetrics.image(
-                    of: ComposerDrawingMetrics.drawing(from: data),
-                    size: size,
-                    scale: proxy.size.width / width * displayScale
-                )
+                let scale = proxy.size.width / width * displayScale
+                let image = await Task.detached(priority: .userInitiated) {
+                    ComposerDrawingMetrics.image(of: ComposerDrawingMetrics.drawing(from: data), size: size, scale: scale)
+                }.value
+                guard !Task.isCancelled else { return }
+                rendered = image
             }
         }
         .allowsHitTesting(false)
@@ -273,10 +316,27 @@ struct ComposerDrawingCanvasBlock: View {
         .allowsHitTesting(!isViewing)
         .accessibilityElement()
         .accessibilityLabel("Drawing")
-        .task(id: ComposerDrawingRenderKey(data: block.drawingData, size: base, pixelScale: scale * displayScale)) {
-            let drawing = ComposerDrawingMetrics.drawing(from: block.drawingData)
-            rendered = ComposerDrawingMetrics.image(of: drawing, size: base, scale: scale * displayScale)
-            touchRects = ComposerDrawingMetrics.touchRects(of: drawing)
+        .task(id: ComposerDrawingRenderKey(
+            data: isDrawing ? nil : block.drawingData,
+            size: base,
+            pixelScale: isDrawing ? 0 : ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
+        )) {
+            // The live canvas shows the ink while drawing; render once drawing ends, not per stroke.
+            guard !isDrawing else { return }
+            let data = block.drawingData
+            let size = base
+            let pixelScale = ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
+            // Off the main thread: decoding and drawing a page of ink can take a while.
+            let (image, rects) = await Task.detached(priority: .userInitiated) {
+                let drawing = ComposerDrawingMetrics.drawing(from: data)
+                return (
+                    ComposerDrawingMetrics.image(of: drawing, size: size, scale: pixelScale),
+                    ComposerDrawingMetrics.touchRects(of: drawing)
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            rendered = image
+            touchRects = rects
         }
     }
 }
@@ -297,7 +357,9 @@ struct ComposerInkHitShape: Shape {
         var path = Path()
         let transform = CGAffineTransform(scaleX: scale, y: scale)
         for area in rects {
-            path.addRect(area.applying(transform).intersection(rect))
+            let clipped = area.applying(transform).intersection(rect)
+            guard !clipped.isNull, !clipped.isEmpty else { continue }
+            path.addRect(clipped)
         }
         return path
     }

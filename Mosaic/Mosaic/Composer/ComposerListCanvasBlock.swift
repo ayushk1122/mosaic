@@ -23,6 +23,7 @@ struct ComposerListCanvasBlock: View {
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @Environment(\.composerPaperPage) private var onPaper
 
     private var readingColor: Color {
@@ -92,6 +93,8 @@ struct ComposerListCanvasBlock: View {
                 }
             }
             .frame(width: fitted.width, height: fitted.height, alignment: .topLeading)
+            .compositingGroup()
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isViewing, !isRelocating, !isLifted {
                     formatIconStack

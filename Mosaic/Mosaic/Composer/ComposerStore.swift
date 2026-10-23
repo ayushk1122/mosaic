@@ -11,7 +11,12 @@ struct ComposerClipboardItem: Equatable {
 @MainActor
 @Observable
 final class ComposerStore {
-    private(set) var snapshot: ComposerSnapshot
+    private(set) var snapshot: ComposerSnapshot {
+        didSet { lookup = ComposerStoreLookup() }
+    }
+    /// Where each board and piece sits, rebuilt after the snapshot changes, so drawing a board
+    /// doesn't search all of its pieces once for every piece it draws.
+    @ObservationIgnored private var lookup = ComposerStoreLookup()
     private(set) var isRestoringDocuments = false
     private(set) var mediaVersions: [String: Int] = [:]
     /// True while the latest edit could not be written to this phone (usually a full disk).
@@ -98,6 +103,24 @@ final class ComposerStore {
         }
         isRestoringDocuments = false
         onPersisted?()
+    }
+
+    /// Takes boards changed on another device (already merged by `ComposerPull`). A replaced
+    /// board's undo history is cleared, so Undo can't bring back the older version and push it.
+    func applySynced(_ synced: ComposerSnapshot, replaced: Set<ComposerDocumentID?>) {
+        var merged = synced
+        ComposerBoardSync.pruneUnreferenced(
+            &merged,
+            protecting: Set(detachedClipboardDocumentIDs.map(\.rawValue))
+        )
+        Self.refreshPursuitTitles(&merged)
+        for documentID in replaced {
+            undoStacks[Self.undoKey(documentID)] = nil
+        }
+        undoCoalesce = nil
+        guard merged != snapshot else { return }
+        snapshot = merged
+        persist()
     }
 
     func mediaDidDownload(_ fileName: String) {
@@ -219,22 +242,45 @@ final class ComposerStore {
 
     func blocks(for documentID: ComposerDocumentID?) -> [ComposerBlock] {
         if let documentID {
-            return snapshot.pursuits.first(where: { $0.id == documentID })?.blocks ?? []
+            if lookup.boards == nil {
+                lookup.boards = Dictionary(
+                    snapshot.pursuits.enumerated().map { ($1.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            }
+            guard let index = lookup.boards?[documentID] else { return [] }
+            return snapshot.pursuits[index].blocks
         }
         return snapshot.mosaicBlocks
     }
 
     func block(with id: ComposerBlockID, in documentID: ComposerDocumentID?) -> ComposerBlock? {
         let page = blocks(for: documentID)
-        if let block = page.first(where: { $0.id == id }) {
-            return block
+        guard let spot = pieceSpots(in: documentID, page: page)[id] else { return nil }
+        return spot.member.map { page[spot.index].groupMembers[$0] } ?? page[spot.index]
+    }
+
+    /// A piece directly on the board, not inside a group.
+    func hasTopLevelBlock(_ id: ComposerBlockID, in documentID: ComposerDocumentID?) -> Bool {
+        guard let spot = pieceSpots(in: documentID, page: blocks(for: documentID))[id] else { return false }
+        return spot.member == nil
+    }
+
+    /// The first piece with each id wins, and a piece on the board wins over a group member.
+    private func pieceSpots(in documentID: ComposerDocumentID?, page: [ComposerBlock]) -> [ComposerBlockID: ComposerStoreLookup.Spot] {
+        let key = documentID?.rawValue ?? ""
+        if let spots = lookup.pieces[key] { return spots }
+        var spots: [ComposerBlockID: ComposerStoreLookup.Spot] = [:]
+        for (index, block) in page.enumerated() where spots[block.id] == nil {
+            spots[block.id] = ComposerStoreLookup.Spot(index: index, member: nil)
         }
-        for block in page where block.kind == .group {
-            if let member = block.groupMembers.first(where: { $0.id == id }) {
-                return member
+        for (index, block) in page.enumerated() where block.kind == .group {
+            for (member, piece) in block.groupMembers.enumerated() where spots[piece.id] == nil {
+                spots[piece.id] = ComposerStoreLookup.Spot(index: index, member: member)
             }
         }
-        return nil
+        lookup.pieces[key] = spots
+        return spots
     }
 
     /// Turns the fixed Mosaic title into a heading on the board, once.
@@ -406,6 +452,26 @@ final class ComposerStore {
         mutateBlocks(for: documentID) { blocks in
             updateOwnedBlock(block.id, in: &blocks) { $0 = block }
         }
+        persist()
+    }
+
+    /// Adds a cutout to "Your stickers", newest first. Not an undo step: the list isn't a board.
+    func saveToStickerLibrary(fileName: String, size: CGSize) {
+        guard !fileName.isEmpty else { return }
+        var library = snapshot.stickerLibrary.filter { $0.fileName != fileName }
+        library.insert(
+            ComposerSavedSticker(fileName: fileName, width: Double(size.width), height: Double(size.height)),
+            at: 0
+        )
+        snapshot.stickerLibrary = Array(library.prefix(ComposerSavedSticker.limit))
+        persist()
+    }
+
+    /// Takes a sticker out of "Your stickers". Copies already placed on boards stay.
+    func removeFromStickerLibrary(_ fileName: String) {
+        let library = snapshot.stickerLibrary.filter { $0.fileName != fileName }
+        guard library.count != snapshot.stickerLibrary.count else { return }
+        snapshot.stickerLibrary = library
         persist()
     }
 
@@ -678,6 +744,62 @@ final class ComposerStore {
         finishEdit(edit)
     }
 
+    /// Opacity and shadow. A slider drag arrives as many small changes; they join one undo step
+    /// and save in a batch.
+    func setLook(
+        opacity: Double? = nil,
+        shadow: ComposerPieceShadow? = nil,
+        shadowColor: ComposerShadowColor? = nil,
+        stickerBorder: Bool? = nil,
+        frameStyle: ComposerFrameStyle? = nil,
+        frameCaption: String? = nil,
+        photoShape: MediaFrameShape? = nil,
+        tabStyle: ComposerTabStyle? = nil,
+        tabColor: ComposerRGBColor? = nil,
+        resetsTabColor: Bool = false,
+        tabShape: ComposerTabShape? = nil,
+        tabWidth: ComposerTabWidth? = nil,
+        tabSticky: Bool? = nil,
+        for blockID: ComposerBlockID,
+        in documentID: ComposerDocumentID?
+    ) {
+        guard var block = self.block(with: blockID, in: documentID) else { return }
+        let current = block
+        if block.kind == .tabs {
+            if let tabStyle { block.tabStyle = tabStyle }
+            if let tabColor { block.tabColor = tabColor }
+            if resetsTabColor { block.tabColor = nil }
+            if let tabShape { block.tabShape = tabShape }
+            if let tabWidth { block.tabWidth = tabWidth }
+            if let tabSticky { block.tabSticky = tabSticky }
+        }
+        if block.kind == .media {
+            if let frameStyle { block.frameStyle = frameStyle }
+            if let frameCaption { block.frameCaption = String(frameCaption.prefix(ComposerFrameStyle.captionLimit)) }
+            if let photoShape, photoShape != block.mediaShape {
+                // A circle is round only on a square frame. Leaving one returns to the photo's own
+                // shape, rather than keeping it square.
+                if photoShape == .circle {
+                    block.mediaFrameAspect = 1
+                } else if block.mediaShape == .circle {
+                    block.mediaFrameAspect = 0
+                }
+                block.mediaShape = photoShape
+                block.mediaWarp = nil
+            }
+        }
+        if let opacity { block.opacity = ComposerPieceLook.clampedOpacity(opacity) }
+        if let shadow { block.shadow = shadow }
+        if let shadowColor { block.shadowColor = shadowColor }
+        if let stickerBorder, block.kind == .sticker { block.stickerBorder = stickerBorder }
+        guard block != current else { return }
+        captureUndo(in: documentID, coalesce: blockID)
+        mutateBlocks(for: documentID) { blocks in
+            updateOwnedBlock(blockID, in: &blocks) { $0 = block }
+        }
+        persistSoon()
+    }
+
     func moveBlock(_ blockID: ComposerBlockID, direction: MoveDirection, in documentID: ComposerDocumentID?) {
         let edit = beginEdit(in: documentID)
         mutateBlocks(for: documentID) { blocks in
@@ -878,7 +1000,7 @@ final class ComposerStore {
         if onMosaic {
             allowed = ![.scrapbook, .calendar, .graph, .table].contains(block.kind)
         } else if onJournalPage {
-            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar, .drawing].contains(block.kind)
+            allowed = [.group, .text, .heading, .list, .media, .social, .link, .calendar, .drawing, .sticker].contains(block.kind)
         } else {
             allowed = true
         }
@@ -1069,8 +1191,8 @@ final class ComposerStore {
                 ids.append(pursuitID)
             }
             if block.kind == .unsupported {
-                let mentioned = block.preservedStrings
-                ids.append(contentsOf: snapshot.pursuits.map(\.id).filter { mentioned.contains($0.rawValue) })
+                let mentioned = Set(block.preservedStrings.map { $0.lowercased() })
+                ids.append(contentsOf: snapshot.pursuits.map(\.id).filter { mentioned.contains($0.rawValue.lowercased()) })
             }
             for id in ids where seen.insert(id.rawValue).inserted {
                 guard let document = snapshot.pursuits.first(where: { $0.id == id }) else { continue }
@@ -1180,4 +1302,16 @@ final class ComposerStore {
         var blockID: ComposerBlockID
         var at: Date
     }
+}
+
+struct ComposerStoreLookup {
+    struct Spot {
+        var index: Int
+        /// Set for a piece inside the group at `index`.
+        var member: Int?
+    }
+
+    var boards: [ComposerDocumentID: Int]?
+    /// By board id, "" for the Mosaic.
+    var pieces: [String: [ComposerBlockID: Spot]] = [:]
 }

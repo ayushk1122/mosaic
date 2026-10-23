@@ -10,6 +10,8 @@ struct ComposerTabsCanvasBlock: View {
     var isViewing: Bool
     var onActivate: () -> Void
     var pinsToPageEdges: Bool = true
+    /// Overrides the usual identifier, for the copy held at the top while sticky.
+    var identifier: String?
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerViewportWidth) private var viewportWidth
@@ -17,6 +19,8 @@ struct ComposerTabsCanvasBlock: View {
     @FocusState private var titleFocus: String?
     @State private var renamingID: String?
     @State private var chipsFrame: CGRect = .zero
+    /// The open tab's mark is one shape that slides between tabs, and changes form between styles.
+    @Namespace private var selectionMark
 
     private var showsEdits: Bool {
         isSelected && !isViewing
@@ -65,6 +69,9 @@ struct ComposerTabsCanvasBlock: View {
         .shadow(color: .white.opacity(isLifted || isRelocating ? 0.28 : 0), radius: isLifted || isRelocating ? 8 : 0)
         .animation(.snappy(duration: 0.22), value: block.selectedTabID)
         .animation(.snappy(duration: 0.22), value: showsEdits)
+        .animation(.snappy(duration: 0.22), value: block.tabStyle)
+        .animation(.snappy(duration: 0.22), value: block.tabShape)
+        .animation(.snappy(duration: 0.22), value: block.tabWidth)
         .onChange(of: isSelected) { _, selected in
             if !selected {
                 renamingID = nil
@@ -72,18 +79,36 @@ struct ComposerTabsCanvasBlock: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("composer.tabs.\(block.id.rawValue)")
+        .accessibilityIdentifier(identifier ?? "composer.tabs.\(block.id.rawValue)")
     }
 
     private var showsColumn: Bool { canAdd || canRemove }
 
+    private var paint: ComposerTabPaint { ComposerTabPaint(color: block.tabColor) }
+
+    private var roundness: CGFloat { block.tabShape == .rounded ? 0 : 1 }
+
+    /// Spanning the page: its width less the side margins, whatever the tabs' size.
+    private var fullWidth: CGFloat? {
+        guard block.tabWidth == .full, viewportWidth > 1 else { return nil }
+        return max(viewportWidth - ComposerTabEdge.margin * 2, 1)
+    }
+
     private var chips: some View {
-        HStack(spacing: 2 * metric) {
+        let segmentedInset = block.tabStyle == .segmented ? 3 * metric : 0
+        return HStack(spacing: (block.tabStyle == .underline ? 6 : 2) * metric) {
             ForEach(block.tabs) { tab in
                 tabChip(tab)
             }
         }
         .padding(.vertical, 2 * metric)
+        .padding(.horizontal, segmentedInset)
+        .padding(.vertical, block.tabStyle == .segmented ? 1 * metric : 0)
+        .frame(width: fullWidth)
+        .background {
+            ComposerTabMarkShape(radius: 10 * metric, roundness: roundness)
+                .fill(Color.white.opacity(block.tabStyle == .segmented ? 0.12 : 0))
+        }
         .onGeometryChange(for: CGRect.self) { proxy in
             proxy.frame(in: .named(composerSpace))
         } action: { frame in
@@ -104,14 +129,27 @@ struct ComposerTabsCanvasBlock: View {
         block.position.x += Double(delta / viewportWidth)
     }
 
+    /// Title color: on the color for a filled mark, in the color for an underline.
+    private func titleColor(selected: Bool) -> Color {
+        switch block.tabStyle {
+        case .pill:
+            return selected ? paint.onFill : Color.white.opacity(0.52)
+        case .segmented:
+            return selected ? paint.onFill : Color.white.opacity(0.7)
+        case .underline:
+            return selected ? paint.line : Color.white.opacity(0.52)
+        }
+    }
+
     private func tabChip(_ tab: ComposerTab) -> some View {
         let selected = block.selectedTabID == tab.id
         let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let style = block.tabStyle
         return ZStack {
             if renamingID == tab.id, showsEdits {
                 TextField("Title", text: titleBinding(for: tab.id))
                     .font(.system(size: 13 * metric, weight: .medium))
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(titleColor(selected: true))
                     .multilineTextAlignment(.center)
                     .focused($titleFocus, equals: tab.id)
                     .submitLabel(.done)
@@ -125,15 +163,34 @@ struct ComposerTabsCanvasBlock: View {
                     .frame(minWidth: 44 * metric)
             } else {
                 Text(title.isEmpty ? "Title" : title)
-                    .font(.system(size: 13 * metric, weight: .medium))
-                    .foregroundStyle(selected ? Color.black.opacity(0.88) : Color.white.opacity(0.52))
+                    .font(.system(size: 13 * metric, weight: selected && style == .underline ? .semibold : .medium))
+                    .foregroundStyle(titleColor(selected: selected))
                     .lineLimit(1)
+                    // Many tabs sharing the page's width shrink their titles a little before cutting them off.
+                    .minimumScaleFactor(block.tabWidth == .full ? 0.7 : 1)
             }
         }
         .padding(.horizontal, 12 * metric)
         .padding(.vertical, 7 * metric)
-        .background(selected ? Color.white.opacity(0.92) : Color.clear, in: Capsule())
-        .contentShape(Capsule())
+        // Full width: every tab gets an equal share of the bar.
+        .frame(maxWidth: block.tabWidth == .full ? .infinity : nil)
+        .background {
+            if selected, style != .underline {
+                ComposerTabMarkShape(radius: 8 * metric, roundness: roundness)
+                    .fill(paint.fill)
+                    .matchedGeometryEffect(id: "selection", in: selectionMark)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if selected, style == .underline {
+                Capsule()
+                    .fill(paint.line)
+                    .frame(height: 2.5 * metric)
+                    .padding(.horizontal, 10 * metric)
+                    .matchedGeometryEffect(id: "selection", in: selectionMark)
+            }
+        }
+        .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
             choose(tab)
         })
@@ -286,5 +343,69 @@ enum ComposerTabEdge {
             x: min(max(origin.x, dragMargin), maxX),
             y: min(max(origin.y, dragMargin), maxY)
         )
+    }
+}
+
+/// The open tab's colors. With no color chosen it's the original white.
+struct ComposerTabPaint {
+    var color: ComposerRGBColor?
+
+    var fill: Color { color?.color ?? Color.white.opacity(0.92) }
+
+    /// Dark titles on light colors, white on dark ones.
+    var onFill: Color {
+        guard let color else { return Color.black.opacity(0.88) }
+        let luminance = 0.299 * color.red + 0.587 * color.green + 0.114 * color.blue
+        return luminance > 0.62 ? Color.black.opacity(0.88) : Color.white
+    }
+
+    var line: Color { color?.color ?? Color.white }
+}
+
+/// The open tab's mark and the Segmented track: round ends at `roundness` 1, corners of `radius`
+/// points at 0. Animatable, so switching shape morphs rather than jumps.
+struct ComposerTabMarkShape: Shape {
+    var radius: CGFloat
+    var roundness: CGFloat
+
+    var animatableData: CGFloat {
+        get { roundness }
+        set { roundness = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let round = rect.height / 2
+        let corner = min(radius, round)
+        return RoundedRectangle(cornerRadius: corner + (round - corner) * roundness, style: .continuous).path(in: rect)
+    }
+}
+
+/// Watches the scroll position for a sticky tab bar and reports only when it reaches or leaves the
+/// top, so scrolling doesn't redraw the board.
+struct ComposerStickyTabsWatcher: View {
+    var rail: ComposerScrollBubbleRail
+    /// The bar's place in the board.
+    var frame: CGRect?
+    /// While the bar is selected or a tab is being renamed it stays on the board, where that happens.
+    var suspended = false
+    @Binding var stuck: Bool
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onChange(of: isAtTop && !suspended, initial: true) { _, value in
+                if stuck != value { stuck = value }
+            }
+    }
+
+    /// Only once the board has scrolled: a bar placed right at the top would otherwise count as
+    /// stuck from the start, hidden on the board with no way to select it.
+    private var isAtTop: Bool {
+        let metrics = rail.metrics
+        guard let frame, frame.height > 1, metrics.containerHeight > 1 else { return false }
+        // How far the board has scrolled from rest, where the offset sits at minus the top inset.
+        let scrolled = metrics.offset + metrics.topInset
+        return scrolled > 1 && frame.minY < scrolled + 6
     }
 }

@@ -74,6 +74,19 @@ struct ComposerBlockEdgeCaseTests {
     }
 
     @Test
+    @MainActor
+    func leavingCircleReturnsThePhotoToItsOwnShape() throws {
+        let store = ComposerStore(seedSnapshot: .empty, persistToDisk: false)
+        let photo = store.addBlock(.media, to: nil)
+        store.setLook(photoShape: .circle, for: photo, in: nil)
+        #expect(store.block(with: photo, in: nil)?.mediaFrameAspect == 1)
+        store.setLook(photoShape: .roundedRectangle, for: photo, in: nil)
+        let rounded = try #require(store.block(with: photo, in: nil))
+        #expect(rounded.mediaShape == .roundedRectangle)
+        #expect(rounded.mediaFrameAspect == 0)
+    }
+
+    @Test
     func floatingControlsStayOnScreen() {
         let visible = CGRect(x: 0, y: 1000, width: 400, height: 700)
         let size = CGSize(width: 200, height: 34)
@@ -99,6 +112,21 @@ struct ComposerBlockEdgeCaseTests {
         // Taller than the screen: pinned inside the visible area.
         let tall = ComposerChromePlacement.floating(size: size, around: CGRect(x: 0, y: 900, width: 400, height: 1200), visible: visible)
         #expect(tall.origin.y == 1008)
+
+        // Fits neither above nor below: held against the side with more room, covering little of the piece.
+        let tallPanel = CGSize(width: 260, height: 260)
+        let squeezed = ComposerChromePlacement.floating(size: tallPanel, around: CGRect(x: 100, y: 1200, width: 200, height: 240), visible: visible)
+        #expect(squeezed.isBelow)
+        #expect(squeezed.origin.y == visible.maxY - 8 - tallPanel.height)
+        let squeezedHigh = ComposerChromePlacement.floating(size: tallPanel, around: CGRect(x: 100, y: 1250, width: 200, height: 300), visible: visible)
+        #expect(!squeezedHigh.isBelow)
+        #expect(squeezedHigh.origin.y == visible.minY + 8)
+
+        // Scrolled off the top or bottom: the control stays at the nearer edge.
+        let offTop = ComposerChromePlacement.floating(size: size, around: CGRect(x: 100, y: 700, width: 200, height: 100), visible: visible)
+        #expect(offTop.origin.y == visible.minY + 8)
+        let offBottom = ComposerChromePlacement.floating(size: size, around: CGRect(x: 100, y: 1900, width: 200, height: 100), visible: visible)
+        #expect(offBottom.origin.y == visible.maxY - 8 - size.height)
 
         // At the finger on a tall piece.
         let finger = ComposerChromePlacement.floating(size: size, around: CGRect(x: 0, y: 900, width: 400, height: 1200), visible: visible, anchorY: 1400)

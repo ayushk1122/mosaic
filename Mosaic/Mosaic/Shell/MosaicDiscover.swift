@@ -14,6 +14,8 @@ struct MosaicFollowedItem: Identifiable, Hashable, Sendable {
     var title: String
     var coverFile: String?
     var coverAsset: String?
+    /// Changed since the follower last opened it; for a Mosaic, also one of its Pursuits they can open.
+    var hasUpdate = false
 
     var id: String { "\(kind.rawValue).\(targetID.uuidString)" }
     var ownerName: String { owner.displayName.isEmpty ? owner.username : owner.displayName }
@@ -53,6 +55,17 @@ struct MosaicFollowingClient: Sendable {
         }
     }
 
+    /// Opening a board reads it: its mark goes at once, before the list reloads from the server.
+    static func read(_ items: [MosaicFollowedItem], opening target: MosaicVisitTarget) -> [MosaicFollowedItem] {
+        items.map { item in
+            var item = item
+            let opened = target.pursuitID.map { item.kind == .pursuit && item.targetID == $0 }
+                ?? (item.kind == .mosaic && item.owner.id == target.person.id)
+            if opened { item.hasUpdate = false }
+            return item
+        }
+    }
+
     /// What is left of the list after unfollowing one item.
     static func remaining(_ items: [MosaicFollowedItem], after item: MosaicFollowedItem) -> [MosaicFollowedItem] {
         items.filter { other in
@@ -81,7 +94,8 @@ struct MosaicFollowingClient: Sendable {
                 ),
                 title: (row["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                 coverFile: row["cover_file"] as? String,
-                coverAsset: row["cover_asset"] as? String
+                coverAsset: row["cover_asset"] as? String,
+                hasUpdate: row["has_update"] as? Bool ?? false
             )
         }
     }
@@ -146,7 +160,10 @@ struct MosaicPursuitCoverView: View {
             image = nil
             return
         }
-        if let cached = MosaicAvatarCache.image(for: "media/\(first)") {
+        // Decoded at the circle's size, so each size is cached on its own.
+        let pixels = Int(size * 3)
+        let key = "media/\(first)@\(pixels)"
+        if let cached = MosaicAvatarCache.image(for: key) {
             image = cached
             return
         }
@@ -155,11 +172,14 @@ struct MosaicPursuitCoverView: View {
               let token = await account.accessToken()
         else { return }
         let client = MosaicVisitClient(config: config)
+        // Decoded off the main thread, rather than at full size on it when first drawn.
         for path in paths {
             if let data = await client.download(path: path, accessToken: token),
-               let loaded = UIImage(data: data) {
+               let loaded = await Task.detached(priority: .userInitiated, operation: {
+                   MosaicThumbnail.image(data: data, maxPixelSize: pixels)
+               }).value {
                 guard !Task.isCancelled else { return }
-                MosaicAvatarCache.store(loaded, for: "media/\(first)")
+                MosaicAvatarCache.store(loaded, for: key)
                 image = loaded
                 return
             }

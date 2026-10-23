@@ -493,7 +493,8 @@ struct MosaicCircleView: View {
             MosaicCircleBubbleView(bubble: bubble)
         }
         .onAppear { Task { await load() } }
-        .task(id: coverFiles) { await loadCovers(coverFiles) }
+        // Includes the media versions, so covers appear once a restore downloads their files.
+        .task(id: ComposerCircleCoverKey(files: coverFiles, versions: store.mediaVersions)) { await loadCovers(coverFiles) }
         .accessibilityIdentifier(MosaicTab.circle.screenAccessibilityIdentifier)
         .mosaicPageBackground(.circle)
     }
@@ -611,6 +612,11 @@ struct MosaicCircleView: View {
     }
 
     /// Photo cover file for each Pursuit widget on the board. Video covers show the initial letter.
+    private struct ComposerCircleCoverKey: Equatable {
+        var files: [UUID: String]
+        var versions: [String: Int]
+    }
+
     private var coverFiles: [UUID: String] {
         var files: [UUID: String] = [:]
         func collect(_ blocks: [ComposerBlock]) {
@@ -784,6 +790,8 @@ struct MosaicCircleBubbleView: View {
         .task { await load(markSeen: true) }
         .navigationDestination(item: $visiting) { target in
             MosaicVisitView(target: target)
+                // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
+                .id(target)
         }
         .accessibilityIdentifier("circle.bubbleScreen")
     }

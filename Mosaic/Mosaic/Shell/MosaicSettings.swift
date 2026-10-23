@@ -31,6 +31,7 @@ struct MosaicRemoteBoard: Equatable, Sendable {
     var role: String
     var title: String
     var level: MosaicVisibilityLevel
+    var explore = false
 }
 
 struct MosaicVisibilityRow: Identifiable, Equatable, Sendable {
@@ -39,6 +40,8 @@ struct MosaicVisibilityRow: Identifiable, Equatable, Sendable {
     var level: MosaicVisibilityLevel
     /// False until the board has a row on the server.
     var canChange: Bool
+    /// Shared to Explore. Only a public board on a public Mosaic can be.
+    var explore = false
 }
 
 enum MosaicSettingsList {
@@ -103,7 +106,8 @@ enum MosaicSettingsList {
             id: remoteMosaic?.id ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID(),
             title: mosaicTitle.isEmpty ? "Mosaic" : mosaicTitle,
             level: remoteMosaic?.level ?? .private,
-            canChange: remoteMosaic != nil
+            canChange: remoteMosaic != nil,
+            explore: remoteMosaic?.explore ?? false
         )
 
         var used: Set<UUID> = []
@@ -118,7 +122,8 @@ enum MosaicSettingsList {
                     id: id,
                     title: title.isEmpty ? "Pursuit" : title,
                     level: remoteMatch?.level ?? .hidden,
-                    canChange: remoteMatch != nil
+                    canChange: remoteMatch != nil,
+                    explore: remoteMatch?.explore ?? false
                 )
             )
         }
@@ -129,7 +134,8 @@ enum MosaicSettingsList {
                     id: board.id,
                     title: title.isEmpty ? "Pursuit" : title,
                     level: board.level,
-                    canChange: true
+                    canChange: true,
+                    explore: board.explore
                 )
             )
         }
@@ -143,6 +149,27 @@ enum MosaicSettingsList {
             levels[row.id] = row.level
         }
         return levels
+    }
+
+    static func savedExplore(_ rows: [MosaicVisibilityRow]) -> [UUID: Bool] {
+        var shared: [UUID: Bool] = [:]
+        for row in rows where row.canChange {
+            shared[row.id] = row.explore
+        }
+        return shared
+    }
+
+    /// Explore choices made since the last save.
+    static func changedExplore(_ rows: [MosaicVisibilityRow], saved: [UUID: Bool]) -> [MosaicVisibilityRow] {
+        rows.filter { row in
+            guard row.canChange, let shared = saved[row.id] else { return false }
+            return shared != row.explore
+        }
+    }
+
+    /// Visitors could open it: public, and on a public Mosaic.
+    static func canShareToExplore(_ row: MosaicVisibilityRow, mosaicLevel: MosaicVisibilityLevel?) -> Bool {
+        row.canChange && row.level == .public && mosaicLevel == .public
     }
 
     /// Privacy choices made since the last save.
@@ -450,7 +477,8 @@ struct MosaicSettingsClient: Sendable {
                 id: id,
                 role: role,
                 title: row["title"] as? String ?? "",
-                level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: role)
+                level: MosaicVisibilityLevel.parse(row["visibility"] as? String, role: role),
+                explore: row["explore_shared"] as? Bool ?? false
             )
         }
     }
@@ -487,7 +515,7 @@ struct MosaicSettingsClient: Sendable {
         components?.queryItems = [
             URLQueryItem(name: "owner_id", value: "eq.\(userID.uuidString.lowercased())"),
             URLQueryItem(name: "role", value: "in.(mosaic,pursuit)"),
-            URLQueryItem(name: "select", value: "id,role,title,visibility")
+            URLQueryItem(name: "select", value: "id,role,title,visibility,explore_shared")
         ]
         return components?.url ?? base
     }
@@ -514,6 +542,9 @@ struct MosaicSettingsClient: Sendable {
 struct MosaicSettingsView: View {
     var account: MosaicAccount
     var store: ComposerStore
+    /// Signs out once Settings has finished closing. Swapping the whole app to the sign-in screen
+    /// while Settings was still closing could leave the log-out half done.
+    var onLogOut: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(ComposerRemoteSync.self) private var remoteSync: ComposerRemoteSync?
@@ -557,9 +588,13 @@ struct MosaicSettingsView: View {
     @State private var savedBirthday: Date?
     @State private var birthdayLoaded = false
     @Environment(MosaicPursuitPrivacy.self) private var pursuitPrivacy: MosaicPursuitPrivacy?
+    @Environment(MosaicExplorePreviews.self) private var explorePreviews: MosaicExplorePreviews?
     @State private var mosaic: MosaicVisibilityRow?
     @State private var pursuits: [MosaicVisibilityRow] = []
     @State private var savedLevels: [UUID: MosaicVisibilityLevel] = [:]
+    @State private var savedExplore: [UUID: Bool] = [:]
+    /// A board just switched to Public, waiting on "Share to Explore too?".
+    @State private var explorePrompt: MosaicVisibilityRow?
     /// A framed picture waiting for Save.
     @State private var pendingAvatar: Data?
     @State private var confirmsClose = false
@@ -619,6 +654,7 @@ struct MosaicSettingsView: View {
             || birthdayChanged
             || pendingAvatar != nil
             || !MosaicSettingsList.changedLevels(visibilityRows, saved: savedLevels).isEmpty
+            || !MosaicSettingsList.changedExplore(visibilityRows, saved: savedExplore).isEmpty
     }
 
     private var birthdayChanged: Bool {
@@ -768,9 +804,14 @@ struct MosaicSettingsView: View {
                     .accessibilityIdentifier("settings.logOut")
                     .confirmationDialog("Log out of Mosaic?", isPresented: $confirmsLogOut, titleVisibility: .visible) {
                         Button("Log out", role: .destructive) {
-                            Task {
+                            if let onLogOut {
+                                onLogOut()
                                 dismiss()
-                                await account.signOut()
+                            } else {
+                                Task {
+                                    dismiss()
+                                    await account.signOut()
+                                }
                             }
                         }
                         Button("Cancel", role: .cancel) {}
@@ -809,6 +850,17 @@ struct MosaicSettingsView: View {
         .onChange(of: avatarItem) { _, item in
             guard let item else { return }
             Task { await pickAvatar(from: item) }
+        }
+        .confirmationDialog(
+            "Share to Explore too?",
+            isPresented: Binding(get: { explorePrompt != nil }, set: { if !$0 { explorePrompt = nil } }),
+            titleVisibility: .visible,
+            presenting: explorePrompt
+        ) { row in
+            Button("Share to Explore") { setExplore(true, for: row.id) }
+            Button("Not now", role: .cancel) {}
+        } message: { row in
+            Text("Anyone on Mosaic can find “\(row.title)” in Explore and visit it. You can turn this off anytime here.")
         }
         .fullScreenCover(item: $avatarCrop) { crop in
             MosaicAvatarCropper(image: crop.image) {
@@ -977,27 +1029,7 @@ struct MosaicSettingsView: View {
     }
 
     private func mosaicRow(_ row: MosaicVisibilityRow) -> some View {
-        Toggle(isOn: Binding(
-            get: { row.level == .public },
-            set: { isPublic in mosaic?.level = isPublic ? .public : .private }
-        )) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.title)
-                    .foregroundStyle(.white)
-                Text(row.canChange ? row.level.title : "Waiting to sync")
-                    .font(.footnote)
-                    .foregroundStyle(muted)
-            }
-        }
-        .tint(.green)
-        .disabled(!row.canChange)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(field, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityLabel("Mosaic \(row.title)")
-    }
-
-    private func pursuitRow(_ row: MosaicVisibilityRow) -> some View {
+        // Laid out like a Pursuit: the name, then who can see it, with Explore on the same line.
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
@@ -1008,13 +1040,48 @@ struct MosaicSettingsView: View {
                         .foregroundStyle(muted)
                 }
             }
-            Picker("Who can see \(row.title)", selection: Binding(
-                get: { row.level },
-                set: { level in
-                    if let index = pursuits.firstIndex(where: { $0.id == row.id }) {
-                        pursuits[index].level = level
+            HStack(spacing: 12) {
+                Picker("Who can see \(row.title)", selection: Binding(
+                    get: { row.level },
+                    set: { level in setLevel(level, for: row.id) }
+                )) {
+                    ForEach([MosaicVisibilityLevel.public, .private]) { level in
+                        Text(level.title).tag(level)
                     }
                 }
+                .pickerStyle(.segmented)
+                .disabled(!row.canChange)
+                if MosaicSettingsList.canShareToExplore(row, mosaicLevel: row.level) {
+                    exploreToggle(row)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(field, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func pursuitRow(_ row: MosaicVisibilityRow) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.title)
+                        .foregroundStyle(.white)
+                    if !row.canChange {
+                        Text("Waiting to sync")
+                            .font(.footnote)
+                            .foregroundStyle(muted)
+                    }
+                }
+                Spacer(minLength: 8)
+                if MosaicSettingsList.canShareToExplore(row, mosaicLevel: mosaic?.level) {
+                    exploreToggle(row)
+                }
+            }
+            Picker("Who can see \(row.title)", selection: Binding(
+                get: { row.level },
+                set: { level in setLevel(level, for: row.id) }
             )) {
                 ForEach(MosaicVisibilityLevel.allCases) { level in
                     Text(level.title).tag(level)
@@ -1028,6 +1095,59 @@ struct MosaicSettingsView: View {
         .background(field, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pursuit \(row.title)")
+    }
+
+    /// A small labeled switch; what Explore means is explained once, when a board is made Public.
+    private func exploreToggle(_ row: MosaicVisibilityRow) -> some View {
+        HStack(spacing: 8) {
+            Text("Explore")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(muted)
+                .fixedSize()
+            Toggle("Explore", isOn: Binding(
+                get: { row.explore },
+                set: { setExplore($0, for: row.id) }
+            ))
+            .labelsHidden()
+            .tint(.green)
+            .scaleEffect(0.72)
+            .frame(width: 40, height: 24)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Share \(row.title) to Explore")
+        .accessibilityIdentifier("settings.explore.\(row.id.uuidString.lowercased())")
+    }
+
+    private func row(_ id: UUID) -> MosaicVisibilityRow? {
+        mosaic?.id == id ? mosaic : pursuits.first { $0.id == id }
+    }
+
+    /// A board leaving Public leaves Explore too (the server does the same), and a private Mosaic takes
+    /// its Pursuits out. A board newly made Public asks whether to share it.
+    private func setLevel(_ level: MosaicVisibilityLevel, for id: UUID) {
+        guard let before = row(id) else { return }
+        if mosaic?.id == id {
+            mosaic?.level = level
+            if level != .public {
+                mosaic?.explore = false
+                for index in pursuits.indices { pursuits[index].explore = false }
+            }
+        } else if let index = pursuits.firstIndex(where: { $0.id == id }) {
+            pursuits[index].level = level
+            if level != .public { pursuits[index].explore = false }
+        }
+        if before.level != .public, level == .public, !before.explore,
+           let updated = row(id), MosaicSettingsList.canShareToExplore(updated, mosaicLevel: mosaic?.level) {
+            explorePrompt = updated
+        }
+    }
+
+    private func setExplore(_ shared: Bool, for id: UUID) {
+        if mosaic?.id == id {
+            mosaic?.explore = shared
+        } else if let index = pursuits.firstIndex(where: { $0.id == id }) {
+            pursuits[index].explore = shared
+        }
     }
 
     /// Saves names, the picture, and privacy, pushes the boards now instead of after the usual pause,
@@ -1046,6 +1166,7 @@ struct MosaicSettingsView: View {
         let avatarSaved = await uploadPendingAvatar()
         let birthdaySaved = await saveBirthdayIfNeeded()
         let levelsSaved = await applyChangedLevels()
+        let exploreSaved = await applyChangedExplore()
         var synced = true
         if let remoteSync {
             synced = await remoteSync.syncNow(
@@ -1060,7 +1181,7 @@ struct MosaicSettingsView: View {
         } else if !synced, status.isEmpty {
             status = "Your Mosaic couldn’t sync. Check your connection and try again."
         }
-        guard namesSaved, avatarSaved, birthdaySaved, levelsSaved, synced else { return }
+        guard namesSaved, avatarSaved, birthdaySaved, levelsSaved, exploreSaved, synced else { return }
         dismiss()
     }
 
@@ -1182,6 +1303,7 @@ struct MosaicSettingsView: View {
             mosaic = listed.mosaic
             pursuits = listed.pursuits
             savedLevels = MosaicSettingsList.savedLevels(visibilityRows)
+            savedExplore = MosaicSettingsList.savedExplore(visibilityRows)
             if let onboarding = try? await MosaicOnboardingClient(config: config).status(accessToken: token) {
                 birthdayLoaded = true
                 if let existing = onboarding.birthday {
@@ -1252,6 +1374,41 @@ struct MosaicSettingsView: View {
         }
     }
 
+    /// After privacy, so the server checks eligibility against the new levels. Boards shared here get
+    /// their preview made right away, so they appear in Explore.
+    private func applyChangedExplore() async -> Bool {
+        let changed = MosaicSettingsList.changedExplore(visibilityRows, saved: savedExplore)
+        guard !changed.isEmpty else { return true }
+        guard let config = SupabaseSyncConfig.current(),
+              let token = await account.accessToken()
+        else {
+            status = "Your Explore settings could not be saved."
+            return false
+        }
+        let client = MosaicExploreClient(config: config)
+        var allSaved = true
+        for row in changed {
+            // Leaving Public already took the board out of Explore on the server, if it saved.
+            if !row.explore, savedLevels[row.id] != .public {
+                savedExplore[row.id] = false
+                continue
+            }
+            do {
+                try await client.setSharing(id: row.id, shared: row.explore, accessToken: token)
+                savedExplore[row.id] = row.explore
+                if row.explore {
+                    explorePreviews?.refresh(boardID: row.id, force: true)
+                }
+            } catch {
+                allSaved = false
+            }
+        }
+        if !allSaved {
+            status = "Some Explore settings could not be saved."
+        }
+        return allSaved
+    }
+
     /// Choices that fail stay unsaved, so a second Save tries them again.
     private func applyChangedLevels() async -> Bool {
         let changed = MosaicSettingsList.changedLevels(visibilityRows, saved: savedLevels)
@@ -1264,14 +1421,21 @@ struct MosaicSettingsView: View {
         }
         let client = MosaicSettingsClient(config: config)
         var allSaved = true
+        var pursuitChanged = false
         for row in changed {
             do {
                 try await client.setVisibility(id: row.id, level: row.level, accessToken: token)
                 savedLevels[row.id] = row.level
                 pursuitPrivacy?.set(row.level, for: row.id)
+                pursuitChanged = pursuitChanged || row.id != mosaic?.id
             } catch {
                 allSaved = false
             }
+        }
+        // The server dropped the shared Mosaic's picture, which may show that Pursuit as it was;
+        // drawing a new one now brings the Mosaic back to Explore without waiting an hour.
+        if pursuitChanged, let mosaic, savedExplore[mosaic.id] == true {
+            explorePreviews?.refresh(boardID: mosaic.id, force: true)
         }
         if !allSaved {
             status = "Some privacy settings could not be saved."

@@ -118,7 +118,7 @@ struct MosaicSearchClient: Sendable {
 
 /// Discover: username search on the top half, and what the owner follows on the bottom half.
 struct MosaicDiscoverView: View {
-    var linkedUsername: Binding<String?> = .constant(nil)
+    var linked: Binding<MosaicLink.Target?> = .constant(nil)
     var onOpenOwnMosaic: () -> Void = {}
 
     @Environment(\.mosaicAccount) private var account
@@ -136,6 +136,9 @@ struct MosaicDiscoverView: View {
     @State private var phase = Phase.idle
     @State private var opened: MosaicVisitTarget?
     @State private var following: [MosaicFollowedItem] = []
+    /// Rows opened just now. The server learns of the visit in the background, so a reload on
+    /// coming back can arrive before it and would bring the mark back.
+    @State private var readAt: [String: Date] = [:]
     @State private var followingLoaded = false
     @State private var pursuitQuery = ""
     @State private var mosaicQuery = ""
@@ -144,6 +147,8 @@ struct MosaicDiscoverView: View {
 
     private let field = Color.white.opacity(0.08)
     private let muted = Color.white.opacity(0.55)
+    /// The mark on a followed board that changed since it was last opened.
+    private static let updateColor = Color(red: 0.32, green: 0.64, blue: 1)
 
     private var cleaned: String {
         MosaicSettingsList.typedUsername(query).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -194,12 +199,14 @@ struct MosaicDiscoverView: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(tabBarHidden ? .hidden : .visible, for: .tabBar)
         .task(id: cleaned) { await search(cleaned) }
-        .task(id: linkedUsername.wrappedValue) { await openLink() }
+        .task(id: linked.wrappedValue) { await openLink() }
         .onAppear {
             Task { await loadFollowing() }
         }
         .navigationDestination(item: $opened) { target in
             MosaicVisitView(target: target)
+                // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
+                .id(target)
         }
         .accessibilityIdentifier(MosaicTab.search.screenAccessibilityIdentifier)
         .mosaicPageBackground(.discover)
@@ -265,29 +272,36 @@ struct MosaicDiscoverView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    /// A tap opens the board; following, unfollowing, and the owner's Mosaic are all there. Holding
+    /// it still offers a quick unfollow.
     private func followedRow(_ item: MosaicFollowedItem) -> some View {
-        Menu {
-            if item.kind == .pursuit {
-                Button("View Pursuit", systemImage: "square.grid.2x2") {
-                    opened = MosaicVisitTarget(person: item.owner, pursuitID: item.targetID)
-                }
-            }
-            Button("View Mosaic", systemImage: "person.crop.circle") {
-                opened = MosaicVisitTarget(person: item.owner)
-            }
-            Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
-                Task { await unfollow(item) }
-            }
+        Button {
+            focused = false
+            listFocus = nil
+            open(MosaicVisitTarget(person: item.owner, pursuitID: item.kind == .pursuit ? item.targetID : nil))
         } label: {
             followedRowLabel(item)
         }
-        .menuStyle(.button)
         .buttonStyle(.plain)
-        .simultaneousGesture(TapGesture().onEnded {
-            focused = false
-            listFocus = nil
-        })
+        .contextMenu {
+            Button("Unfollow", systemImage: "person.badge.minus", role: .destructive) {
+                Task { await unfollow(item) }
+            }
+        }
+        .accessibilityValue(item.hasUpdate ? "Updated" : "")
+        .accessibilityAction(named: "Unfollow") {
+            Task { await unfollow(item) }
+        }
         .accessibilityIdentifier("discover.\(item.kind.rawValue).\(item.owner.username)")
+    }
+
+    private func open(_ target: MosaicVisitTarget) {
+        let read = MosaicFollowingClient.read(following, opening: target)
+        for (before, after) in zip(following, read) where before.hasUpdate && !after.hasUpdate {
+            readAt[after.id] = .now
+        }
+        following = read
+        opened = target
     }
 
     private func followedRowLabel(_ item: MosaicFollowedItem) -> some View {
@@ -313,7 +327,16 @@ struct MosaicDiscoverView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if item.hasUpdate {
+                Circle()
+                    .fill(Self.updateColor)
+                    .frame(width: 8, height: 8)
+                    .padding(.trailing, 4)
+                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityHidden(true)
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: item.hasUpdate)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
@@ -327,17 +350,25 @@ struct MosaicDiscoverView: View {
             followingLoaded = true
             return
         }
-        following = items
+        following = items.map { item in
+            var item = item
+            if let at = readAt[item.id], Date.now.timeIntervalSince(at) < 30 {
+                item.hasUpdate = false
+            }
+            return item
+        }
         followingLoaded = true
     }
 
-    /// Opens the Mosaic a link names. An unknown name is left in the search field.
+    /// Opens the Mosaic a link names, on its Pursuit when it names one. An unknown name is left in
+    /// the search field.
     private func openLink() async {
-        guard let name = linkedUsername.wrappedValue,
+        guard let target = linked.wrappedValue,
               let account,
               let config = SupabaseSyncConfig.current(),
               let token = await account.accessToken()
         else { return }
+        let name = target.username
         let match = try? await MosaicSearchClient(config: config)
             .people(matching: name, accessToken: token)
             .first { $0.username == name }
@@ -347,12 +378,12 @@ struct MosaicDiscoverView: View {
                 onOpenOwnMosaic()
             } else {
                 focused = false
-                opened = MosaicVisitTarget(person: match)
+                opened = MosaicVisitTarget(person: match, pursuitID: target.pursuitID)
             }
         } else {
             query = name
         }
-        linkedUsername.wrappedValue = nil
+        linked.wrappedValue = nil
     }
 
     private func unfollow(_ item: MosaicFollowedItem) async {

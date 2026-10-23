@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct ComposerMediaCanvasBlock: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
     @Environment(\.composerMediaWaiting) private var mediaWaiting
+    @Environment(\.composerMediaPreviews) private var mediaPreviews
+    @Environment(\.composerStillsOnly) private var stillsOnly
 
     @Binding var block: ComposerBlock
     let mediaURL: URL?
@@ -33,6 +35,7 @@ struct ComposerMediaCanvasBlock: View {
 
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
 
     private var iconPlacement: ComposerChromePlacement {
         ComposerChromePlacement.resolve(itemFrame: itemFrame, viewportWidth: viewportWidth)
@@ -49,6 +52,8 @@ struct ComposerMediaCanvasBlock: View {
 
     var body: some View {
         mediaContent
+            .compositingGroup()
+            .opacity(pieceOpacity)
             .overlay(alignment: .topLeading) {
                 if isSelected, !isLifted, !isRelocating {
                     mediaChrome
@@ -79,7 +84,7 @@ struct ComposerMediaCanvasBlock: View {
                 ]
             )
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
-            if isVideo, let mediaURL {
+            if isVideo, let mediaURL, !stillsOnly {
                 // A photo replaced by a video must not keep showing the old photo if the video is missing.
                 preview = nil
                 loadFailed = !FileManager.default.fileExists(atPath: mediaURL.path)
@@ -107,13 +112,19 @@ struct ComposerMediaCanvasBlock: View {
                         .allowsHitTesting(false)
                 }
             }
+            .modifier(ComposerPhotoFrameModifier(
+                style: block.frameStyle,
+                caption: block.frameCaption,
+                seed: ComposerPhotoFrameModifier.seed(for: block.id),
+                width: displayWidth
+            ))
             .contentShape(Rectangle())
             .modifier(MediaBodyTapModifier(isEnabled: onBodyTap != nil, action: { onBodyTap?() }))
     }
 
     @ViewBuilder
     private var framedMedia: some View {
-        if isVideo, let mediaURL, !loadFailed {
+        if isVideo, let mediaURL, !loadFailed, !stillsOnly {
             framed(
                 ComposerInlineVideo(url: mediaURL, isPaused: isPaused, fillsFrame: false)
                     .allowsHitTesting(false)
@@ -126,6 +137,8 @@ struct ComposerMediaCanvasBlock: View {
                 onReplace: showsReplace ? onReplace : nil,
                 onReplaceFrame: { replaceFrame = $0 }
             ))
+        } else if let placeholder {
+            framed(ComposerMediaPlaceholder(preview: placeholder))
         } else {
             ProgressView()
                 .tint(.white)
@@ -138,11 +151,20 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private var contentAspect: CGFloat {
-        isVideo ? videoAspect : imageAspect
+        // As a still, a video's first frame has the video's own shape.
+        guard isVideo, !stillsOnly else { return imageAspect }
+        // A video still downloading takes its preview's shape, so it doesn't resize on arrival.
+        if loadFailed, let placeholder { return CGFloat(placeholder.aspect) }
+        return videoAspect
+    }
+
+    /// A visitor's blurred stand-in, and the shape to hold until the file arrives.
+    private var placeholder: ComposerMediaPreview? {
+        block.mediaFileName.flatMap { mediaPreviews[$0] }
     }
 
     private var imageAspect: CGFloat {
-        guard let preview, preview.size.height > 0 else { return 1 }
+        guard let preview, preview.size.height > 0 else { return placeholder.map { CGFloat($0.aspect) } ?? 1 }
         return preview.size.width / preview.size.height
     }
 
@@ -373,6 +395,19 @@ private struct MediaIconHitShape: Shape {
     }
 }
 
+private struct ComposerStillsOnlyKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Videos show their first frame as a picture instead of a player, for images of a board made by
+    /// capturing it (a player's picture doesn't capture).
+    var composerStillsOnly: Bool {
+        get { self[ComposerStillsOnlyKey.self] }
+        set { self[ComposerStillsOnlyKey.self] = newValue }
+    }
+}
+
 struct ComposerInlineVideo: UIViewRepresentable {
     @Environment(\.composerMediaVersions) private var mediaVersions
 
@@ -402,8 +437,9 @@ struct ComposerInlineVideo: UIViewRepresentable {
         guard let player = context.coordinator.player else { return }
         if isPaused {
             player.pause()
+            context.coordinator.releaseAudio()
         } else if player.timeControlStatus != .playing {
-            Self.claimAudio()
+            context.coordinator.claimAudio()
             player.play()
         }
     }
@@ -420,16 +456,9 @@ struct ComposerInlineVideo: UIViewRepresentable {
         if isPaused {
             player.pause()
         } else {
-            Self.claimAudio()
+            context.coordinator.claimAudio()
             player.play()
         }
-    }
-
-    /// Only a video that actually plays takes over audio, so a paused video on screen
-    /// doesn't stop the person's music.
-    static func claimAudio() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     static func dismantleUIView(_ uiView: ComposerPlayerView, coordinator: Coordinator) {
@@ -466,6 +495,46 @@ struct ComposerInlineVideo: UIViewRepresentable {
             endObserver = nil
             player?.pause()
             player = nil
+            releaseAudio()
+        }
+
+        func claimAudio() { ComposerVideoAudio.claim(ObjectIdentifier(self)) }
+        func releaseAudio() { ComposerVideoAudio.release(ObjectIdentifier(self)) }
+    }
+}
+
+/// Only a video that actually plays takes over audio, so a paused video on screen doesn't stop the
+/// person's music; once the last one pauses or leaves the screen, their music can resume.
+enum ComposerVideoAudio {
+    private(set) static var playing: Set<ObjectIdentifier> = []
+    /// Bumped by every claim and release, so a hand-back still waiting is dropped once a video plays again.
+    private static var handBack = 0
+
+    static func claim(_ video: ObjectIdentifier) {
+        handBack += 1
+        if playing.isEmpty {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
+        playing.insert(video)
+    }
+
+    /// Just after a pause the player's audio is often still running, and iOS refuses to end the
+    /// session; with no retry the person's music never came back. So it waits a moment, ends it off
+    /// the main thread, and tries once more if refused.
+    static func release(_ video: ObjectIdentifier) {
+        guard playing.remove(video) != nil, playing.isEmpty else { return }
+        handBack += 1
+        let current = handBack
+        Task {
+            for delay in [400, 800] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard current == handBack, playing.isEmpty else { return }
+                let ended = await Task.detached(priority: .utility) {
+                    (try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)) != nil
+                }.value
+                if ended { return }
+            }
         }
     }
 }
@@ -635,8 +704,51 @@ struct ComposerMediaLightbox: View {
     @State private var image: UIImage?
     @State private var videoAspect: CGFloat?
     @State private var loadFailed = false
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var drag: CGSize = .zero
+
+    private static let maximumZoom: CGFloat = 5
+    private static let doubleTapZoom: CGFloat = 2.5
 
     private var isVideo: Bool { ComposerMediaStill.isVideo(url) }
+
+    private var canZoom: Bool {
+        !loadFailed && (isVideo || image != nil)
+    }
+
+    private var scale: CGFloat {
+        min(max(zoom * pinch, 1), Self.maximumZoom)
+    }
+
+    /// Keeps the zoomed media covering the screen: it can't be dragged past its own edges.
+    private static func clamped(_ offset: CGSize, scale: CGFloat, in size: CGSize) -> CGSize {
+        let limitX = max(size.width * (scale - 1) / 2, 0)
+        let limitY = max(size.height * (scale - 1) / 2, 0)
+        return CGSize(
+            width: min(max(offset.width, -limitX), limitX),
+            height: min(max(offset.height, -limitY), limitY)
+        )
+    }
+
+    private func zoomOut() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            zoom = 1
+            pan = .zero
+        }
+    }
+
+    /// Zooms in on the tapped spot, or back out.
+    private func toggleZoom(at point: CGPoint, in size: CGSize) {
+        guard zoom <= 1.01 else { return zoomOut() }
+        let target = Self.doubleTapZoom
+        let toward = CGSize(width: (size.width / 2 - point.x) * (target - 1), height: (size.height / 2 - point.y) * (target - 1))
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            zoom = target
+            pan = Self.clamped(toward, scale: target, in: size)
+        }
+    }
 
     private var contentAspect: CGFloat? {
         if isVideo { return videoAspect }
@@ -645,11 +757,93 @@ struct ComposerMediaLightbox: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.94)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onClose)
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(0.94)
+                    .ignoresSafeArea()
+                media
+                    .scaleEffect(scale)
+                    .offset(Self.clamped(
+                        CGSize(width: pan.width + drag.width, height: pan.height + drag.height),
+                        scale: scale,
+                        in: proxy.size
+                    ))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .contentShape(Rectangle())
+            // A double tap zooms; a single tap zooms back out, or closes when not zoomed.
+            .gesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { value in
+                        guard canZoom else { return }
+                        toggleZoom(at: value.location, in: proxy.size)
+                    }
+                    .exclusively(before: TapGesture().onEnded {
+                        if zoom > 1.01 { zoomOut() } else { onClose() }
+                    })
+            )
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .updating($pinch) { value, state, _ in state = value.magnification }
+                    .onEnded { value in
+                        let next = min(max(zoom * value.magnification, 1), Self.maximumZoom)
+                        if next <= 1.01 {
+                            zoomOut()
+                        } else {
+                            zoom = next
+                            pan = Self.clamped(pan, scale: next, in: proxy.size)
+                        }
+                    },
+                isEnabled: canZoom
+            )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8)
+                    .updating($drag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        pan = Self.clamped(
+                            CGSize(width: pan.width + value.translation.width, height: pan.height + value.translation.height),
+                            scale: zoom,
+                            in: proxy.size
+                        )
+                    },
+                isEnabled: canZoom && zoom > 1.01
+            )
+        }
+        .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
+            if isVideo {
+                loadFailed = !FileManager.default.fileExists(atPath: url.path)
+                guard crop != nil else { return }
+                let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
+                guard !Task.isCancelled else { return }
+                videoAspect = loaded
+            } else {
+                let loaded = await ComposerMediaStill.image(at: url)
+                guard !Task.isCancelled else { return }
+                image = loaded
+                loadFailed = loaded == nil
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityLabel(isVideo ? "Video" : "Photo")
+        .accessibilityValue(zoom > 1.01 ? "Zoomed \(Int((zoom * 100).rounded())) percent" : "")
+        .accessibilityZoomAction { action in
+            guard canZoom else { return }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                switch action.direction {
+                case .zoomIn: zoom = min(zoom * 1.5, Self.maximumZoom)
+                case .zoomOut: zoom = max(zoom / 1.5, 1)
+                @unknown default: break
+                }
+                if zoom <= 1.01 { pan = .zero }
+            }
+        }
+        .accessibilityAction(.escape, onClose)
+    }
+
+    @ViewBuilder
+    private var media: some View {
+        Group {
             if loadFailed, !mediaWaiting.includes(url) {
                 ComposerMediaUnavailable(isVideo: isVideo)
                     .frame(width: 220, height: 220)
@@ -686,24 +880,6 @@ struct ComposerMediaLightbox: View {
                     .tint(.white)
             }
         }
-        .task(id: ComposerMediaLoadKey(url, versions: mediaVersions)) {
-            if isVideo {
-                loadFailed = !FileManager.default.fileExists(atPath: url.path)
-                guard crop != nil else { return }
-                let loaded = await ComposerMediaCanvasBlock.videoAspect(at: url)
-                guard !Task.isCancelled else { return }
-                videoAspect = loaded
-            } else {
-                let loaded = await ComposerMediaStill.image(at: url)
-                guard !Task.isCancelled else { return }
-                image = loaded
-                loadFailed = loaded == nil
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isModal)
-        .accessibilityLabel(isVideo ? "Video" : "Photo")
-        .accessibilityAction(.escape, onClose)
     }
 
     @ViewBuilder

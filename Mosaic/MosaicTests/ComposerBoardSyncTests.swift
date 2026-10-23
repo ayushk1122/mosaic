@@ -196,6 +196,31 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func pursuitLinksNameAUsernameAndAPursuit() throws {
+        let pursuit = try #require(UUID(uuidString: "6C1F7A4E-0B39-4A52-9D6E-0F9B1C2D3E4F"))
+        let link = try #require(MosaicLink.url(username: "@Ayush", pursuitID: pursuit))
+        #expect(link.absoluteString == "mosaic://@ayush/pursuit/6c1f7a4e-0b39-4a52-9d6e-0f9b1c2d3e4f")
+        #expect(MosaicLink.target(from: link) == MosaicLink.Target(username: "ayush", pursuitID: pursuit))
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush/pursuit/6c1f7a4e-0b39-4a52-9d6e-0f9b1c2d3e4f?ref=copy")))?.pursuitID == pursuit)
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush/pursuit/not-an-id"))) == MosaicLink.Target(username: "ayush"),
+                "a broken Pursuit part still opens the Mosaic")
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush"))) == MosaicLink.Target(username: "ayush"))
+    }
+
+    @Test
+    func pursuitBadgesSayWhetherTheVisitorFollowsOrCanOpen() {
+        func pursuit(_ level: MosaicVisibilityLevel, canOpen: Bool, following: Bool, request: String? = nil) -> MosaicVisitPursuit {
+            MosaicVisitPursuit(id: UUID(), title: "Golf", level: level, canOpen: canOpen, requestStatus: request, following: following)
+        }
+        #expect(MosaicFollowStatus(pursuit(.public, canOpen: true, following: false)) == .follow)
+        #expect(MosaicFollowStatus(pursuit(.public, canOpen: true, following: true)) == .following)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: false, following: false)) == .locked)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: false, following: false, request: "pending")) == .pending)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: true, following: false)) == .locked,
+                "a private Pursuit closes again once unfollowed")
+    }
+
+    @Test
     func searchReadsUsernamesAndDisplayNames() throws {
         let id = UUID()
         let data = Data("""
@@ -576,6 +601,28 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func followedBoardsCarryTheirUpdateMarkUntilOpened() throws {
+        let owner = UUID(), mosaic = UUID(), golf = UUID(), travel = UUID()
+        let row = { (kind: String, id: UUID, updated: Bool) in
+            #"{"target_type":"\#(kind)","target_id":"\#(id.uuidString.lowercased())","owner_id":"\#(owner.uuidString.lowercased())","username":"ada","has_update":\#(updated)}"#
+        }
+        let items = try MosaicFollowingClient.items(from: Data(
+            "[\(row("mosaic", mosaic, true)),\(row("pursuit", golf, true)),\(row("pursuit", travel, true))]".utf8
+        ))
+        #expect(items.map(\.hasUpdate) == [true, true, true])
+        let person = MosaicPersonResult(id: owner, username: "ada", displayName: "")
+
+        let afterGolf = MosaicFollowingClient.read(items, opening: MosaicVisitTarget(person: person, pursuitID: golf))
+        #expect(afterGolf.map(\.hasUpdate) == [true, false, true], "opening Golf clears only Golf here; the server decides the Mosaic")
+
+        let afterMosaic = MosaicFollowingClient.read(items, opening: MosaicVisitTarget(person: person))
+        #expect(afterMosaic.map(\.hasUpdate) == [false, true, true], "opening the Mosaic leaves its Pursuits marked")
+
+        let older = try MosaicFollowingClient.items(from: Data("[\(row("mosaic", mosaic, false).replacingOccurrences(of: #","has_update":false"#, with: ""))]".utf8))
+        #expect(older.first?.hasUpdate == false, "a server without marks shows none")
+    }
+
+    @Test
     func discoverReadsFollowsAndFiltersThem() throws {
         let owner = UUID()
         let mosaic = UUID()
@@ -760,6 +807,9 @@ struct ComposerBoardSyncTests {
         let data = Data(#"[{"revision": 3}]"#.utf8)
         #expect(try SupabaseDocumentSync.revision(from: data) == 3)
         #expect(SupabaseDocumentSync.error(from: Data("revision conflict".utf8), status: 400) == .revisionConflict)
+        #expect(SupabaseDocumentSync.error(from: Data(#"{"code":"22023","message":"document body too large"}"#.utf8), status: 400) == .documentTooLarge)
+        // A missing parent is a 409 too, but not a revision conflict.
+        #expect(SupabaseDocumentSync.error(from: Data(#"{"code":"23503","message":"parent not found"}"#.utf8), status: 409) == .requestFailed)
         #expect(SupabaseDocumentSync.mosaicID(from: Data("null".utf8)) == nil)
         #expect(
             SupabaseDocumentSync.mosaicID(from: Data(#""65c2a70f-dfb3-40a0-a76c-96a6e721fd22""#.utf8))

@@ -238,6 +238,8 @@ struct ComposerContentCard: View {
     @Environment(\.composerMediaVersions) private var versions
     @Environment(\.composerViewportWidth) private var viewportWidth
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
+    @Environment(\.composerMediaPreviews) private var mediaPreviews
     @State private var image: UIImage?
     @State private var editing = false
     @State private var itemFrame: CGRect = .zero
@@ -249,11 +251,15 @@ struct ComposerContentCard: View {
     private var cardScale: CGFloat { CGFloat(max(0.3, block.style.scale)) * liveScale }
 
     var body: some View {
-        let size = (block.contentPlatform ?? .youtube).cardSize(cover: image?.size, cropAspect: block.mediaFrameAspect)
+        let placeholder = block.mediaFileName.flatMap { mediaPreviews[$0] }
+        let cover = image?.size ?? placeholder.map { CGSize(width: $0.aspect, height: 1) }
+        let size = (block.contentPlatform ?? .youtube).cardSize(cover: cover, cropAspect: block.mediaFrameAspect)
         ZStack {
             Color(white: 0.18)
             if let image {
                 ComposerContentCover(image: image, frame: size, framing: ComposerContentFraming(block))
+            } else if let placeholder {
+                ComposerMediaPlaceholder(preview: placeholder)
             } else if let sourceLogo {
                 ComposerSocialMark(platform: sourceLogo, side: 44)
             } else {
@@ -289,6 +295,8 @@ struct ComposerContentCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(.black.opacity(0.1)))
+        .compositingGroup()
+        .opacity(pieceOpacity)
         .scaleEffect(cardScale, anchor: .topLeading)
         .frame(width: size.width * cardScale, height: size.height * cardScale, alignment: .topLeading)
         .accessibilityLabel("\(block.contentPlatform?.title ?? "Content"): \(block.text)")

@@ -292,6 +292,7 @@ struct ComposerSocialCanvasBlock: View {
     var onOpen: (() -> Void)? = nil
 
     @Environment(\.composerCoordinateSpace) private var composerSpace
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @Environment(\.composerBlockLocked) private var isLocked
     @State private var cornerDrag: SocialCornerDrag?
     @State private var cornerFrames = ComposerSocialCornerFrames()
@@ -326,7 +327,8 @@ struct ComposerSocialCanvasBlock: View {
             }
         }
         .contentShape(Rectangle())
-        .opacity(isLifted ? 0.92 : 1)
+        .compositingGroup()
+        .opacity((isLifted ? 0.92 : 1) * pieceOpacity)
         .overlay(alignment: .bottomTrailing) {
             if isSelected, !isViewing {
                 socialPencil

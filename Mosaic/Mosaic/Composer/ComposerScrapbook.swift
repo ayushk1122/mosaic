@@ -3,6 +3,8 @@ import SwiftUI
 enum ScrapbookMetrics {
     /// Width of the spiral column on the open journal and on the cover.
     static let spiral: CGFloat = 36
+    /// The top corners that turn the page by dragging. Controls on the page keep clear of them.
+    static let turnCorner: CGFloat = 72
 }
 
 enum ScrapbookColors {
@@ -273,7 +275,7 @@ struct ScrapbookBookView: View {
                 .opacity(abs(drag) < 1 ? 1 : 0)
                 .allowsHitTesting(false)
         }
-        .frame(width: 72, height: 72)
+        .frame(width: ScrapbookMetrics.turnCorner, height: ScrapbookMetrics.turnCorner)
         .contentShape(Rectangle())
         .allowsHitTesting(enabled)
         .accessibilityLabel(forward ? "Next page" : "Previous page")
@@ -650,8 +652,9 @@ private final class ScrapbookSpineScrollView: UIView {
             if !scroll.isScrollEnabled {
                 scroll.isScrollEnabled = true
             }
+            // SwiftUI follows the scroll view's own offset. Handing it back through the
+            // scroll position clamps short of the bottom and jumped the page back up.
             scroll.setContentOffset(CGPoint(x: 0, y: next), animated: false)
-            ComposerCanvasScrollMark.report(scroll, offset: next)
         default:
             break
         }

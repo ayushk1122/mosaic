@@ -73,8 +73,20 @@ struct ComposerChromePlacement: Equatable {
         if below >= minY, below <= maxY {
             return FloatingPlacement(origin: CGPoint(x: x, y: below), isBelow: true)
         }
-        // Taller than the screen, or squeezed: keep it inside the visible area, at the piece's top when possible.
-        return FloatingPlacement(origin: CGPoint(x: x, y: min(max(top, minY), maxY)), isBelow: false)
+        // A piece scrolled off screen keeps its control at the nearer edge, not the far one.
+        if bottom < visible.minY {
+            return FloatingPlacement(origin: CGPoint(x: x, y: minY), isBelow: false)
+        }
+        if top > visible.maxY {
+            return FloatingPlacement(origin: CGPoint(x: x, y: maxY), isBelow: true)
+        }
+        // Squeezed, or the piece is taller than the screen: hold it against whichever edge has more
+        // room, so it covers as little of the piece as it can.
+        let roomAbove = top - gap - visible.minY
+        let roomBelow = visible.maxY - (bottom + gap)
+        return roomBelow > roomAbove
+            ? FloatingPlacement(origin: CGPoint(x: x, y: maxY), isBelow: true)
+            : FloatingPlacement(origin: CGPoint(x: x, y: minY), isBelow: false)
     }
 }
 
@@ -98,6 +110,85 @@ extension EnvironmentValues {
     var composerViewportWidth: CGFloat {
         get { self[ComposerViewportWidthKey.self] }
         set { self[ComposerViewportWidthKey.self] = newValue }
+    }
+}
+
+/// A piece's opacity and drop shadow. Applied after the tilt, so the light always falls from above.
+/// Every style uses the same two shadow layers with different values: switching between styles
+/// changes numbers only, so the piece isn't rebuilt (no photo reload or video restart).
+struct ComposerPieceLookModifier: ViewModifier {
+    var opacity: Double
+    var shadow: ComposerPieceShadow
+    var color: ComposerShadowColor
+
+    private struct Layer {
+        var strength: Double
+        var radius: CGFloat
+        var drop: CGFloat
+    }
+
+    /// A tight shadow at the edge and a wider one further out. White needs more strength to read as a glow.
+    private var layers: (near: Layer, far: Layer) {
+        let boost = color == .white ? 1.5 : 1
+        switch shadow {
+        case .none:
+            return (Layer(strength: 0, radius: 0, drop: 0), Layer(strength: 0, radius: 0, drop: 0))
+        case .soft:
+            return (Layer(strength: 0.32 * boost, radius: 6, drop: 3), Layer(strength: 0, radius: 0, drop: 0))
+        case .lifted:
+            return (Layer(strength: 0.22 * boost, radius: 3, drop: 2), Layer(strength: 0.3 * boost, radius: 18, drop: 12))
+        }
+    }
+
+    func body(content: Content) -> some View {
+        let tint: Color = color == .white ? .white : .black
+        let (near, far) = layers
+        // Drawn as one layer first, so a framed photo casts one shadow and fades as one sheet
+        // instead of each part (paper, photo, caption) fading and shadowing on its own.
+        content
+            .compositingGroup()
+            .shadow(color: tint.opacity(min(near.strength, 1)), radius: near.radius, x: 0, y: near.drop)
+            .shadow(color: tint.opacity(min(far.strength, 1)), radius: far.radius, x: 0, y: far.drop)
+            .opacity(opacity)
+            .animation(.easeInOut(duration: 0.2), value: shadow)
+            .animation(.easeInOut(duration: 0.2), value: color)
+    }
+}
+
+private struct ComposerPieceOpacityKey: EnvironmentKey {
+    static let defaultValue: Double = 1
+}
+
+extension EnvironmentValues {
+    /// A piece's own opacity, for pieces that draw their own icons: they fade their content and
+    /// keep the icons at full strength.
+    var composerPieceOpacity: Double {
+        get { self[ComposerPieceOpacityKey.self] }
+        set { self[ComposerPieceOpacityKey.self] = newValue }
+    }
+}
+
+extension ComposerBlock {
+    /// Pieces whose crop, menu, format, or pencil icons are drawn inside the piece itself.
+    var drawsOwnIcons: Bool {
+        switch kind {
+        case .text, .heading, .list, .media, .carousel, .social, .pursuit, .node: true
+        case .link: isContent
+        default: false
+        }
+    }
+}
+
+extension View {
+    /// `plain` draws the piece without its look, as while drawing on it.
+    func composerPieceLook(_ block: ComposerBlock, plain: Bool = false) -> some View {
+        let opacity = plain ? 1 : block.opacity
+        return environment(\.composerPieceOpacity, block.drawsOwnIcons ? opacity : 1)
+            .modifier(ComposerPieceLookModifier(
+                opacity: block.drawsOwnIcons ? 1 : opacity,
+                shadow: plain ? .none : block.shadow,
+                color: block.shadowColor
+            ))
     }
 }
 
@@ -166,18 +257,19 @@ struct ComposerCanvasBlockView: View {
     @Environment(\.composerCoordinateSpace) private var composerSpace
     @Environment(MosaicVisit.self) private var visit: MosaicVisit?
     @Environment(\.mosaicPrivacyDisplay) private var privacyDisplay
+    @Environment(\.composerPieceOpacity) private var pieceOpacity
     @State private var pursuitBackground: UIImage?
     @State private var pursuitPencilFrame: CGRect = .zero
 
     var body: some View {
         canvasContent
         .frame(
-            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing ? nil : 280,
+            maxWidth: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing || block.kind == .sticker ? nil : 280,
             alignment: .topLeading
         )
         .accessibilityIdentifier("composer.block.\(block.id.rawValue)")
         .modifier(NonTextInteractionModifier(
-            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing || block.kind == .unsupported,
+            handlesCanvasGestures: block.isContent || block.kind == .text || block.kind == .heading || block.kind == .list || block.kind == .media || block.kind == .pursuit || block.kind == .node || block.kind == .carousel || block.kind == .calendar || block.kind == .graph || block.kind == .tabs || block.kind == .table || block.kind == .social || block.kind == .group || block.kind == .scrapbook || block.kind == .drawing || block.kind == .sticker || block.kind == .unsupported,
             editsOnTap: block.kind != .pursuit && block.kind != .node && block.kind != .tabs && block.kind != .table && block.kind != .social && block.kind != .group && block.kind != .scrapbook,
             isViewing: isViewing,
             onTap: actions.onBeginEditing,
@@ -360,6 +452,8 @@ struct ComposerCanvasBlockView: View {
                     onFullChange: onDrawingFullChange,
                     inkSession: inkSession
                 )
+            case .sticker:
+                ComposerStickerCanvasBlock(block: block, mediaURL: mediaURL, livePinchScale: livePinchScale)
             case .unsupported:
                 EmptyView()
         }
@@ -392,6 +486,8 @@ struct ComposerCanvasBlockView: View {
 
     private var pursuitView: some View {
         pursuitWidget
+            .compositingGroup()
+            .opacity(pieceOpacity)
             .overlay(alignment: .topTrailing) {
                 if let visit, block.kind == .pursuit,
                    let id = block.pursuitID.flatMap(ComposerBoardSync.uuid),

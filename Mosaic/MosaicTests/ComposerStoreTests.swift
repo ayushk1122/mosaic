@@ -256,7 +256,7 @@ struct ComposerStoreTests {
             includingBackground: false
         )
         #expect(Set(journalMenu) == [
-            .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing
+            .text, .media, .group, .social, .content, .list, .heading, .calendar, .drawing, .sticker
         ])
 
         let sketch = BlockMenuOption.menuOptions(matching: "sketch")
@@ -268,7 +268,7 @@ struct ComposerStoreTests {
             #expect(titles == titles.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
         }
         #expect(all.first == .background)
-        #expect(journalMenu.map(\.title) == ["Calendar", "Content", "Draw", "Group", "Heading", "List", "Media", "Socials", "Text"])
+        #expect(journalMenu.map(\.title) == ["Calendar", "Content", "Draw", "Group", "Heading", "List", "Media", "Socials", "Sticker", "Text"])
     }
 
     @Test
