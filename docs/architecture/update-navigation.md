@@ -209,7 +209,7 @@ What happens now, and what changes:
 
 **Built:** `orbit_seen` (viewer, board, key, seen through) is a service-only table, written by `mark_orbit_seen(board, {key: time})` and returned with each board as `seen_keys` (`20261023090000_orbit_seen.sql`).
 - **Writes:** later reports never lower a time, a time in the future counts as now, boards the caller can't read store nothing, and rows untouched for two days are dropped.
-- **On the phone:** a copy of the last 36 hours makes progress instant and works offline. What's seen goes to the server three seconds after the last thing seen, before each feed load, and when the app goes to the background. Once per launch, the phone sends again everything it kept, in case a send was cut off.
+- **On the phone:** a copy of the last 36 hours makes progress instant and works offline. What's seen goes to the server three seconds after the last thing seen, before each feed load, and when the app goes to the background. Once per launch, the phone sends again everything it kept, in case a send was cut off. A send fails and is retried when the connection drops, the server errors, or a token has expired; one the server turns down for good isn't sent again.
 - **Earlier progress:** progress already on the phone in the older format carries over.
 
 ## What it replaces
