@@ -13,6 +13,8 @@ Mosaic helps people capture the work they put into meaningful Pursuits and turn 
 
 **Current repository fact:** Visits to other people’s boards open after access checks and layout loading, while media downloads per opened board. Repeat visits reuse unchanged media; failed files offer Retry without blocking navigation.
 
+**Current repository fact:** Explore lists Mosaics and Pursuits their owners chose to share, with sorting and search. Profile and Pursuit cards handle following, and Discover marks followed boards that changed since you last opened them. See [Explore, cards, and following updates](docs/features/explore-and-following.md).
+
 **Current repository fact:** The Content composer item links to YouTube videos, Instagram posts/reels, TikTok posts, and Twitch clips/VODs. It stores a preview cover with the board and opens the source link when tapped in view mode. Existing photo and 10-second video uploads remain supported.
 
 The foundation product and architecture documents below describe the earlier Golf iteration and have not yet been reconciled with the implemented board editor. Their historical decisions are preserved; they are not a complete description of the current source tree.
@@ -46,9 +48,9 @@ xcodebuild test \
 
 - Product: [vision and principles](docs/product/vision-and-principles.md), [glossary](docs/product/glossary.md), and [Pursuit model](docs/product/pursuit-model.md)
 - Design: [visual language](docs/design/visual-language.md)
-- Feature: [Golf Iteration 0](docs/features/golf/iteration-0.md)
+- Features: [Golf Iteration 0](docs/features/golf/iteration-0.md) and [Explore, cards, and following updates](docs/features/explore-and-following.md)
 - Architecture: [overview](docs/architecture/overview.md), [account restoration and sync](docs/architecture/account-sync.md)
-- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md) and [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md)
+- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md), [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md), and [sync conflicts and the media queue](docs/decisions/0003-sync-conflict-and-media-queue.md)
 - Quality: [testing strategy](docs/quality/testing.md)
 
 ## Status labels

@@ -127,8 +127,8 @@ select is((select array_agg(title) from public.explore_feed('mosaics', 'seed', 0
 select set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-0000-0000-00000000000a","role":"authenticated"}', true);
 select public.set_document_visibility('a0000000-0000-0000-0000-000000000002', 'private');
 select set_config('request.jwt.claims', '{"sub":"bbbbbbbb-0000-0000-0000-00000000000b","role":"authenticated"}', true);
-select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30)), array['A'],
-    'a Pursuit made private leaves Explore');
+select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30)), null::text[],
+    'a Pursuit made private leaves Explore, and its Mosaic waits for a new picture without it');
 select ok(not public.viewer_can_read_media('aaaaaaaa-0000-0000-0000-00000000000a/11111111-0000-0000-0000-000000000002/display'),
     'and its preview is no longer readable');
 
