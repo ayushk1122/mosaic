@@ -189,18 +189,28 @@ struct ComposerCalendarCanvasBlock: View {
             let seen = updateAddresses.filter { ComposerUpdateAddress.isWithin($0, address(of: day)) }
             if !seen.isEmpty { updateGuide?.markSeen(Set(seen)) }
         }
-        .onChange(of: updateGuide?.request) { _, request in
-            // Orbit's navigator: turn to the month of the day it asked for; the day's glow shows it.
-            guard let request, !request.opens, request.address.hasPrefix(daysPrefix),
-                  let asked = ComposerUpdateAddress.date(of: String(
-                      request.address.dropFirst(daysPrefix.count).split(separator: "/").first ?? ""
-                  )) else { return }
+        // Orbit's navigator: a day in another month is shown by turning to its month.
+        .revealHost("calendar:\(pieceKey)", claim: { address in
+            address.hasPrefix(daysPrefix) ? pieceKey.count + 1 : nil
+        }, reveal: { address in
+            guard let asked = ComposerUpdateAddress.date(of: String(
+                address.dropFirst(daysPrefix.count).split(separator: "/").first ?? ""
+            )) else { return }
             showsYear = false
             withAnimation(.easeInOut(duration: 0.25)) {
                 year = asked.year
                 month = asked.month
             }
-        }
+        }, open: { address in
+            // There: open the day, to see what was added to it. Opening it checks it off.
+            guard let asked = ComposerUpdateAddress.date(of: String(
+                address.dropFirst(daysPrefix.count).split(separator: "/").first ?? ""
+            )) else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                selectedDay = CalendarMonthModel.Day(year: asked.year, month: asked.month, day: asked.day)
+            }
+        })
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Calendar")
         .accessibilityIdentifier("composer.calendar")

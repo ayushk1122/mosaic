@@ -290,16 +290,17 @@ struct ComposerCarouselCanvasBlock: View {
             .onChange(of: centerIndex) { _, _ in
                 playing = false
             }
-            .onChange(of: updateGuide?.request) { _, request in
-                // Orbit's navigator: turn to the card it asked for.
-                guard let request, !request.opens,
-                      let index = block.carouselItems.firstIndex(where: { ComposerUpdateAddress.isWithin(request.address, address(of: $0)) }),
+            // Orbit's navigator: a card turned away is shown by turning to it.
+            .revealHost("carousel:\(pieceKey)", claim: { address in
+                address.hasPrefix("\(pieceKey)/carouselitems/") ? pieceKey.count + 1 : nil
+            }, reveal: { address in
+                guard let index = block.carouselItems.firstIndex(where: { ComposerUpdateAddress.isWithin(address, self.address(of: $0)) }),
                       index != centerIndex else { return }
                 playing = false
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
                     block.carouselIndex = index
                 }
-            }
+            })
             .onChange(of: isSelected) { _, selected in
                 if !selected { playing = false }
             }

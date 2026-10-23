@@ -76,8 +76,9 @@ struct ComposerGraphCanvasBlock: View {
         return ZStack {
             axisPath
             linePath(points)
-            ForEach(points, id: \.id) { point in
+            ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
                 pointMark(point)
+                    .updateAnchor("\(block.id.rawValue.lowercased())/graphpoints/\(point.id.lowercased())", order: index)
                     .position(canvasPoint(point))
             }
             if points.isEmpty, !isViewing {

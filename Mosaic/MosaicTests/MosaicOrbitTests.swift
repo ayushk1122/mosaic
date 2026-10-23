@@ -313,6 +313,72 @@ struct MosaicOrbitTests {
     }
 
     @Test
+    func theHostHoldingAnAddressMostCloselyRevealsIt() {
+        let guide = ComposerUpdateGuide()
+        guide.show(board: "golf", plan: ComposerUpdateGuide.Plan(updates: [update("car/carouselitems/two")]))
+        var revealed: [String] = []
+        guide.registerHost(.init(claim: { $0.hasPrefix("car/carouselitems/") ? 4 : nil },
+                                 reveal: { revealed.append("carousel " + $0) }), id: "carousel:car", board: "golf")
+        guide.registerHost(.init(claim: { _ in 0 }, reveal: { revealed.append("tabs " + $0) }), id: "tabs", board: "golf")
+        guide.registerHost(.init(claim: { _ in 9 }, reveal: { _ in revealed.append("elsewhere") }), id: "tabs", board: "node")
+
+        guide.host(for: "car/carouselitems/two")?.reveal("car/carouselitems/two")
+        guide.host(for: "notes")?.reveal("notes")
+        #expect(revealed == ["carousel car/carouselitems/two", "tabs notes"],
+                "the carousel turns to its card; the tab set shows a piece on another tab; another board's hosts aren't asked")
+
+        guide.unregisterHost(id: "carousel:car", board: "golf")
+        guide.host(for: "car/carouselitems/two")?.reveal("car/carouselitems/two")
+        #expect(revealed.last == "tabs car/carouselitems/two", "a carousel off screen no longer answers")
+    }
+
+    @Test
+    func openingAJournalPageAsksForThatPage() {
+        let page = UUID()
+        let guide = ComposerUpdateGuide()
+        guide.show(board: "golf", plan: ComposerUpdateGuide.Plan(openers: [
+            .init(piece: ComposerBlockID(rawValue: "BOOK"), board: page, opens: true, order: 0)
+        ]))
+        guide.next()
+        #expect(guide.request?.opens == false && guide.request?.address == "book", "first the journal is brought into view")
+        guide.next()
+        #expect(guide.request?.opens == true && guide.request?.board == page, "then it opens on the page with updates")
+    }
+
+    @Test
+    func theNavigatorCountsPiecesAndStepsThroughWhatsInside() {
+        let guide = ComposerUpdateGuide()
+        guide.show(board: "golf", plan: ComposerUpdateGuide.Plan(updates: [
+            update("car/carouselitems/a"), update("car/carouselitems/b"), update("car/carouselitems/c"),
+            update("list", order: 1)
+        ]))
+        guide.setAnchors([
+            "car/carouselitems/a": anchor(y: 0, order: 0), "car/carouselitems/b": anchor(y: 0, shown: false, order: 1),
+            "car/carouselitems/c": anchor(y: 0, shown: false, order: 2)
+        ], board: "golf")
+        #expect(guide.label == "2 updates", "two pieces changed, however many cards are new")
+        guide.next()
+        #expect(guide.label == "1 of 2" && guide.place == .init(piece: 0, pieces: 2, item: 0, items: 3))
+        guide.next()
+        guide.next()
+        #expect(guide.label == "1 of 2" && guide.place?.item == 2, "still the carousel, on its third new card")
+        guide.next()
+        #expect(guide.label == "2 of 2" && guide.place?.items == 1)
+    }
+
+    @Test
+    func hostsOpenWhatTheNavigatorReaches() {
+        let guide = ComposerUpdateGuide()
+        guide.show(board: "golf", plan: ComposerUpdateGuide.Plan(updates: [update("cal/calendarentries/2026-10-22")]))
+        var opened: [String] = []
+        guide.registerHost(.init(claim: { $0.hasPrefix("cal/calendarentries/") ? 4 : nil },
+                                 reveal: { _ in }, open: { opened.append($0) }), id: "calendar:cal", board: "golf")
+        guide.host(for: "cal/calendarentries/2026-10-22")?.open?("cal/calendarentries/2026-10-22")
+        #expect(opened == ["cal/calendarentries/2026-10-22"], "the calendar opens the day it was asked for")
+        #expect(guide.host(for: "car/carouselitems/a")?.open == nil)
+    }
+
+    @Test
     func anchorsAreKeptPerBoard() {
         let guide = ComposerUpdateGuide()
         guide.show(board: "golf", plan: ComposerUpdateGuide.Plan(updates: [update("a")]))

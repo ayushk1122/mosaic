@@ -67,6 +67,8 @@ struct ComposerScrapbookCover: View {
 struct ScrapbookBookView: View {
     let parentDocumentID: ComposerDocumentID?
     let blockID: ComposerBlockID
+    /// Opens on this page rather than where the journal was left.
+    var startPage: ComposerDocumentID? = nil
     var onClose: () -> Void
 
     @Environment(ComposerStore.self) private var store
@@ -111,6 +113,10 @@ struct ScrapbookBookView: View {
 
     private func restoreIndex() {
         guard !pageIDs.isEmpty else { return }
+        if let startPage, let page = pageIDs.firstIndex(of: startPage) {
+            index = page
+            return
+        }
         index = min(max(block?.scrapbookIndex ?? 0, 0), pageIDs.count - 1)
     }
 
@@ -243,6 +249,8 @@ struct ScrapbookBookView: View {
             ScrapbookColors.paper
             if let pageID {
                 MosaicComposerView(documentID: pageID, isBookPage: true)
+                    // Orbit's navigator closes the journal after a page's last update.
+                    .environment(\.composerClose, onClose)
                     .id(pageID)
                     .frame(height: pageHeight)
                     .clipped()

@@ -133,15 +133,16 @@ struct MosaicOrbitView: View {
             .onPreferenceChange(ComposerJournalOpenKey.self) { open in
                 if open { journalOpen.insert(item.id) } else { journalOpen.remove(item.id) }
             }
+            // The navigator stays over a journal, to walk through its pages' updates.
             .overlay(alignment: .bottomLeading) {
-                if !stepsAside(item.id) {
+                if !guide.isAway {
                     navigator(guide)
                         .padding(.leading, 20)
                         .padding(.bottom, 20)
                         .transition(.opacity)
                 }
             }
-            .animation(.easeInOut(duration: 0.25), value: stepsAside(item.id))
+            .animation(.easeInOut(duration: 0.25), value: guide.isAway)
         }
     }
 
@@ -201,12 +202,21 @@ struct MosaicOrbitView: View {
             }
             .disabled((guide.position ?? 0) == 0)
             .accessibilityLabel("Previous update")
-            Text(guide.label)
-                .font(.footnote.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.white)
-                .contentTransition(.numericText())
-                .animation(.snappy, value: guide.label)
-                .fixedSize()
+            VStack(spacing: 4) {
+                Text(guide.label)
+                    .font(.footnote.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+                    .animation(.snappy, value: guide.label)
+                    .fixedSize()
+                if let place = guide.place, place.items > 1 {
+                    itemDots(place)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: guide.place)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(navigatorSpoken(guide))
             Button {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { guide.next() }
             } label: {
@@ -223,6 +233,31 @@ struct MosaicOrbitView: View {
         .padding(.horizontal, 4)
         .glassEffect(.regular.interactive(), in: .capsule)
         .accessibilityIdentifier("orbit.navigator")
+    }
+
+    /// The new things inside the piece the navigator is on, filled up to the one showing. Long runs
+    /// read as a count instead.
+    @ViewBuilder
+    private func itemDots(_ place: ComposerUpdateGuide.Place) -> some View {
+        if place.items <= 8 {
+            HStack(spacing: 4) {
+                ForEach(0..<place.items, id: \.self) { index in
+                    Circle()
+                        .fill(Color.white.opacity(index <= place.item ? 1 : 0.3))
+                        .frame(width: 5, height: 5)
+                }
+            }
+        } else {
+            Text("\(place.item + 1)/\(place.items)")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
+        }
+    }
+
+    private func navigatorSpoken(_ guide: ComposerUpdateGuide) -> String {
+        guard let place = guide.place else { return guide.label }
+        let piece = "Update \(place.piece + 1) of \(place.pieces)"
+        return place.items > 1 ? "\(piece), item \(place.item + 1) of \(place.items)" : piece
     }
 
     private func caughtUp(_ orbit: MosaicOrbitModel) -> some View {

@@ -7,6 +7,8 @@ struct ComposerUpdateAnchor: Equatable, Sendable {
     var frame: CGRect
     var isPresented: Bool
     var order: Int = 0
+    /// Always on screen while the board is, like the banner above it, which doesn't scroll.
+    var isPinned = false
 }
 
 /// The anchors on a board, by address. One shown wins over one set aside under the same address.
@@ -103,7 +105,19 @@ final class ComposerUpdateGuide {
         var address: String
         var piece: ComposerBlockID
         var opens: Bool
+        /// The node, Pursuit, or journal page to open, when it opens one.
+        var board: UUID? = nil
         var nonce: Int
+    }
+
+    /// Something that shows only part of what it holds (a carousel one card, a calendar one month,
+    /// tabs one tab) and can show the rest.
+    struct RevealHost {
+        /// How closely it holds an address, higher for closer; nil when it doesn't hold it.
+        var claim: (String) -> Int?
+        var reveal: (String) -> Void
+        /// Opens what's there once the navigator has brought it into view, like a calendar day.
+        var open: ((String) -> Void)? = nil
     }
 
     /// Which stop was last brought into view; nil before the first.
@@ -128,6 +142,7 @@ final class ComposerUpdateGuide {
     /// Newly seen addresses, to keep the progress for the day.
     @ObservationIgnored var onSeen: (Set<String>) -> Void = { _ in }
 
+    @ObservationIgnored private var hosts: [String: [String: RevealHost]] = [:]
     @ObservationIgnored private var root: String?
     @ObservationIgnored private var saved: [String: Int] = [:]
     @ObservationIgnored private var entered: Set<UUID> = []
@@ -152,12 +167,48 @@ final class ComposerUpdateGuide {
         return Self.stops(plan: plan, anchors: anchorsByBoard[board] ?? [:])
     }
 
-    /// "5 updates" before the first, then "3 of 5", for the board on screen.
+    /// Where the navigator is, counted by piece: the pieces with updates on the board on screen,
+    /// and the new things inside the current one (cards, days, rows), stepped through one by one.
+    struct Place: Equatable {
+        var piece: Int
+        var pieces: Int
+        var item: Int
+        var items: Int
+    }
+
+    /// Which piece each stop belongs to, in order; stops of the same piece sit together.
+    nonisolated static func pieceIndexes(of stops: [Stop]) -> [Int] {
+        var indexes: [Int] = []
+        var last: ComposerBlockID?
+        for stop in stops {
+            if stop.piece != last { indexes.append((indexes.last ?? -1) + 1) } else { indexes.append(indexes.last ?? 0) }
+            last = stop.piece
+        }
+        return indexes
+    }
+
+    nonisolated static func place(of position: Int?, in stops: [Stop]) -> Place? {
+        guard let position, !stops.isEmpty else { return nil }
+        let at = min(position, stops.count - 1)
+        let indexes = pieceIndexes(of: stops)
+        let piece = indexes[at]
+        let items = indexes.indices.filter { indexes[$0] == piece }
+        return Place(piece: piece, pieces: (indexes.last ?? 0) + 1,
+                     item: (items.firstIndex(of: at) ?? 0), items: items.count)
+    }
+
+    /// Where the navigator is on the board on screen; nil before the first update.
+    var place: Place? { Self.place(of: position, in: stops) }
+
+    /// "2 updates" before the first, then "1 of 2", counting pieces rather than every card or day.
     var label: String {
         let stops = stops
         guard !stops.isEmpty else { return "No updates here" }
-        guard let position else { return stops.count == 1 ? "1 update" : "\(stops.count) updates" }
-        return "\(min(position, stops.count - 1) + 1) of \(stops.count)"
+        guard let place = Self.place(of: position, in: stops) else {
+            let pieces = (Self.pieceIndexes(of: stops).last ?? 0) + 1
+            return pieces == 1 ? "1 update" : "\(pieces) updates"
+        }
+        return "\(place.piece + 1) of \(place.pieces)"
     }
 
     /// Next leaves this board: for the next board in Orbit, or back out of a node.
@@ -244,7 +295,26 @@ final class ComposerUpdateGuide {
 
     private func ask(_ stop: Stop, opens: Bool) {
         nonce += 1
-        request = Request(address: stop.address, piece: stop.piece, opens: opens, nonce: nonce)
+        request = Request(address: stop.address, piece: stop.piece, opens: opens,
+                          board: opens ? stop.opens : nil, nonce: nonce)
+    }
+
+    // MARK: Reveal hosts
+
+    func registerHost(_ host: RevealHost, id: String, board: String) {
+        hosts[board, default: [:]][id] = host
+    }
+
+    func unregisterHost(id: String, board: String) {
+        hosts[board]?[id] = nil
+    }
+
+    /// The host on the board on screen that holds an address most closely.
+    func host(for address: String) -> RevealHost? {
+        guard let board else { return nil }
+        return (hosts[board] ?? [:]).values
+            .compactMap { host in host.claim(address).map { (host, $0) } }
+            .max { $0.1 < $1.1 }?.0
     }
 
     // MARK: Stops from the plan and anchors
@@ -336,8 +406,12 @@ struct ComposerUpdateWatcher: View {
         let anchors = guide.anchors
         var shown = Set<String>()
         for stop in guide.stops {
-            guard let anchor = anchors[stop.address], anchor.isPresented,
-                  anchor.frame.width > 1, anchor.frame.height > 1 else { continue }
+            guard let anchor = anchors[stop.address], anchor.isPresented else { continue }
+            if anchor.isPinned {
+                shown.insert(stop.address)
+                continue
+            }
+            guard anchor.frame.width > 1, anchor.frame.height > 1 else { continue }
             let overlap = anchor.frame.intersection(visible)
             guard !overlap.isNull else { continue }
             let area = overlap.width * overlap.height
@@ -360,17 +434,21 @@ struct ComposerSpotlightDim: View {
     static let opening: CGFloat = 26
 
     var body: some View {
-        let frame = guide.board == board ? guide.spotlit.flatMap { guide.anchors[$0]?.frame } : nil
+        let anchor = guide.board == board ? guide.spotlit.flatMap { guide.anchors[$0] } : nil
+        let frame = anchor?.frame
         ZStack {
             if let frame {
                 Rectangle()
                     .fill(Color.black.opacity(Self.dimming))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .frame(width: frame.width + 2 * Self.opening, height: frame.height + 2 * Self.opening)
-                            .position(x: frame.midX, y: frame.midY)
-                            .blur(radius: 18)
-                            .blendMode(.destinationOut)
+                        // The banner sits above the board, outside this layer, and stays lit as it is.
+                        if anchor?.isPinned != true {
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .frame(width: frame.width + 2 * Self.opening, height: frame.height + 2 * Self.opening)
+                                .position(x: frame.midX, y: frame.midY)
+                                .blur(radius: 18)
+                                .blendMode(.destinationOut)
+                        }
                     }
                     .compositingGroup()
                     .transition(.opacity)
@@ -392,7 +470,17 @@ private struct ComposerAddedAddressesKey: EnvironmentKey {
     static let defaultValue: Set<String> = []
 }
 
+private struct ComposerUpdateBoardKey: EnvironmentKey {
+    static let defaultValue = ""
+}
+
 extension EnvironmentValues {
+    /// The guide's key for the board a view is on, so its reveal host is that board's.
+    var composerUpdateBoard: String {
+        get { self[ComposerUpdateBoardKey.self] }
+        set { self[ComposerUpdateBoardKey.self] = newValue }
+    }
+
     var composerUpdateAddresses: Set<String> {
         get { self[ComposerUpdateAddressesKey.self] }
         set { self[ComposerUpdateAddressesKey.self] = newValue }
@@ -408,14 +496,36 @@ extension View {
     /// Marks where something that may have an update appears. On a board opened from Orbit, if it
     /// holds an update, it glows until what's in it is seen, glows brighter while the navigator has
     /// it spotlit, and tells the guide where it is. Elsewhere it does nothing.
-    func updateAnchor(_ address: String, isPresented: Bool = true, order: Int = 0, leadsElsewhere: Bool = false) -> some View {
+    func updateAnchor(_ address: String, isPresented: Bool = true, order: Int = 0, leadsElsewhere: Bool = false,
+                      isPinned: Bool = false) -> some View {
         modifier(ComposerUpdateAnchorModifier(address: address, isPresented: isPresented, order: order,
-                                              leadsElsewhere: leadsElsewhere))
+                                              leadsElsewhere: leadsElsewhere, isPinned: isPinned))
     }
 
     /// Places anchors for things a container holds but isn't showing now, at the container.
     func hiddenUpdateAnchors(_ addresses: [String: Int]) -> some View {
         modifier(ComposerHiddenUpdateAnchors(addresses: addresses))
+    }
+
+    /// On a board opened from Orbit, tells the navigator how to show something this view holds
+    /// but isn't showing. `claim` says how closely it holds an address (nil when it doesn't).
+    func revealHost(_ id: String, claim: @escaping (String) -> Int?, reveal: @escaping (String) -> Void,
+                    open: ((String) -> Void)? = nil) -> some View {
+        modifier(ComposerRevealHostModifier(id: id, host: ComposerUpdateGuide.RevealHost(claim: claim, reveal: reveal, open: open)))
+    }
+}
+
+private struct ComposerRevealHostModifier: ViewModifier {
+    var id: String
+    var host: ComposerUpdateGuide.RevealHost
+
+    @Environment(ComposerUpdateGuide.self) private var guide: ComposerUpdateGuide?
+    @Environment(\.composerUpdateBoard) private var board
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { guide?.registerHost(host, id: id, board: board) }
+            .onDisappear { guide?.unregisterHost(id: id, board: board) }
     }
 }
 
@@ -424,6 +534,7 @@ private struct ComposerUpdateAnchorModifier: ViewModifier {
     var isPresented: Bool
     var order: Int
     var leadsElsewhere: Bool
+    var isPinned: Bool
 
     @Environment(ComposerUpdateGuide.self) private var guide: ComposerUpdateGuide?
     @Environment(\.composerUpdateAddresses) private var addresses
@@ -450,7 +561,8 @@ private struct ComposerUpdateAnchorModifier: ViewModifier {
                             value: [address: ComposerUpdateAnchor(
                                 frame: proxy.frame(in: .named(space + ".canvas")),
                                 isPresented: isPresented,
-                                order: order
+                                order: order,
+                                isPinned: isPinned
                             )]
                         )
                     }

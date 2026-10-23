@@ -13,6 +13,8 @@ struct ComposerTableCanvasBlock: View {
 
     @Environment(ComposerStore.self) private var store
     @Environment(\.composerBlockLocked) private var isLocked
+    @Environment(\.composerUpdateAddresses) private var updateAddresses
+    @Environment(ComposerUpdateGuide.self) private var updateGuide: ComposerUpdateGuide?
     @FocusState private var focus: TableFocus?
     @State private var editing: TableFocus?
     @State private var pinchScale: CGFloat = 1
@@ -57,7 +59,46 @@ struct ComposerTableCanvasBlock: View {
         showsChrome && block.tableRows.count > ComposerTable.minimumRows
     }
 
+    private var pieceKey: String { block.id.rawValue.lowercased() }
+    private var entriesPrefix: String { "\(pieceKey)/tableentries/" }
+
+    private func address(of row: ComposerTableRow) -> String {
+        "\(entriesPrefix)\(block.selectedTableEntryID?.lowercased() ?? "")/rows/\(row.id.lowercased())"
+    }
+
+    /// The entry an address is in, when it isn't the entry on screen.
+    private func hiddenEntry(of address: String) -> ComposerTableEntry? {
+        guard address.hasPrefix(entriesPrefix) else { return nil }
+        let id = String(address.dropFirst(entriesPrefix.count).split(separator: "/").first ?? "")
+        guard id != block.selectedTableEntryID?.lowercased() else { return nil }
+        return block.tableEntries.first { $0.id.lowercased() == id }
+    }
+
+    /// Rows with updates in entries not on screen, which have a place in the navigator's order at the table.
+    private var hiddenRows: [String: Int] {
+        guard updateGuide != nil else { return [:] }
+        var rows: [String: Int] = [:]
+        for address in updateAddresses where hiddenEntry(of: address) != nil {
+            let parts = address.split(separator: "/").prefix(5)
+            guard parts.count == 5 else { continue }
+            rows[parts.joined(separator: "/")] = 0
+        }
+        return rows
+    }
+
     var body: some View {
+        table
+            .hiddenUpdateAnchors(hiddenRows)
+            // Orbit's navigator: a row in another entry is shown by turning to that entry.
+            .revealHost("table:\(pieceKey)", claim: { address in
+                hiddenEntry(of: address) == nil ? nil : pieceKey.count + 1
+            }, reveal: { address in
+                if let entry = hiddenEntry(of: address) { show(entry) }
+            })
+    }
+
+    @ViewBuilder
+    private var table: some View {
         let _ = livePinchScale
         VStack(alignment: .leading, spacing: 8 * metric) {
             titleView
@@ -171,6 +212,7 @@ struct ComposerTableCanvasBlock: View {
                     }
                 }
                 .background(rowIndex.isMultiple(of: 2) ? Color.white.opacity(0.03) : Color.clear)
+                .updateAnchor(address(of: row), order: rowIndex)
             }
         }
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14 * metric, style: .continuous))
