@@ -118,7 +118,7 @@ struct MosaicSearchClient: Sendable {
 
 /// Discover: username search on the top half, and what the owner follows on the bottom half.
 struct MosaicDiscoverView: View {
-    var linkedUsername: Binding<String?> = .constant(nil)
+    var linked: Binding<MosaicLink.Target?> = .constant(nil)
     var onOpenOwnMosaic: () -> Void = {}
 
     @Environment(\.mosaicAccount) private var account
@@ -194,7 +194,7 @@ struct MosaicDiscoverView: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(tabBarHidden ? .hidden : .visible, for: .tabBar)
         .task(id: cleaned) { await search(cleaned) }
-        .task(id: linkedUsername.wrappedValue) { await openLink() }
+        .task(id: linked.wrappedValue) { await openLink() }
         .onAppear {
             Task { await loadFollowing() }
         }
@@ -331,13 +331,15 @@ struct MosaicDiscoverView: View {
         followingLoaded = true
     }
 
-    /// Opens the Mosaic a link names. An unknown name is left in the search field.
+    /// Opens the Mosaic a link names, on its Pursuit when it names one. An unknown name is left in
+    /// the search field.
     private func openLink() async {
-        guard let name = linkedUsername.wrappedValue,
+        guard let target = linked.wrappedValue,
               let account,
               let config = SupabaseSyncConfig.current(),
               let token = await account.accessToken()
         else { return }
+        let name = target.username
         let match = try? await MosaicSearchClient(config: config)
             .people(matching: name, accessToken: token)
             .first { $0.username == name }
@@ -347,12 +349,12 @@ struct MosaicDiscoverView: View {
                 onOpenOwnMosaic()
             } else {
                 focused = false
-                opened = MosaicVisitTarget(person: match)
+                opened = MosaicVisitTarget(person: match, pursuitID: target.pursuitID)
             }
         } else {
             query = name
         }
-        linkedUsername.wrappedValue = nil
+        linked.wrappedValue = nil
     }
 
     private func unfollow(_ item: MosaicFollowedItem) async {

@@ -4,6 +4,7 @@ import UIKit
 enum MosaicTab: String, CaseIterable, Identifiable {
     case mosaic
     case circle
+    case explore
     case search
 
     var id: String { rawValue }
@@ -11,6 +12,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .mosaic: "Mosaic"
+        case .explore: "Explore"
         case .circle: "Circle"
         case .search: "Discover"
         }
@@ -19,6 +21,7 @@ enum MosaicTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .mosaic: "square.grid.2x2"
+        case .explore: "sparkles"
         case .circle: "person.2"
         case .search: "magnifyingglass"
         }
@@ -81,17 +84,19 @@ struct MosaicTabShell: View {
     @State private var remoteSync: ComposerRemoteSync
     @State private var pageBackgrounds: MosaicPageBackgrounds
     @State private var pursuitPrivacy = MosaicPursuitPrivacy()
+    /// Images of the owner's boards shared to Explore; only when signed in.
+    @State private var explorePreviews: MosaicExplorePreviews?
     var account: MosaicAccount?
     /// Set by a `mosaic://@username` link; Discover opens that person's Mosaic and clears it.
-    var linkedUsername: Binding<String?>
+    var linked: Binding<MosaicLink.Target?>
 
     init(
         account: MosaicAccount? = nil,
-        linkedUsername: Binding<String?> = .constant(nil),
+        linked: Binding<MosaicLink.Target?> = .constant(nil),
         persistToDisk: Bool = !ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
     ) {
         self.account = account
-        self.linkedUsername = linkedUsername
+        self.linked = linked
         let location: ComposerStorageLocation = account?.session.map { .account($0.userID) } ?? .shared()
         let store = ComposerStore(persistToDisk: persistToDisk, location: location)
         store.placeMosaicTitleIfNeeded()
@@ -101,6 +106,7 @@ struct MosaicTabShell: View {
         _downloads = State(initialValue: downloads)
         _remoteSync = State(initialValue: ComposerRemoteSync(location: location))
         _pageBackgrounds = State(initialValue: MosaicPageBackgrounds(location: location, persistToDisk: persistToDisk))
+        _explorePreviews = State(initialValue: account.map { MosaicExplorePreviews(store: store, account: $0) })
     }
 
     var body: some View {
@@ -171,6 +177,8 @@ struct MosaicTabShell: View {
             // Boards changed on another device: on open, on returning to the app, and every minute while open.
             guard let account, scenePhase == .active else { return }
             remoteSync.store = store
+            // Shared boards edited since their Explore image was made get a new one.
+            explorePreviews?.refreshStale()
             while !Task.isCancelled {
                 remoteSync.pullNow(account: account)
                 try? await Task.sleep(for: .seconds(60))
@@ -255,14 +263,15 @@ struct MosaicTabShell: View {
         }
         .environment(\.composerMediaVersions, store.mediaVersions)
         .environment(\.composerMediaWaiting, mediaWaiting)
-        .onChange(of: linkedUsername.wrappedValue, initial: true) { _, name in
-            if name != nil { selection = .search }
+        .onChange(of: linked.wrappedValue, initial: true) { _, target in
+            if target != nil { selection = .search }
         }
         .environment(store)
         .environment(chrome)
         .environment(remoteSync)
         .environment(pageBackgrounds)
         .environment(pursuitPrivacy)
+        .environment(explorePreviews)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
     }
@@ -304,8 +313,10 @@ struct MosaicTabShell: View {
                 switch tab {
                 case .mosaic:
                     MosaicComposerView(documentID: nil)
+                case .explore:
+                    MosaicExploreView()
                 case .search:
-                    MosaicDiscoverView(linkedUsername: linkedUsername) { selection = .mosaic }
+                    MosaicDiscoverView(linked: linked) { selection = .mosaic }
                 case .circle:
                     MosaicCircleView()
                 }

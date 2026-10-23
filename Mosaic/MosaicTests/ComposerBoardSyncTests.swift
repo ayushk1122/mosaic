@@ -196,6 +196,31 @@ struct ComposerBoardSyncTests {
     }
 
     @Test
+    func pursuitLinksNameAUsernameAndAPursuit() throws {
+        let pursuit = try #require(UUID(uuidString: "6C1F7A4E-0B39-4A52-9D6E-0F9B1C2D3E4F"))
+        let link = try #require(MosaicLink.url(username: "@Ayush", pursuitID: pursuit))
+        #expect(link.absoluteString == "mosaic://@ayush/pursuit/6c1f7a4e-0b39-4a52-9d6e-0f9b1c2d3e4f")
+        #expect(MosaicLink.target(from: link) == MosaicLink.Target(username: "ayush", pursuitID: pursuit))
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush/pursuit/6c1f7a4e-0b39-4a52-9d6e-0f9b1c2d3e4f?ref=copy")))?.pursuitID == pursuit)
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush/pursuit/not-an-id"))) == MosaicLink.Target(username: "ayush"),
+                "a broken Pursuit part still opens the Mosaic")
+        #expect(MosaicLink.target(from: try #require(URL(string: "mosaic://@ayush"))) == MosaicLink.Target(username: "ayush"))
+    }
+
+    @Test
+    func pursuitBadgesSayWhetherTheVisitorFollowsOrCanOpen() {
+        func pursuit(_ level: MosaicVisibilityLevel, canOpen: Bool, following: Bool, request: String? = nil) -> MosaicVisitPursuit {
+            MosaicVisitPursuit(id: UUID(), title: "Golf", level: level, canOpen: canOpen, requestStatus: request, following: following)
+        }
+        #expect(MosaicFollowStatus(pursuit(.public, canOpen: true, following: false)) == .follow)
+        #expect(MosaicFollowStatus(pursuit(.public, canOpen: true, following: true)) == .following)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: false, following: false)) == .locked)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: false, following: false, request: "pending")) == .pending)
+        #expect(MosaicFollowStatus(pursuit(.private, canOpen: true, following: false)) == .locked,
+                "a private Pursuit closes again once unfollowed")
+    }
+
+    @Test
     func searchReadsUsernamesAndDisplayNames() throws {
         let id = UUID()
         let data = Data("""

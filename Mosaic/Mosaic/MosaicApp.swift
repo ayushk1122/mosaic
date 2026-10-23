@@ -31,7 +31,7 @@ private struct MosaicRootView: View {
     /// Profile setup finished; account preparation can run next.
     @State private var onboardingPassedUserID: UUID?
     /// Kept through sign-in, so a link tapped before the shell exists still opens.
-    @State private var linkedUsername: String?
+    @State private var linked: MosaicLink.Target?
 
     private var skipsAccount: Bool {
         ProcessInfo.processInfo.arguments.contains("UITestSkipLaunchAnimation")
@@ -52,8 +52,8 @@ private struct MosaicRootView: View {
             }
         }
         .onOpenURL { url in
-            if let name = MosaicLink.username(from: url) {
-                linkedUsername = name
+            if let target = MosaicLink.target(from: url) {
+                linked = target
             }
         }
         .task {
@@ -77,7 +77,7 @@ private struct MosaicRootView: View {
             MosaicBrand.cream.ignoresSafeArea()
         } else if let userID = account.session?.userID {
             if preparedUserID == userID {
-                ContentView(account: account, linkedUsername: $linkedUsername)
+                ContentView(account: account, linked: $linked)
                     .id(userID)
             } else if onboardingPassedUserID == userID {
                 MosaicAccountPreparationView(account: account, userID: userID) {

@@ -33,10 +33,16 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Mosaic"].waitForExistence(timeout: 2))
 
-        for title in ["Mosaic", "Circle", "Discover"] {
+        for title in ["Mosaic", "Explore", "Circle", "Discover"] {
             XCTAssertTrue(tabBar.buttons[title].exists)
         }
         XCTAssertFalse(tabBar.buttons["Feed"].exists)
+
+        // Signed out (as UI tests run), Explore explains it needs an account.
+        tabBar.buttons["Explore"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["explore.screen"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Sign in to explore other people's Mosaics."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["explore.filter.all"].exists)
 
         tabBar.buttons["Circle"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["circle.screen"].waitForExistence(timeout: 2))

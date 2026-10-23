@@ -8,6 +8,7 @@ struct ComposerMediaCanvasBlock: View {
     @Environment(\.composerMediaVersions) private var mediaVersions
     @Environment(\.composerMediaWaiting) private var mediaWaiting
     @Environment(\.composerMediaPreviews) private var mediaPreviews
+    @Environment(\.composerStillsOnly) private var stillsOnly
 
     @Binding var block: ComposerBlock
     let mediaURL: URL?
@@ -83,7 +84,7 @@ struct ComposerMediaCanvasBlock: View {
                 ]
             )
         .task(id: ComposerMediaLoadKey(mediaURL, versions: mediaVersions)) {
-            if isVideo, let mediaURL {
+            if isVideo, let mediaURL, !stillsOnly {
                 // A photo replaced by a video must not keep showing the old photo if the video is missing.
                 preview = nil
                 loadFailed = !FileManager.default.fileExists(atPath: mediaURL.path)
@@ -123,7 +124,7 @@ struct ComposerMediaCanvasBlock: View {
 
     @ViewBuilder
     private var framedMedia: some View {
-        if isVideo, let mediaURL, !loadFailed {
+        if isVideo, let mediaURL, !loadFailed, !stillsOnly {
             framed(
                 ComposerInlineVideo(url: mediaURL, isPaused: isPaused, fillsFrame: false)
                     .allowsHitTesting(false)
@@ -150,7 +151,8 @@ struct ComposerMediaCanvasBlock: View {
     }
 
     private var contentAspect: CGFloat {
-        guard isVideo else { return imageAspect }
+        // As a still, a video's first frame has the video's own shape.
+        guard isVideo, !stillsOnly else { return imageAspect }
         // A video still downloading takes its preview's shape, so it doesn't resize on arrival.
         if loadFailed, let placeholder { return CGFloat(placeholder.aspect) }
         return videoAspect
@@ -390,6 +392,19 @@ private struct MediaIconHitShape: Shape {
             path.addEllipse(in: CGRect(x: rect.minX + iconX - 4, y: replaceY, width: 44, height: 44))
         }
         return path
+    }
+}
+
+private struct ComposerStillsOnlyKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Videos show their first frame as a picture instead of a player, for images of a board made by
+    /// capturing it (a player's picture doesn't capture).
+    var composerStillsOnly: Bool {
+        get { self[ComposerStillsOnlyKey.self] }
+        set { self[ComposerStillsOnlyKey.self] = newValue }
     }
 }
 
