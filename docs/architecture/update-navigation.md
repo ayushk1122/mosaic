@@ -1,7 +1,7 @@
 # Orbit update navigation: addresses, anchors, reveal hosts, spotlight, and trail
 
 **Owner:** Mosaic team
-**Status:** Steps 1 (done, order, and trail), 2 (server addresses), and 3 (anchors and spotlight) of the migration are built; reveal hosts and the checklist are a proposed design, not built. The current implementation is described in [Explore, cards, and following updates](../features/explore-and-following.md).
+**Status:** Built: steps 1 (done, order, and trail), 2 (server addresses), 3 (anchors and spotlight), and 4 (reveal hosts), plus the checklist below. The current behavior is described in [Explore, cards, and following updates](../features/explore-and-following.md).
 
 **Decision:** Orbit's navigator (Orbit was called Today) moves off per-component code onto a general mechanism, so new components get update tracking, marks, and navigation with little or no new code. Confirmed by the product owner on 2026-10-23.
 
@@ -85,7 +85,10 @@ CarouselCard(item)
   - each list row.
 
   Carousels and calendars also place **hidden anchors**, at the container, for cards turned away and days in other months, so stops don't come and go as they turn.
-- **Not yet anchored:** tabs, graph points, and table rows go to their piece through the fallback. One `updateAnchor` line each would make them finer.
+- **Also anchored:**
+  - **Graph points, tab chips, and table rows.** Tables also place hidden anchors for rows in entries not on screen.
+  - **The banner.** It's always in view above the board (`isPinned`), is seen when the board opens, and comes first in the order.
+  - **The ignored-keys list:** it now includes a table's on-screen `tableRows`. They copy the entry on screen, which every table has, so one row edit counts once (`20261023130000_table_rows_mirror.sql`).
 - **Where an update goes (`ComposerUpdateGuide.target`):**
   - something inside a thing that was **added** goes with it, so a new carousel is one stop, not one per card;
   - otherwise, the deepest anchor holding it;
@@ -95,7 +98,6 @@ CarouselCard(item)
 - **Order:** by piece in reading order (a group's pieces right after it), then in the order the container keeps them (cards as arranged, days by date, rows top to bottom), then by position. This differs from the proposal's pure screen order. A shown card and a hidden one are measured at different places, which would otherwise scramble them.
 - **Board's part:** the board says only which updates are on it and which pieces open nodes or pages with updates (`ComposerUpdateGuide.Plan`).
 - **Removed:** the per-component stop, seen, and mark code; the item names from step 2; and `composerNewItems` and `composerNewPieces`. Seen is recorded under each update's address.
-- **Kept until step 4:** the carousel still turns to a card, and the calendar to a month, when the navigator asks; both now read the address.
 
 ### 3. Reveal hosts (app): containers that hide content
 
@@ -114,6 +116,21 @@ A few components show only part of what they hold: a carousel one card, a calend
 3. If a host opens another board, the new board's anchors and hosts take over, and back returns to where the navigator was, as it does now.
 
 Nesting works by repetition: a card in a carousel, in a group, in a node, in a Pursuit is a chain of reveals, and none of the hosts know about the others.
+
+**Built (step 4):** `revealHost(_:claim:reveal:)` in `ComposerUpdateGuide.swift`.
+- **Registering:** a view registers its host with the guide while it's on screen, for its board (`composerUpdateBoard`). `claim` says how closely it holds an address, and the closest claim wins.
+- **The hosts:**
+  - **Carousels:** they turn to a card.
+  - **Calendars:** they turn to a day's month, then open the day once the navigator is there (`open`), which checks off what's on it.
+  - **Tables:** they turn to the entry with the update.
+  - **The board's tab set:** it shows a piece on another tab. On someone else's board this lasts only for the visit, as tapping a tab does.
+- **The reveal loop (`MosaicComposerView.reveal`):**
+  - It glides at once to what holds the address, then asks the host and waits up to half a second for the address to show.
+  - It repeats up to three times, so a card in a carousel on another tab takes two reveals.
+  - A newer request stops an older one.
+- **Every tab's updates are now planned,** tab by tab in the tab set's order, so updates on a tab that isn't showing are reached and a board with tabs can be done.
+- **Journals:** a journal with updates on its pages is a stop that opens, like a node, on the page that has them. The page's updates are walked in turn, and the journal closes after the last one, so Next carries on. While a journal is open, the navigator stays and the header steps aside.
+- **Changed from the proposal:** opening a node, Pursuit, or journal stays with the board view, which already owns that navigation, rather than becoming a host. Hosts reveal what's inside a board.
 
 ### 4. Fallback
 
@@ -181,7 +198,7 @@ What happens now, and what changes:
 
 - **Now:** done means every update in the feed has its key in the phone's seen set (`MosaicOrbitModel.progress`). Keys are the piece, or the piece and item (`car/card/abc`), and are kept 36 hours.
 - **Gap, repeat updates:** a second update to something already seen (ten more characters written in the same note, the same list item changed again) has the same key, so the board wrongly stays done. **Built:** `today_feed` returns each change's time with its piece (`at`). For each key, what's kept is the time of the version seen, taken from the feed rather than the phone's clock, and an update counts as seen only if its key was seen through its time or later. New updates to anything reopen the board, and nothing else does. Times are compared in the app, both read to the millisecond the same way.
-- **Gap, unreachable updates:** an update the navigator can't get to (on a tab that isn't open) keeps a board from ever being done. Reveal hosts (section 3) fix this; until then, the fallback counts it seen once its piece is.
+- **Gap, unreachable updates (fixed in step 4):** updates on a tab that wasn't open were left out of the board's stops, so the board could never be done. Every tab's updates are now planned, and the tab set's host shows them.
 - **Gap, removed content:** an update whose piece was deleted afterward can never be seen. `board_visible_additions` should leave it out; this needs checking with a test.
 - **Order now:** the server puts boards not *opened* since their latest update first, newest first. **Built:** the app orders the deck itself (`MosaicOrbitModel.ordered`): not done first, by newest update, then done, by newest update. A partly seen board counts as not done. The server's `seen` (opened) no longer decides the order.
 - **When the order changes:** never while someone is paging; a board finished now keeps its place until the next time Orbit is put together. That happens when the app becomes active, on Check again, and when the Orbit tab is opened again after leaving it. Then finished boards move to the end.
@@ -209,8 +226,18 @@ One sweep, in this order. Each step ships on its own and leaves Orbit working.
 1. **Done, order, and trail (built).** What's been seen is kept on the server; `today_feed` returns each change's time (old builds ignore it); seen keys keep their time; the deck is ordered not done first, done last, and rebuilt only at the moments in section 7. Then the trail: large circles in a scrolling row, connectors, the current outline, tap to go to a board, and the end node. This touches the feed, the model, and the header, so it comes first and can be judged right away.
 2. **Server addresses (built).** Generic walk and comparison with the ignored keys; calendar days are named by their date, so no app data changed; `today_feed` returns the new addresses, and the app reads them into the carousel's and calendar's names until step 3. Additions from before roll out of Orbit within a day.
 3. **Anchors and spotlight (built; tabs, graph points, and table rows still go to their piece).** The anchor modifier and collector; the guide orders stops and decides seen from anchors; the fallback. Carousel cards, calendar days and their entries, list items, tabs, graph points, and table rows add anchors. The anchor modifier draws the spotlight, the dimming layer follows the focused anchor, and the outline, tag, and per-component rings are removed with the per-component stop and seen code.
-4. **Reveal hosts.** Carousel, calendar, tabs, scrapbook, and node and Pursuit widgets register hosts; the navigator's reveal loop replaces the per-component turning and opening code, and the spotlight moves into whatever a host reveals.
-5. **Checklist for new components**, added to this document: anchor what you show (the glow comes with it); register a host if you hide some of it. On the server, keep things in lists with ids, and add any look or layout keys to `board_key_ignored`.
+4. **Reveal hosts (built; opening boards stays with the board view).** Carousel, calendar, tabs, scrapbook, and node and Pursuit widgets register hosts; the navigator's reveal loop replaces the per-component turning and opening code, and the spotlight moves into whatever a host reveals.
+5. **Checklist for new components (below).**
+
+## Checklist for new components
+
+When a component is added, three things decide how Orbit handles it:
+
+1. **On the server:** keep anything a person adds inside it in lists of objects with an `id`, so each thing gets an address with no server code. Add the component's look and layout keys (sizes, styles, positions, selections) to `board_key_ignored`, so changing them never counts as an update.
+2. **Anchor what it shows:** add `.updateAnchor("<piece>/<list key>/<id>", isPresented:, order:)` to each thing's view, lowercased as the server writes addresses. That gives it the glow, its own stop, and seen tracking. Without it, updates go to the piece, which already works.
+3. **If it shows only part of what it holds,** add `.revealHost` with a claim on its addresses and a reveal that shows one, and `.hiddenUpdateAnchors` for the things it isn't showing, so their stops stay in order.
+
+Add a database test with a before-and-after body for the component (`supabase/tests/14-update-addresses.sql`), and a unit test for its host if it has one.
 
 ## Testing
 

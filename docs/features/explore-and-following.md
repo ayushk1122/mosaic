@@ -113,14 +113,24 @@ Below the header is the board itself, read-only, as on a visit. Scroll it, open 
 - **Where it opens:** on the first board not done, or on the caught-up page.
 - **Kept on the server:** what's been seen goes to the server (`orbit_seen`), so it holds across devices and reinstalls. See [Orbit update navigation](../architecture/update-navigation.md), section 7.
 
-**Current repository fact:** A navigator pill at the bottom left ("3 of 7", up for the update before, down for the next) glides the board to each update in reading order. That update lifts slightly and glows brighter with one pulse, and the rest of the board dims by half while it's on screen.
-- **Nodes:** when the next update is inside a node, Next opens the node and continues there, then closes it after its last one.
+**Current repository fact:** A navigator pill at the bottom left (up for the update before, down for the next) glides the board to each update in reading order.
+- **What it counts:** pieces with updates, not every card or day: "2 updates", then "1 of 2". When the piece it's on has several new things (cards, days, rows), dots under the count fill as it steps through them. More than eight show as "3/12". VoiceOver says "Update 1 of 2, item 3 of 5". Decided by the product owner on 2026-10-23. That update lifts slightly and glows brighter with one pulse, and the rest of the board dims by half while it's on screen.
+- **Nodes and journals:** when the next update is inside a node, Next opens the node and continues there, then closes it after its last one. A journal opens on the page with updates the same way and closes after them; while it's open, the header steps aside and the navigator stays.
 - **Next board:** after the board's last update, Next moves on to the next board.
-- **Stops:** each update goes to the finest place showing it: a carousel card (Next turns the carousel), a calendar day (Next turns to its month), a list row, or a piece inside a group. Tabs, graph points, and table rows are reached through their piece. Something inside a thing that was added counts with it.
+- **Stops:** each update goes to the finest place showing it:
+  - a carousel card (Next turns the carousel);
+  - a calendar day (Next turns to its month and opens the day);
+  - a list row, a graph point, or a tab;
+  - a table row (Next turns to its entry);
+  - a piece inside a group;
+  - the banner, first.
+
+  Something inside a thing that was added counts with it.
+- **Tabs:** updates on every tab are walked, tab by tab; Next switches to the tab an update is on, for this visit only.
 - **Checking off:** reaching a stop with the navigator checks off everything it covers.
 - **Seen without the navigator:** a card counts once centered and mostly on screen, a day once its month shows it, and anything else once mostly on screen. Opening a day also checks off what's on it.
 
-A light haptic plays when a board is done; when every board is done, every line is green, the header says "All caught up", and a stronger haptic plays. The last page is "You're all caught up" ("That's your daily orbit."), with Check again and Explore. Signed out, Orbit says "Sign in to see your daily orbit". **Reversible choice:** the tab's place and icon, the highlight and navigator's look, and that "mostly on screen" means half the piece (or half the screen for a taller one). **Open question:** updates on a tab that isn't open aren't reached by the navigator.
+A light haptic plays when a board is done; when every board is done, every line is green, the header says "All caught up", and a stronger haptic plays. The last page is "You're all caught up" ("That's your daily orbit."), with Check again and Explore. Signed out, Orbit says "Sign in to see your daily orbit". **Reversible choice:** the tab's place and icon, the highlight and navigator's look, and that "mostly on screen" means half the piece (or half the screen for a taller one).
 
 **Decision:** The trail replaced the progress bars, the spotlight replaced the outline and "New" tag, and boards are ordered as with Instagram Stories, with no limit on boards per day. See [Orbit update navigation](../architecture/update-navigation.md), sections 2 and 5 to 7.
 

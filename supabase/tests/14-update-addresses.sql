@@ -1,7 +1,7 @@
 -- Updates found from the saved data itself: addresses for nested things, a component the server
 -- has never heard of, content arriving later, and look and layout never counting.
 begin;
-select plan(14);
+select plan(15);
 
 select is(
     public.board_changes(
@@ -120,6 +120,15 @@ select is(
     ),
     '[{"id":"l/listitems/x","kind":"listitems","piece":"l"}]'::jsonb,
     'pieces saved as they were add nothing; the one that changed is still read'
+);
+
+select is(
+    public.board_changes(
+        '{"blocks":[{"id":{"rawValue":"TB"},"kind":"table","tableRows":[{"id":"R1","cells":["",""]}],"tableEntries":[{"id":"E1","rows":[{"id":"R1","cells":["",""]}]}]}]}',
+        '{"blocks":[{"id":{"rawValue":"TB"},"kind":"table","tableRows":[{"id":"R1","cells":["79",""]}],"tableEntries":[{"id":"E1","rows":[{"id":"R1","cells":["79",""]}]}]}]}'
+    ),
+    '[{"id":"tb/tableentries/e1/rows/r1","kind":"rows","piece":"tb"}]'::jsonb,
+    'a row edited on screen counts once, under its entry, not again in the copy on screen'
 );
 
 select ok(not has_function_privilege('authenticated', 'public.board_addressed(jsonb)', 'EXECUTE'),
