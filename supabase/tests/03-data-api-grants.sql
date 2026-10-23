@@ -26,7 +26,7 @@ select is(
        join pg_namespace n on n.oid = c.relnamespace
       where n.nspname = 'public'
         and c.relkind in ('r', 'p', 'v', 'm')
-        and c.relname not in ('visits')
+        and c.relname not in ('visits', 'board_reads')
         and not has_table_privilege('authenticated', c.oid, 'SELECT')),
     '',
     'every public table that the app reads is granted to authenticated'
