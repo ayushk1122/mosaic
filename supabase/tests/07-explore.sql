@@ -93,13 +93,17 @@ select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30
 select is((select follower_count from public.explore_feed('pursuits', 'seed', 0, 30)), 1::bigint,
     'tiles carry their follower count');
 
--- Golf was shared a day after the Mosaic but last changed two days before it; C followed the
--- Mosaic a month ago, so only Golf has a follower from this week.
+-- Golf was shared a day after the Mosaic but last had a piece added two days before it; C followed
+-- the Mosaic a month ago, so only Golf has a follower from this week.
 reset role;
-update public.documents set explore_shared_at = now() - interval '1 day', updated_at = now() - interval '3 days'
+update public.documents set explore_shared_at = now() - interval '1 day',
+       body = '{"blocks":[{"id":{"rawValue":"11111111-AAAA-0000-0000-000000000001"},"kind":"text","text":"Season goals for the year"}]}'
 where id = 'a0000000-0000-0000-0000-000000000001';
-update public.documents set explore_shared_at = now(), updated_at = now() - interval '5 days'
+update public.documents set explore_shared_at = now(),
+       body = '{"blocks":[{"id":{"rawValue":"11111111-AAAA-0000-0000-000000000002"},"kind":"media"}]}'
 where id = 'a0000000-0000-0000-0000-000000000002';
+update public.board_additions set added_at = now() - interval '3 days' where board_id = 'a0000000-0000-0000-0000-000000000001';
+update public.board_additions set added_at = now() - interval '5 days' where board_id = 'a0000000-0000-0000-0000-000000000002';
 insert into public.follows (follower_id, target_owner_id, target_type, target_id, created_at)
 values ('cccccccc-0000-0000-0000-00000000000c', 'aaaaaaaa-0000-0000-0000-00000000000a', 'mosaic', 'a0000000-0000-0000-0000-000000000001', now() - interval '30 days');
 set local role authenticated;
@@ -107,7 +111,7 @@ select set_config('request.jwt.claims', '{"sub":"bbbbbbbb-0000-0000-0000-0000000
 select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30, '', 'newest')), array['Golf', 'A'],
     'newest to Explore first');
 select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30, '', 'updated')), array['A', 'Golf'],
-    'most recently changed first');
+    'most recently added to first');
 select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30, '', 'trending')), array['Golf', 'A'],
     'most new followers this week first, though both have one in all');
 select is((select array_agg(title) from public.explore_feed('all', 'seed', 0, 30, '', 'shuffle', true)), array['A'],
