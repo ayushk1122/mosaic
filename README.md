@@ -50,7 +50,7 @@ xcodebuild test \
 - Design: [visual language](docs/design/visual-language.md)
 - Features: [Golf Iteration 0](docs/features/golf/iteration-0.md) and [Explore, cards, and following updates](docs/features/explore-and-following.md)
 - Architecture: [overview](docs/architecture/overview.md), [account restoration and sync](docs/architecture/account-sync.md)
-- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md), [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md), and [sync conflicts and the media queue](docs/decisions/0003-sync-conflict-and-media-queue.md)
+- Decisions: [feature-owned Pursuit destinations](docs/decisions/0001-feature-owned-pursuit-destinations.md), [deterministic fixtures for 0A](docs/decisions/0002-deterministic-local-fixtures-for-0a.md), [sync conflicts and the media queue](docs/decisions/0003-sync-conflict-and-media-queue.md), and [newest edit wins](docs/decisions/0004-newest-edit-wins.md)
 - Quality: [testing strategy](docs/quality/testing.md)
 
 ## Status labels
