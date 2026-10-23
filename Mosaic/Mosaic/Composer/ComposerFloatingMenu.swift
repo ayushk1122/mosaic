@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum ComposerAddMenuMetrics {
     static let button: CGFloat = 48
@@ -134,6 +135,9 @@ struct ComposerFloatingMenu: View {
         .onChange(of: isExpanded) { _, expanded in
             if !expanded {
                 searchText = ""
+                // Put the keyboard away here, before whatever the choice opens: one that goes
+                // away in the middle of a sheet or cover can leave the board's controls lifted.
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             }
         }
     }

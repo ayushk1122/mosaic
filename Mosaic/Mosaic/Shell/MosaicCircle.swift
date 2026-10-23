@@ -460,6 +460,112 @@ struct MosaicCircleClient: Sendable {
     }
 }
 
+/// Circle: the owner's own Pursuits around their Mosaic on the Me side, and who they follow on the
+/// Following side. The tabs across the top stay put; swiping sideways switches sides too.
+struct MosaicCircleScreen: View {
+    enum Side: String, CaseIterable, Hashable {
+        case me
+        case following
+
+        var title: String {
+            switch self {
+            case .me: "Me"
+            case .following: "Following"
+            }
+        }
+    }
+
+    static let sideKey = "circle.side"
+
+    @Environment(\.mosaicTabBarHidden) private var tabBarHidden
+
+    /// Opens on Me the first time, then on whichever side was showing last.
+    @State private var side: Side? = Side(rawValue: UserDefaults.standard.string(forKey: Self.sideKey) ?? "") ?? .me
+    /// How far the pages have slid, from 0 on Me to 1 on Following, so the bar follows a swipe.
+    @State private var slide: CGFloat = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MosaicCircleTabs(selection: $side, slide: slide)
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    MosaicCircleView()
+                        .containerRelativeFrame(.horizontal)
+                        .id(Side.me)
+                    MosaicFollowingView(isShown: side == .following)
+                        .containerRelativeFrame(.horizontal)
+                        .id(Side.following)
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: $side)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                guard geometry.containerSize.width > 0 else { return 0 }
+                return min(max(geometry.contentOffset.x / geometry.containerSize.width, 0), 1)
+            } action: { _, slide in
+                self.slide = slide
+            }
+        }
+        .environment(\.colorScheme, .dark)
+        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(tabBarHidden ? .hidden : .visible, for: .tabBar)
+        .onChange(of: side) { _, side in
+            if let side { UserDefaults.standard.set(side.rawValue, forKey: Self.sideKey) }
+        }
+        // A container, so the pinned header's own identifiers aren't replaced by the screen's.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(MosaicTab.circle.screenAccessibilityIdentifier)
+        .mosaicPageBackground(.circle)
+    }
+}
+
+/// Me and Following, each half the width, with a bar under the side that's showing.
+private struct MosaicCircleTabs: View {
+    @Binding var selection: MosaicCircleScreen.Side?
+    var slide: CGFloat
+
+    var body: some View {
+        let sides = MosaicCircleScreen.Side.allCases
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(Array(sides.enumerated()), id: \.element) { index, side in
+                    let nearness = 1 - min(abs(slide - CGFloat(index)), 1)
+                    Button {
+                        withAnimation(.snappy(duration: 0.3)) { selection = side }
+                    } label: {
+                        Text(side.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.5 + 0.5 * nearness))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == side ? [.isSelected, .isHeader] : .isHeader)
+                    .accessibilityIdentifier("circle.tab.\(side.rawValue)")
+                }
+            }
+            GeometryReader { proxy in
+                let width = proxy.size.width / CGFloat(sides.count)
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.12))
+                        .frame(height: 1)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: width, height: 2)
+                        .offset(x: width * slide)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+            }
+            .frame(height: 2)
+            .accessibilityHidden(true)
+        }
+    }
+}
+
 struct MosaicCircleView: View {
     @Environment(\.mosaicAccount) private var account
     @Environment(\.mosaicTabBarHidden) private var tabBarHidden
@@ -495,8 +601,7 @@ struct MosaicCircleView: View {
         .onAppear { Task { await load() } }
         // Includes the media versions, so covers appear once a restore downloads their files.
         .task(id: ComposerCircleCoverKey(files: coverFiles, versions: store.mediaVersions)) { await loadCovers(coverFiles) }
-        .accessibilityIdentifier(MosaicTab.circle.screenAccessibilityIdentifier)
-        .mosaicPageBackground(.circle)
+        .accessibilityIdentifier("circle.me")
     }
 
     @ViewBuilder

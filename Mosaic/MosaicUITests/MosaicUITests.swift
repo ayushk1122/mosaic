@@ -23,7 +23,7 @@ final class MosaicUITests: XCTestCase {
     }
 
     @MainActor
-    func testLaunchShowsThreeTabShellWithMosaicSelected() throws {
+    func testLaunchShowsFourTabShellWithMosaicSelected() throws {
         let app = XCUIApplication()
         app.launchArguments += ["UITestSkipLaunchAnimation"]
         app.launch()
@@ -33,10 +33,15 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["mosaic.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Mosaic"].waitForExistence(timeout: 2))
 
-        for title in ["Mosaic", "Explore", "Circle", "Discover"] {
+        for title in ["Mosaic", "Orbit", "Circle", "Explore"] {
             XCTAssertTrue(tabBar.buttons[title].exists)
         }
-        XCTAssertFalse(tabBar.buttons["Feed"].exists)
+        XCTAssertEqual(tabBar.buttons.count, 4)
+
+        // Signed out, Orbit explains it needs an account.
+        tabBar.buttons["Orbit"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["orbit.screen"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Sign in to see your daily orbit: what people you follow added today."].waitForExistence(timeout: 3))
 
         // Signed out (as UI tests run), Explore explains it needs an account.
         tabBar.buttons["Explore"].tap()
@@ -44,23 +49,55 @@ final class MosaicUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sign in to explore other people's Mosaics."].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["explore.filter.all"].exists)
 
+        // Searching sets the feed aside until Cancel.
+        let search = app.textFields["explore.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 2))
+        search.tap()
+        XCTAssertTrue(app.staticTexts["Sign in to find people."].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["explore.filter.all"].isHittable)
+        app.buttons["explore.search.cancel"].tap()
+        XCTAssertTrue(app.buttons["explore.filter.all"].waitForExistence(timeout: 2))
+
+        // Tapping the tab that's already open goes back to where it starts.
+        search.tap()
+        XCTAssertTrue(app.staticTexts["Sign in to find people."].waitForExistence(timeout: 2))
+        // The keyboard covers the tab bar until it goes away; searching stays on.
+        search.typeText("\n")
+        XCTAssertTrue(app.buttons["explore.search.cancel"].waitForExistence(timeout: 2))
+        tabBar.buttons["Explore"].tap()
+        XCTAssertTrue(app.buttons["explore.filter.all"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["explore.filter.all"].isHittable)
+        XCTAssertFalse(app.buttons["explore.search.cancel"].exists)
+
+        // Circle opens on Me; Following is a tap or a swipe away, and the choice is remembered.
         tabBar.buttons["Circle"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["circle.screen"].waitForExistence(timeout: 2))
-
-        tabBar.buttons["Discover"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["search.screen"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
+        let me = app.buttons["circle.tab.me"]
+        let following = app.buttons["circle.tab.following"]
+        XCTAssertTrue(me.waitForExistence(timeout: 2))
+        // The side is remembered across launches, so an earlier run may have left Following showing.
+        if !me.isSelected { me.tap() }
+        XCTAssertTrue(app.staticTexts["Sign in to see your Circle."].waitForExistence(timeout: 2))
+        following.tap()
+        XCTAssertTrue(app.staticTexts["Sign in to see who you follow."].waitForExistence(timeout: 2))
+        XCTAssertTrue(following.isSelected)
+        attachScreenshot(app, named: "Circle Following")
+        app.swipeRight()
+        XCTAssertTrue(app.staticTexts["Sign in to see your Circle."].waitForExistence(timeout: 2))
+        let meAgain = NSPredicate(format: "isSelected == true")
+        expectation(for: meAgain, evaluatedWith: me)
+        waitForExpectations(timeout: 2)
     }
 
     @MainActor
-    func testCircleAndDiscoverOfferOnlyABackground() throws {
+    func testCircleAndExploreOfferOnlyABackground() throws {
         let app = XCUIApplication()
         app.launchArguments += ["UITestSkipLaunchAnimation"]
         app.launch()
 
         let tabBar = app.tabBars.firstMatch
         XCTAssertTrue(tabBar.waitForExistence(timeout: 5))
-        for title in ["Discover", "Circle"] {
+        for title in ["Explore", "Circle"] {
             tabBar.buttons[title].tap()
             let plus = app.buttons["composer.addButton"]
             XCTAssertTrue(plus.waitForExistence(timeout: 2))
@@ -72,7 +109,7 @@ final class MosaicUITests: XCTestCase {
             attachScreenshot(app, named: "\(title) menu")
             background.tap()
             XCTAssertTrue(app.navigationBars["Background"].waitForExistence(timeout: 2))
-            if title == "Discover" {
+            if title == "Explore" {
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.53)).tap()
             }
             attachScreenshot(app, named: "\(title) editor")

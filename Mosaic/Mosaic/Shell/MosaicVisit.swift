@@ -602,14 +602,24 @@ struct MosaicVisitTarget: Hashable, Sendable {
 struct MosaicVisitView: View {
     let person: MosaicPersonResult
     var pursuitID: UUID?
+    /// A page of Orbit rather than a screen pushed onto a stack: there's nothing to go back to.
+    var embedded = false
+    /// Opened on top of an Orbit page, where sideways swipes are paused: a swipe in from the left
+    /// edge goes back.
+    var swipesBack = false
 
-    init(target: MosaicVisitTarget) {
+    init(target: MosaicVisitTarget, embedded: Bool = false, swipesBack: Bool = false) {
         person = target.person
         pursuitID = target.pursuitID
+        self.embedded = embedded
+        self.swipesBack = swipesBack
     }
+
+    @Environment(ComposerUpdateGuide.self) private var updateGuide: ComposerUpdateGuide?
 
     @Environment(\.mosaicAccount) private var account
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.composerClose) private var close
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Phase {
@@ -627,6 +637,8 @@ struct MosaicVisitView: View {
     /// The first appearance follows a fresh load, so only later returns refresh access.
     @State private var visitAppeared = false
     @State private var showsAvatar = false
+    /// On an Orbit page the owner's Mosaic opens on top, so going back returns to the update.
+    @State private var showsOwnerMosaic = false
 
     private let muted = Color.white.opacity(0.55)
 
@@ -648,6 +660,36 @@ struct MosaicVisitView: View {
             .environment(\.colorScheme, .dark)
             .toolbar(.hidden, for: .navigationBar)
             .task(id: loadAttempt) { await load() }
+            // Laid over the Orbit page, sliding in from the side, rather than pushed onto the page's
+            // stack, which sits inside Orbit's pager and couldn't be popped from there.
+            .overlay {
+                if showsOwnerMosaic {
+                    NavigationStack {
+                        MosaicVisitView(target: MosaicVisitTarget(person: person), swipesBack: true)
+                            .environment(\.composerClose, closeOwnerMosaic)
+                    }
+                    // Not part of Orbit's walk through the updates: no glow and no navigator here.
+                    .environment(nil as ComposerUpdateGuide?)
+                    .environment(\.composerUpdateAddresses, [])
+                    .environment(\.composerAddedAddresses, [])
+                    .environment(\.composerNewBoards, [])
+                    .environment(\.composerTopInset, 0)
+                    .transition(.move(edge: .trailing))
+                    .zIndex(1)
+                }
+            }
+            .onChange(of: showsOwnerMosaic) { _, away in
+                // Orbit's header and navigator step aside while the Mosaic is open on top.
+                if embedded { updateGuide?.isAway = away }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24).onEnded { value in
+                    guard swipesBack, value.startLocation.x < 32,
+                          value.translation.width > 90, abs(value.translation.height) < 80 else { return }
+                    if let close { close() } else { dismiss() }
+                },
+                including: swipesBack ? .all : .subviews
+            )
             .onAppear {
                 // Back from a Pursuit opened inside the visit: follows and unfollows reload again.
                 if case .ready(let store, let chrome, let visit, let start) = phase, visit.onAccessChanged == nil {
@@ -725,8 +767,16 @@ struct MosaicVisitView: View {
         guard case .ready(let store, let chrome, let visit, let start) = phase, start != nil else { return nil }
         return {
             closeCard()
-            moveUpToMosaic(store: store, chrome: chrome, visit: visit)
+            if embedded {
+                withAnimation(.easeInOut(duration: 0.3)) { showsOwnerMosaic = true }
+            } else {
+                moveUpToMosaic(store: store, chrome: chrome, visit: visit)
+            }
         }
+    }
+
+    private func closeOwnerMosaic() {
+        withAnimation(.easeInOut(duration: 0.3)) { showsOwnerMosaic = false }
     }
 
     private func moveUpToMosaic(store: ComposerStore, chrome: MosaicChrome, visit: MosaicVisit) {
@@ -741,7 +791,13 @@ struct MosaicVisitView: View {
     private func attach(_ visit: MosaicVisit, store: ComposerStore, chrome: MosaicChrome, start: ComposerDocumentID?) {
         visit.onAccessChanged = { loadAttempt += 1 }
         visit.onProfileChange = { profileChanged($0) }
-        visit.onVisitMosaic = start == nil ? nil : { moveUpToMosaic(store: store, chrome: chrome, visit: visit) }
+        visit.onVisitMosaic = start == nil ? nil : { [embedded] in
+            if embedded {
+                withAnimation(.easeInOut(duration: 0.3)) { showsOwnerMosaic = true }
+            } else {
+                moveUpToMosaic(store: store, chrome: chrome, visit: visit)
+            }
+        }
         let missed = visit.takeMissed()
         if let profile = missed.profile {
             profileChanged(profile)
@@ -769,18 +825,21 @@ struct MosaicVisitView: View {
         }
     }
 
+    @ViewBuilder
     private var backChevron: some View {
-        Button {
-            dismiss()
-        } label: {
-            Image(systemName: "chevron.left")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+        if !embedded {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 8)
+            .accessibilityLabel("Back")
         }
-        .buttonStyle(.plain)
-        .padding(.leading, 8)
-        .accessibilityLabel("Back")
     }
 
     private func note(_ text: String) -> some View {
@@ -865,6 +924,7 @@ struct MosaicVisitView: View {
         MosaicComposerView(documentID: start)
             // Moving from a Pursuit up to the Mosaic is a fresh board, not the Pursuit's scroll and sizes.
             .id(start)
+            .environment(\.composerShowsBack, !embedded)
             .environment(store)
             .environment(chrome)
             .environment(visit)

@@ -156,8 +156,9 @@ struct ComposerListCanvasBlock: View {
 
     private var rows: some View {
         VStack(alignment: .leading, spacing: max(4, pointSize * 0.28)) {
-            ForEach(displayedItems) { item in
+            ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
                 row(item)
+                    .updateAnchor("\(block.id.rawValue.lowercased())/listitems/\(item.id.lowercased())", order: index)
             }
         }
         .shadow(color: .white.opacity(showsMoveAffordance ? 0.95 : 0), radius: showsMoveAffordance ? 2 : 0)
