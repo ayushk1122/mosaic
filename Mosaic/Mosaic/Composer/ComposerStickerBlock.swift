@@ -73,7 +73,7 @@ nonisolated final class ComposerCutoutSession: @unchecked Sendable {
 }
 
 nonisolated enum ComposerStickerArt {
-    nonisolated(unsafe) static let context = CIContext()
+    static let context = CIContext()
     /// Longest side of a saved sticker, in pixels.
     static let maxPixel: CGFloat = 2048
     /// Transparent room around the subject, as a share of the sticker's longest side, so the border fits.

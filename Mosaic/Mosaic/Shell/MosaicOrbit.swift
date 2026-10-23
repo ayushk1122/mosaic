@@ -20,11 +20,11 @@ struct MosaicOrbitItem: Identifiable, Hashable, Sendable {
 
         /// Where the change is: the piece, or something inside it ("c/carouselitems/two"), without
         /// what kind of change it was. Seeing it is recorded under this address.
-        var address: String {
+        nonisolated var address: String {
             (id.split(separator: "#", maxSplits: 1).first.map(String.init) ?? id).lowercased()
         }
 
-        var seenKey: String { address }
+        nonisolated var seenKey: String { address }
     }
 
     var id: UUID
@@ -118,84 +118,12 @@ struct MosaicOrbitItem: Identifiable, Hashable, Sendable {
 }
 
 enum MosaicOrbitText {
-    /// "added 3 photos and a note, wrote in a note, and checked off 2 items".
-    static func summary(of pieces: [MosaicOrbitItem.Piece]) -> String {
-        var added: [(noun: String, count: Int)] = []
-        var writing = 0
-        var checked = 0
-        for piece in pieces {
-            switch piece.kind {
-            case "writing": writing += 1
-            case "checked": checked += 1
-            default:
-                let noun = noun(for: piece.kind)
-                if let index = added.firstIndex(where: { $0.noun == noun }) {
-                    added[index].count += 1
-                } else {
-                    added.append((noun, 1))
-                }
-            }
-        }
-        var phrases: [String] = []
-        if !added.isEmpty {
-            phrases.append("added " + list(added.map { counted($0.noun, $0.count) }))
-        }
-        if writing > 0 {
-            phrases.append(writing == 1 ? "wrote in a note" : "wrote in \(writing) notes")
-        }
-        if checked > 0 {
-            phrases.append(checked == 1 ? "checked off an item" : "checked off \(checked) items")
-        }
-        return phrases.isEmpty ? "added something new" : list(phrases)
-    }
-
     /// "now", "5m", "2h".
     static func age(of date: Date, now: Date = .now) -> String {
         let seconds = max(now.timeIntervalSince(date), 0)
         if seconds < 60 { return "now" }
         if seconds < 3600 { return "\(Int(seconds / 60))m" }
         return "\(Int(seconds / 3600))h"
-    }
-
-    private static func noun(for kind: String) -> String {
-        switch kind {
-        case "media", "photo", "carousel": "photo"
-        case "text", "heading", "note", "calendarentries", "pursuittexts": "note"
-        case "list": "list"
-        case "item", "listitems": "list item"
-        case "drawing": "drawing"
-        case "sticker": "sticker"
-        case "page", "scrapbook": "page"
-        case "pursuit": "Pursuit"
-        case "node": "folder"
-        case "link", "social", "content": "link"
-        case "point", "graphpoints": "graph point"
-        case "graph": "graph"
-        case "tab", "tabs": "tab"
-        case "cell", "rows", "tableentries", "tablerows": "table entry"
-        case "tablecolumns": "table column"
-        case "table": "table"
-        case "calendar": "calendar"
-        case "banner": "banner photo"
-        default: "piece"
-        }
-    }
-
-    /// "a photo", "an entry", "3 photos", "2 table entries".
-    private static func counted(_ noun: String, _ count: Int) -> String {
-        guard count > 1 else { return "\("aeiouAEIOU".contains(noun.first ?? "x") ? "an" : "a") \(noun)" }
-        let plural = noun.hasSuffix("y") ? String(noun.dropLast()) + "ies" : noun + "s"
-        return "\(count) \(plural)"
-    }
-
-    /// "a", "a and b", "a, b, and c".
-    private static func list(_ parts: [String]) -> String {
-        switch parts.count {
-        case 0: ""
-        case 1: parts[0]
-        case 2: "\(parts[0]) and \(parts[1])"
-        default: "\(parts.dropLast().joined(separator: ", ")), and \(parts[parts.count - 1])"
-        }
     }
 }
 
@@ -232,10 +160,16 @@ struct MosaicOrbitClient: Sendable {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw SupabaseDocumentSyncError.requestFailed
+        guard let http = response as? HTTPURLResponse else { throw SupabaseDocumentSyncError.requestFailed }
+        guard (200..<300).contains(http.statusCode) else {
+            // Only what may go through later is worth sending again.
+            let later = http.statusCode >= 500 || [401, 408, 429].contains(http.statusCode)
+            throw later ? SupabaseDocumentSyncError.requestFailed : Rejected()
         }
     }
+
+    /// The server turned it down for good.
+    struct Rejected: Error {}
 }
 
 /// The day's updates, shared by the Orbit tab and its badge. What's been seen is kept on the phone
@@ -364,6 +298,8 @@ final class MosaicOrbitModel {
         for (board, seen) in batch {
             do {
                 try await client.markSeen(board: board, seen: seen, accessToken: token)
+            } catch is MosaicOrbitClient.Rejected {
+                // Kept on the phone still; sending it again wouldn't help.
             } catch {
                 requeue([board: seen])
             }
@@ -464,9 +400,4 @@ final class MosaicOrbitModel {
         }
     }
 
-    /// Opened on this phone; the server learns of it from the visit.
-    func markSeen(_ id: UUID) {
-        guard let index = items.firstIndex(where: { $0.id == id }), !items[index].seen else { return }
-        items[index].seen = true
-    }
 }

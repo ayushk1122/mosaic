@@ -2301,7 +2301,7 @@ struct MosaicComposerView: View {
             return
         }
         let session = textDragSession
-        if session.graphResizing, let corner = session.resizeCorner {
+        if session.graphResizing, session.resizeCorner != nil {
             visual = .inactive
             return
         }

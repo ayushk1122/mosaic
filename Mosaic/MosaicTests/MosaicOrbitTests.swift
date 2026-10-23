@@ -10,19 +10,6 @@ struct MosaicOrbitTests {
     }
 
     @Test
-    func updatesAreSummedUpInWords() {
-        #expect(MosaicOrbitText.summary(of: pieces("media")) == "added a photo")
-        #expect(MosaicOrbitText.summary(of: pieces("media", "media", "media", "text")) == "added 3 photos and a note")
-        #expect(MosaicOrbitText.summary(of: pieces("drawing", "media", "page")) == "added a drawing, a photo, and a page")
-        #expect(MosaicOrbitText.summary(of: pieces("somethingNewer")) == "added a piece")
-        #expect(MosaicOrbitText.summary(of: []) == "added something new")
-        #expect(MosaicOrbitText.summary(of: pieces("photo", "photo", "writing", "checked"))
-                == "added 2 photos, wrote in a note, and checked off an item")
-        #expect(MosaicOrbitText.summary(of: pieces("checked", "checked")) == "checked off 2 items")
-        #expect(MosaicOrbitText.summary(of: pieces("cell", "cell", "banner")) == "added 2 table entries and a banner photo")
-    }
-
-    @Test
     func agesAreShort() {
         let now = Date(timeIntervalSince1970: 100_000)
         #expect(MosaicOrbitText.age(of: now.addingTimeInterval(-20), now: now) == "now")
@@ -76,10 +63,6 @@ struct MosaicOrbitTests {
         )
         #expect(item.addresses == ["car/carouselitems/abc", "pic", "cal/calendarentries/2026-10-22"])
         #expect(item.addedAddresses == ["car/carouselitems/abc"], "a swapped photo and more writing were changes, not additions")
-        #expect(MosaicOrbitText.summary(of: [
-            MosaicOrbitItem.Piece(id: "l/listitems/a", piece: "l", kind: "listitems"),
-            MosaicOrbitItem.Piece(id: "g/graphpoints/b", piece: "g", kind: "graphpoints")
-        ]) == "added a list item and a graph point")
     }
 
     @Test

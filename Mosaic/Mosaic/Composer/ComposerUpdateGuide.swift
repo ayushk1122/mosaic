@@ -23,7 +23,7 @@ struct ComposerUpdateAnchorKey: PreferenceKey {
 }
 
 /// Addresses are paths from a piece down: "c" for a piece, "c/carouselitems/two" for a card in it.
-enum ComposerUpdateAddress {
+nonisolated enum ComposerUpdateAddress {
     /// The address itself and everything above it, shortest first.
     static func lineage(of address: String) -> [String] {
         let parts = address.split(separator: "/")
@@ -248,9 +248,11 @@ final class ComposerUpdateGuide {
         if anchorsByBoard[board] != rounded { anchorsByBoard[board] = rounded }
     }
 
-    /// What's still seen after Orbit is put together again; an update made since then is unseen.
+    /// What's still seen after Orbit is put together again; an update made since then is unseen,
+    /// and a node or journal page with something new can be gone into again.
     func resetSeen(_ keys: Set<String>) {
         seen = keys
+        entered = []
     }
 
     func markSeen(_ keys: Set<String>) {
