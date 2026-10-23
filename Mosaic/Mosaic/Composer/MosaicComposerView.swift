@@ -620,6 +620,8 @@ struct MosaicComposerView: View {
                             self.focusedMedia = nil
                         }
                     }
+                    // Zoom, pan, and the loaded image belong to one photo or video.
+                    .id(focusedMedia.id)
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
                 }
             }
@@ -2397,7 +2399,12 @@ struct MosaicComposerView: View {
         if let tabs = scrollingBlocks.first(where: { $0.kind == .tabs && $0.tabSticky }) {
             let frame = blockFrames[tabs.id]
             ZStack(alignment: .topLeading) {
-                ComposerStickyTabsWatcher(rail: scrollBubbleRail, frame: frame, stuck: $tabsStuck)
+                ComposerStickyTabsWatcher(
+                    rail: scrollBubbleRail,
+                    frame: frame,
+                    suspended: selectedBlockID == tabs.id || editingBlockID == tabs.id,
+                    stuck: $tabsStuck
+                )
                 if tabsStuck, let frame {
                     ComposerTabsCanvasBlock(
                         documentID: documentID,

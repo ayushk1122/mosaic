@@ -790,6 +790,8 @@ struct MosaicCircleBubbleView: View {
         .task { await load(markSeen: true) }
         .navigationDestination(item: $visiting) { target in
             MosaicVisitView(target: target)
+                // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
+                .id(target)
         }
         .accessibilityIdentifier("circle.bubbleScreen")
     }

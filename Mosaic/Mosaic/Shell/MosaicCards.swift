@@ -110,6 +110,8 @@ struct MosaicCardLayout<Picture: View, Subtitle: View, Actions: View>: View {
     var linkKind: String
     var followerText: String?
     var problem: String?
+    /// While a follow or request is under way; the card itself can still be closed.
+    var actionsDisabled = false
     var onClose: () -> Void
     @ViewBuilder var picture: (CGFloat) -> Picture
     @ViewBuilder var subtitle: () -> Subtitle
@@ -157,6 +159,7 @@ struct MosaicCardLayout<Picture: View, Subtitle: View, Actions: View>: View {
                     HStack(spacing: 10) {
                         actions()
                     }
+                    .disabled(actionsDisabled)
                     .frame(maxWidth: 320)
                     .padding(.horizontal, 32)
                     Text(problem ?? "\(linkKind) link copied!")
@@ -176,6 +179,9 @@ struct MosaicCardLayout<Picture: View, Subtitle: View, Actions: View>: View {
         .environment(\.colorScheme, .dark)
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape, onClose)
+        .onChange(of: problem) { _, problem in
+            if let problem { AccessibilityNotification.Announcement(problem).post() }
+        }
     }
 
     /// Centers the button on the circle's edge at its lower right, 45° down from the side.
@@ -205,6 +211,7 @@ struct MosaicCardLayout<Picture: View, Subtitle: View, Actions: View>: View {
         guard let link else { return }
         UIPasteboard.general.string = link.absoluteString
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AccessibilityNotification.Announcement("\(linkKind) link copied").post()
         copies += 1
         let copy = copies
         withAnimation(.easeOut(duration: 0.18)) { copied = true }
@@ -235,6 +242,8 @@ struct MosaicProfileCard: View {
     @State private var loading = true
     @State private var busy = false
     @State private var problem: String?
+    /// Counts follows and requests made here, so a load that started before one can't undo it.
+    @State private var edits = 0
 
     private var current: MosaicVisitProfile? { loaded ?? profile }
     private var username: String { current?.username ?? person.username }
@@ -250,6 +259,7 @@ struct MosaicProfileCard: View {
             linkKind: "Mosaic",
             followerText: MosaicCardText.followers(current?.followerCount),
             problem: problem,
+            actionsDisabled: busy,
             onClose: onClose
         ) { side in
             MosaicAvatarView(path: current?.avatarPath ?? person.avatarPath, name: name, size: side)
@@ -274,7 +284,6 @@ struct MosaicProfileCard: View {
                 .accessibilityIdentifier("profileCard.visit")
             }
         }
-        .disabled(busy)
         .accessibilityIdentifier("profileCard")
         .task { await load() }
     }
@@ -330,17 +339,21 @@ struct MosaicProfileCard: View {
 
     private func load() async {
         defer { loading = false }
+        let before = edits
         guard let link = await connection(),
               let found = try? await link.client.profile(userID: person.id, accessToken: link.token),
-              !Task.isCancelled
+              !Task.isCancelled,
+              edits == before
         else { return }
         loaded = found
     }
 
     private func setFollowing(_ follow: Bool) async {
-        guard var updated = current, let link = await connection() else { return }
+        guard !busy, var updated = current else { return }
         busy = true
         defer { busy = false }
+        edits += 1
+        guard let link = await connection() else { return }
         do {
             if follow {
                 try await link.client.followMosaic(ownerID: person.id, accessToken: link.token)
@@ -358,9 +371,11 @@ struct MosaicProfileCard: View {
     }
 
     private func request() async {
-        guard var updated = current, let link = await connection() else { return }
+        guard !busy, var updated = current else { return }
         busy = true
         defer { busy = false }
+        edits += 1
+        guard let link = await connection() else { return }
         guard let status = try? await link.client.requestMosaic(ownerID: person.id, accessToken: link.token) else {
             problem = "The request could not be sent."
             return
@@ -403,6 +418,7 @@ struct MosaicPursuitCard: View {
             linkKind: "Pursuit",
             followerText: MosaicCardText.followers(pursuit?.followerCount),
             problem: visit.problem,
+            actionsDisabled: visit.busy.contains(pursuitID),
             onClose: close
         ) { side in
             ZStack {
@@ -460,7 +476,6 @@ struct MosaicPursuitCard: View {
                 }
             }
         }
-        .disabled(visit.busy.contains(pursuitID))
         .accessibilityIdentifier("pursuitCard")
         .task(id: coverURL) { await loadSharpCover() }
     }

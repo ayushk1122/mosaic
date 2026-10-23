@@ -242,8 +242,13 @@ final class MosaicVisit {
     var onVisitMosaic: (() -> Void)?
     /// After the owner's card follows, unfollows, or requests, so the visit screen can catch up.
     var onProfileChange: ((MosaicVisitProfile) -> Void)?
-    /// Bumped by every follow, unfollow, and request, so a refresh fetched before one can't undo it.
+    /// Bumped as every follow, unfollow, and request starts and again when it ends, so a refresh
+    /// fetched before or during one can't undo it.
     @ObservationIgnored private var changes = 0
+    /// What happened while the visit screen was covered by a Pursuit opened inside it, and so had
+    /// no callbacks attached; it catches up when it shows again.
+    @ObservationIgnored private var missedAccessChange = false
+    @ObservationIgnored private var missedProfile: MosaicVisitProfile?
     @ObservationIgnored private var reportedVisits: Set<UUID> = []
 
     private let account: MosaicAccount
@@ -330,10 +335,12 @@ final class MosaicVisit {
     }
 
     func follow(_ id: UUID) async {
-        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        guard !busy.contains(id) else { return }
         busy.insert(id)
         defer { busy.remove(id) }
         changes += 1
+        defer { changes += 1 }
+        guard let token = await account.accessToken() else { return }
         do {
             try await client.followPursuit(id: id, accessToken: token)
             setFollowing(true, for: id)
@@ -343,16 +350,18 @@ final class MosaicVisit {
     }
 
     func unfollow(_ id: UUID) async {
-        guard !busy.contains(id), let token = await account.accessToken() else { return }
+        guard !busy.contains(id) else { return }
         busy.insert(id)
         defer { busy.remove(id) }
         changes += 1
+        defer { changes += 1 }
+        guard let token = await account.accessToken() else { return }
         do {
             try await client.unfollowPursuit(id: id, accessToken: token)
             let wasOpen = openIDs
             setFollowing(false, for: id)
             if openIDs != wasOpen {
-                onAccessChanged?()
+                accessChanged()
             }
         } catch {
             problem = "That Pursuit could not be unfollowed."
@@ -370,13 +379,14 @@ final class MosaicVisit {
 
     func request(_ id: UUID) async {
         guard !busy.contains(id) else { return }
+        busy.insert(id)
+        defer { busy.remove(id) }
+        changes += 1
+        defer { changes += 1 }
         guard let token = await account.accessToken() else {
             problem = "That request could not be sent."
             return
         }
-        busy.insert(id)
-        defer { busy.remove(id) }
-        changes += 1
         let reply: String?
         do {
             reply = try await client.requestPursuit(id: id, accessToken: token)
@@ -413,7 +423,7 @@ final class MosaicVisit {
         if let profile = try? await client.profile(userID: ownerID, accessToken: token),
            changes == started,
            !profile.canView {
-            onAccessChanged?()
+            accessChanged()
             return
         }
         guard let fresh = try? await client.pursuits(ownerID: ownerID, accessToken: token),
@@ -426,8 +436,36 @@ final class MosaicVisit {
         let wasOpen = openIDs
         pursuits = Dictionary(uniqueKeysWithValues: fresh.map { ($0.id, $0) })
         if openIDs != wasOpen {
-            onAccessChanged?()
+            accessChanged()
         }
+    }
+
+    private func accessChanged() {
+        if let onAccessChanged {
+            onAccessChanged()
+        } else {
+            missedAccessChange = true
+        }
+    }
+
+    /// The owner's card changed a follow or request.
+    func profileChanged(_ profile: MosaicVisitProfile) {
+        if let onProfileChange {
+            onProfileChange(profile)
+        } else {
+            missedProfile = profile
+            // Unfollowing the Mosaic also unfollows its Pursuits; the bubbles catch up now.
+            Task { await refresh() }
+        }
+    }
+
+    /// What the visit screen missed while it was covered, cleared as it is read.
+    func takeMissed() -> (accessChanged: Bool, profile: MosaicVisitProfile?) {
+        defer {
+            missedAccessChange = false
+            missedProfile = nil
+        }
+        return (missedAccessChange, missedProfile)
     }
 
     private var openIDs: Set<UUID> {
@@ -498,7 +536,7 @@ struct MosaicVisitPursuitControls: View {
                         }
                     }
                 },
-                onProfileChange: { visit.onProfileChange?($0) },
+                onProfileChange: { visit.profileChanged($0) },
                 onClose: close
             )
             .transition(.opacity)
@@ -617,11 +655,8 @@ struct MosaicVisitView: View {
                 }
             }
             .onDisappear {
-                // The visit's callbacks hold this screen, which holds the visit: let both go.
                 if case .ready(_, _, let visit, _) = phase {
-                    visit.onAccessChanged = nil
-                    visit.onProfileChange = nil
-                    visit.onVisitMosaic = nil
+                    detach(visit)
                 }
             }
     }
@@ -707,6 +742,20 @@ struct MosaicVisitView: View {
         visit.onAccessChanged = { loadAttempt += 1 }
         visit.onProfileChange = { profileChanged($0) }
         visit.onVisitMosaic = start == nil ? nil : { moveUpToMosaic(store: store, chrome: chrome, visit: visit) }
+        let missed = visit.takeMissed()
+        if let profile = missed.profile {
+            profileChanged(profile)
+        }
+        if missed.accessChanged {
+            loadAttempt += 1
+        }
+    }
+
+    /// The visit's callbacks hold this screen, which holds the visit: let both go.
+    private func detach(_ visit: MosaicVisit) {
+        visit.onAccessChanged = nil
+        visit.onProfileChange = nil
+        visit.onVisitMosaic = nil
     }
 
     private func profileChanged(_ changed: MosaicVisitProfile) {
@@ -783,7 +832,7 @@ struct MosaicVisitView: View {
             }
         }
         .overlay(alignment: .topLeading) { backChevron }
-        .refreshable { await load() }
+        .refreshable { loadAttempt += 1 }
     }
 
     /// Stand-in tiles behind the blur. Nothing from the private Mosaic is downloaded.
@@ -914,6 +963,9 @@ struct MosaicVisitView: View {
     }
 
     private func load() async {
+        if case .ready(_, _, let previous, _) = phase {
+            detach(previous)
+        }
         phase = .loading
         guard let account, let viewerID = account.session?.userID,
               let link = await connection() else {
@@ -980,13 +1032,15 @@ struct MosaicVisitView: View {
     }
 
     private func requestMosaic() async {
-        guard let link = await connection(), let ownerID = profile?.userID else { return }
+        guard !requesting else { return }
         requesting = true
         defer { requesting = false }
+        guard let link = await connection(), let ownerID = profile?.userID else { return }
         if let status = try? await link.client.requestMosaic(ownerID: ownerID, accessToken: link.token) {
             profile?.requestStatus = status
             if status == "accepted" {
-                await load()
+                // Through the screen's own load task, so it stops if the person has left.
+                loadAttempt += 1
             }
         }
     }

@@ -86,6 +86,11 @@ struct ComposerPushConflict: Error {
     var server: ComposerRestoredDocument
 }
 
+/// A push found the board deleted on another device.
+struct ComposerPushDeleted: Error {
+    var id: UUID
+}
+
 /// Pushes the local snapshot to Supabase after edits settle.
 @MainActor
 @Observable
@@ -347,6 +352,7 @@ final class ComposerRemoteSync {
             var anySaveFailed = false
             var tooLarge = Set<UUID>()
             var serverVersions: [UUID: ComposerRestoredDocument] = [:]
+            var deletedElsewhere = Set<UUID>()
             defer {
                 oversizedBoards = documents
                     .filter { tooLarge.contains($0.id) }
@@ -370,6 +376,9 @@ final class ComposerRemoteSync {
                 } catch let conflict as ComposerPushConflict {
                     // Changed on another device too: its version is brought in below, never overwritten.
                     serverVersions[conflict.server.id] = conflict.server
+                } catch let deleted as ComposerPushDeleted {
+                    // Deleted on another device: shown like a pulled deletion, this copy kept below.
+                    deletedElsewhere.insert(deleted.id)
                 } catch {
                     if Task.isCancelled { return false }
                     anySaveFailed = true
@@ -380,7 +389,7 @@ final class ComposerRemoteSync {
             // Deleting removed boards waits for a push where every board saved: a board whose
             // save failed may be the new home of a node, and deleting its old parent would take
             // the node's server copy with it.
-            if !anySaveFailed,
+            if !anySaveFailed, deletedElsewhere.isEmpty,
                let remoteIDs = try? await client.listOwnDocumentIDs(ownerID: userID, accessToken: accessToken) {
                 // Only boards this phone has synced before and has since removed. A board another
                 // device created is unknown here, not dead.
@@ -405,8 +414,8 @@ final class ComposerRemoteSync {
                 }
             }
             guard let mediaFile else {
-                if !serverVersions.isEmpty {
-                    state = bringIn(rows: Array(serverVersions.values), removed: [], state: state)
+                if !serverVersions.isEmpty || !deletedElsewhere.isEmpty {
+                    state = bringIn(rows: Array(serverVersions.values), removed: Array(deletedElsewhere), state: state)
                 }
                 return !anySaveFailed
             }
@@ -427,7 +436,7 @@ final class ComposerRemoteSync {
             saveState(state)
             let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets, previews: state.mediaPreviews)
             // A board that conflicted is no longer this device's to push until the person chooses.
-            for document in restamped where serverVersions[document.id] == nil {
+            for document in restamped where serverVersions[document.id] == nil && !deletedElsewhere.contains(document.id) {
                 // The same refused content isn't uploaded again (about 2 MB each time) until it changes.
                 let hash = ComposerSyncState.contentHash(of: document)
                 if let hash, refusedAsTooLarge[document.id] == hash {
@@ -445,13 +454,19 @@ final class ComposerRemoteSync {
                 } catch let conflict as ComposerPushConflict {
                     // Changed on another device too: its version is brought in below, never overwritten.
                     serverVersions[conflict.server.id] = conflict.server
+                } catch let deleted as ComposerPushDeleted {
+                    deletedElsewhere.insert(deleted.id)
                 } catch {
                     if Task.isCancelled { return false }
                     anySaveFailed = true
                 }
             }
-            if !serverVersions.isEmpty {
-                state = bringIn(rows: Array(serverVersions.values), removed: [], state: state)
+            if !serverVersions.isEmpty || !deletedElsewhere.isEmpty {
+                state = bringIn(rows: Array(serverVersions.values), removed: Array(deletedElsewhere), state: state)
+            }
+            if !deletedElsewhere.isEmpty {
+                // The parent that dropped the board changed too; fetch it before the next push.
+                wantsPull = true
             }
             // Readable local files without a cloud asset are not finished syncing yet,
             // unless they have already failed too often to be retried this session.
@@ -587,6 +602,8 @@ final class ComposerRemoteSync {
             // Another device changed this board (ADR 0003): its version wins what's shown, and this
             // device's version is kept as a conflict copy. Nothing is overwritten.
             throw ComposerPushConflict(server: server)
+        } catch SupabaseDocumentSyncError.documentDeleted {
+            throw ComposerPushDeleted(id: document.id)
         }
     }
 
@@ -609,7 +626,11 @@ final class ComposerRemoteSync {
     func pull(client: SupabaseDocumentSync, userID: UUID, accessToken: String) async {
         // A device that has never synced has nothing to compare; a restore brings boards in instead.
         guard store != nil, let before = loadState(), !before.pendingRestore else { return }
-        guard let remote = try? await client.ownRevisions(ownerID: userID, accessToken: accessToken) else { return }
+        guard let remote = try? await client.ownRevisions(ownerID: userID, accessToken: accessToken),
+              // A reply without this account's own Mosaic isn't a list to compare against: it would
+              // make every board look deleted.
+              remote[before.mosaicID] != nil
+        else { return }
         let changed = ComposerPull.changedIDs(remote: remote, state: before)
         let removed = ComposerPull.removedIDs(remote: remote, state: before)
         guard !changed.isEmpty || !removed.isEmpty else { return }
@@ -649,6 +670,10 @@ final class ComposerRemoteSync {
             saveConflicts()
         }
         store.applySynced(result.snapshot, replaced: result.replaced)
+        // A push waiting with a copy from before this merge would send the old boards back.
+        if latest != nil {
+            latest = store.snapshot
+        }
         pullCount += 1
         return result.state
     }

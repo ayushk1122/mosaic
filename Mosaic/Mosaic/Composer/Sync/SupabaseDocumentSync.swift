@@ -23,6 +23,8 @@ struct SupabaseSyncConfig: Equatable, Sendable {
 
 enum SupabaseDocumentSyncError: Error, Equatable {
     case revisionConflict
+    /// The save expected a board the server no longer has: another device deleted it.
+    case documentDeleted
     case mosaicExists
     /// Over the server's body size limit; retrying won't help until something is removed.
     case documentTooLarge
@@ -309,6 +311,9 @@ struct SupabaseDocumentSync: Sendable {
 
     static func error(from data: Data, status: Int) -> SupabaseDocumentSyncError {
         let message = String(data: data, encoding: .utf8) ?? ""
+        if message.contains("document deleted") || message.contains("MS404") {
+            return .documentDeleted
+        }
         if message.contains("revision conflict") || message.contains("P0001") {
             return .revisionConflict
         }

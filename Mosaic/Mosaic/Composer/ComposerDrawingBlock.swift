@@ -111,14 +111,17 @@ enum ComposerDrawingMetrics {
         return max(min(maximumBytes, boardBudget - others), 0)
     }
 
-    /// Longest side of a drawing's rendered image, in pixels. A big drawing pinched large would
-    /// otherwise render hundreds of megabytes; past this it's scaled up on screen instead.
+    /// Longest side of a drawing's rendered image, in pixels, and its whole area (about 24 MB). A
+    /// big drawing pinched large would otherwise render hundreds of megabytes; past these it's
+    /// scaled up on screen instead.
     static let maximumRenderPixels: CGFloat = 4096
+    static let maximumRenderArea: CGFloat = 6_000_000
 
     static func pixelScale(for size: CGSize, scale: CGFloat) -> CGFloat {
         let longest = max(size.width, size.height)
         guard longest > 0 else { return scale }
-        return min(scale, maximumRenderPixels / longest)
+        let byArea = (maximumRenderArea / max(size.width * size.height, 1)).squareRoot()
+        return min(scale, maximumRenderPixels / longest, byArea)
     }
 
     /// Drawn as light-mode ink, so a black pen stays black on every board and in dark mode.
@@ -320,13 +323,20 @@ struct ComposerDrawingCanvasBlock: View {
         )) {
             // The live canvas shows the ink while drawing; render once drawing ends, not per stroke.
             guard !isDrawing else { return }
-            let drawing = ComposerDrawingMetrics.drawing(from: block.drawingData)
-            rendered = ComposerDrawingMetrics.image(
-                of: drawing,
-                size: base,
-                scale: ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
-            )
-            touchRects = ComposerDrawingMetrics.touchRects(of: drawing)
+            let data = block.drawingData
+            let size = base
+            let pixelScale = ComposerDrawingMetrics.pixelScale(for: base, scale: scale * displayScale)
+            // Off the main thread: decoding and drawing a page of ink can take a while.
+            let (image, rects) = await Task.detached(priority: .userInitiated) {
+                let drawing = ComposerDrawingMetrics.drawing(from: data)
+                return (
+                    ComposerDrawingMetrics.image(of: drawing, size: size, scale: pixelScale),
+                    ComposerDrawingMetrics.touchRects(of: drawing)
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            rendered = image
+            touchRects = rects
         }
     }
 }

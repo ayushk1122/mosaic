@@ -47,9 +47,9 @@ struct MosaicAuthReliabilityTests {
     }
 
     @Test
-    func onlyConnectionDropsAndTimeoutsRetry() {
+    func onlyConnectionDropsRetry() {
         #expect(MosaicAccount.retriesOnce(.networkConnectionLost))
-        #expect(MosaicAccount.retriesOnce(.timedOut))
+        #expect(!MosaicAccount.retriesOnce(.timedOut), "the server may have used the code already")
         #expect(!MosaicAccount.retriesOnce(.notConnectedToInternet))
         #expect(!MosaicAccount.retriesOnce(.cancelled))
     }

@@ -507,8 +507,11 @@ struct ComposerInlineVideo: UIViewRepresentable {
 /// person's music; once the last one pauses or leaves the screen, their music can resume.
 enum ComposerVideoAudio {
     private(set) static var playing: Set<ObjectIdentifier> = []
+    /// Bumped by every claim and release, so a hand-back still waiting is dropped once a video plays again.
+    private static var handBack = 0
 
     static func claim(_ video: ObjectIdentifier) {
+        handBack += 1
         if playing.isEmpty {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -516,9 +519,23 @@ enum ComposerVideoAudio {
         playing.insert(video)
     }
 
+    /// Just after a pause the player's audio is often still running, and iOS refuses to end the
+    /// session; with no retry the person's music never came back. So it waits a moment, ends it off
+    /// the main thread, and tries once more if refused.
     static func release(_ video: ObjectIdentifier) {
         guard playing.remove(video) != nil, playing.isEmpty else { return }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        handBack += 1
+        let current = handBack
+        Task {
+            for delay in [400, 800] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard current == handBack, playing.isEmpty else { return }
+                let ended = await Task.detached(priority: .utility) {
+                    (try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)) != nil
+                }.value
+                if ended { return }
+            }
+        }
     }
 }
 

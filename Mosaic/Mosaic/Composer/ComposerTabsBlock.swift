@@ -386,21 +386,26 @@ struct ComposerStickyTabsWatcher: View {
     var rail: ComposerScrollBubbleRail
     /// The bar's place in the board.
     var frame: CGRect?
+    /// While the bar is selected or a tab is being renamed it stays on the board, where that happens.
+    var suspended = false
     @Binding var stuck: Bool
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
-            .onChange(of: isAtTop, initial: true) { _, value in
+            .onChange(of: isAtTop && !suspended, initial: true) { _, value in
                 if stuck != value { stuck = value }
             }
     }
 
+    /// Only once the board has scrolled: a bar placed right at the top would otherwise count as
+    /// stuck from the start, hidden on the board with no way to select it.
     private var isAtTop: Bool {
         let metrics = rail.metrics
         guard let frame, frame.height > 1, metrics.containerHeight > 1 else { return false }
-        // The board's own top edge, in board coordinates: below the status bar, or the banner.
-        return frame.minY < metrics.offset + metrics.topInset + 6
+        // How far the board has scrolled from rest, where the offset sits at minus the top inset.
+        let scrolled = metrics.offset + metrics.topInset
+        return scrolled > 1 && frame.minY < scrolled + 6
     }
 }

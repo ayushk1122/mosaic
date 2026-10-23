@@ -26,6 +26,12 @@ struct MosaicExploreView: View {
     @State private var phase = Phase.loading
     @State private var loadingMore = false
     @State private var reachedEnd = false
+    /// Where the next page starts on the server; tiles already shown can make the list shorter.
+    @State private var nextOffset = 0
+    /// Bumped by every reload, so a page asked for before it isn't added to the new list.
+    @State private var generation = 0
+    /// What the grid holds now; coming back from a visit shouldn't start it over.
+    @State private var loadedRequest: Request?
     @State private var opened: MosaicVisitTarget?
     /// The tile whose owner's profile card is open.
     @State private var card: MosaicExploreItem?
@@ -72,6 +78,7 @@ struct MosaicExploreView: View {
         }
         .refreshable { await reload(reshuffle: true) }
         .task(id: request) {
+            guard loadedRequest != request || items.isEmpty else { return }
             // Typing waits for a pause; a filter or sort tap loads at once.
             if !request.query.isEmpty {
                 try? await Task.sleep(for: .milliseconds(300))
@@ -85,6 +92,8 @@ struct MosaicExploreView: View {
         .toolbar(tabBarHidden || card != nil ? .hidden : .visible, for: .tabBar)
         .navigationDestination(item: $opened) { target in
             MosaicVisitView(target: target)
+                // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
+                .id(target)
         }
         .accessibilityIdentifier(MosaicTab.explore.screenAccessibilityIdentifier)
         .mosaicPageBackground(.explore)
@@ -267,11 +276,15 @@ struct MosaicExploreView: View {
 
     private func reload(reshuffle: Bool) async {
         if reshuffle { seed = UUID().uuidString }
+        generation += 1
+        let current = generation
         reachedEnd = false
         if !reshuffle { phase = .loading }
-        guard let page = await fetch(offset: 0) else { return }
+        guard let page = await fetch(offset: 0), current == generation else { return }
         items = page
+        nextOffset = page.count
         reachedEnd = page.count < MosaicExploreClient.pageSize
+        loadedRequest = request
         phase = .ready
     }
 
@@ -279,10 +292,17 @@ struct MosaicExploreView: View {
         guard phase == .ready, !loadingMore, !reachedEnd else { return }
         loadingMore = true
         defer { loadingMore = false }
-        guard let page = await fetch(offset: items.count) else { return }
-        let known = Set(items.map(\.id))
-        items.append(contentsOf: page.filter { !known.contains($0.id) })
-        reachedEnd = page.count < MosaicExploreClient.pageSize
+        let current = generation
+        // A page of only tiles already shown adds nothing to scroll to, so keep going.
+        while !reachedEnd {
+            guard let page = await fetch(offset: nextOffset), current == generation else { return }
+            nextOffset += page.count
+            reachedEnd = page.count < MosaicExploreClient.pageSize
+            let known = Set(items.map(\.id))
+            let fresh = page.filter { !known.contains($0.id) }
+            items.append(contentsOf: fresh)
+            if !fresh.isEmpty { return }
+        }
     }
 
     /// Nil when it couldn't load; the phase says why.

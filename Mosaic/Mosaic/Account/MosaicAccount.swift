@@ -719,8 +719,10 @@ final class MosaicAccount {
         }
     }
 
+    /// Not a timeout: the server may have acted on the first request (a one-time code is then used
+    /// up), and a second full timeout doubles the wait.
     nonisolated static func retriesOnce(_ code: URLError.Code) -> Bool {
-        code == .networkConnectionLost || code == .timedOut
+        code == .networkConnectionLost
     }
 
     private func putUser(
@@ -783,7 +785,7 @@ final class MosaicAccount {
             "Google sign-in was rejected. In Supabase, turn on the Google provider and allow the redirect mosaic://login-callback."
         case .unexpectedResponse:
             "Google sign-in returned an unexpected response."
-        case .revisionConflict, .mosaicExists, .documentTooLarge:
+        case .revisionConflict, .documentDeleted, .mosaicExists, .documentTooLarge:
             "Google sign-in did not finish."
         }
     }

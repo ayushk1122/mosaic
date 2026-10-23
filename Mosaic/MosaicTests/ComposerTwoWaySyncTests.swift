@@ -247,6 +247,35 @@ struct ComposerTwoWaySyncTests {
         #expect(first.sync.conflicts.isEmpty)
     }
 
+    @Test func pushingABoardDeletedElsewhereKeepsItAsAConflictInsteadOfBringingItBack() async throws {
+        FakeSupabaseProtocol.server.reset(owner: owner)
+        let client = makeClient()
+        defer { client.session.invalidateAndCancel() }
+        let (first, second, _) = try await twoDevicesInSync(client)
+        defer { cleanUp(first, second) }
+
+        let added = first.store.addBlock(.pursuit, to: nil)
+        let newPursuit = try #require(first.store.block(with: added, in: nil)?.pursuitID)
+        #expect(await push(first, client))
+        await pull(second, client)
+        first.store.deleteBlock(added, in: nil)
+        #expect(await push(first, client))
+        // The second device edits the deleted Pursuit and pushes before it has pulled.
+        let edit = second.store.addBlock(.text, to: newPursuit)
+        _ = await push(second, client)
+
+        let pursuitUUID = try #require(ComposerBoardSync.uuid(newPursuit))
+        #expect(FakeSupabaseProtocol.server.bodyText(of: pursuitUUID) == nil, "the deletion stands on the server")
+        let conflict = try #require(second.sync.conflicts.first { $0.id == pursuitUUID })
+        #expect(conflict.deleted?.reference?.id == added)
+        #expect(conflict.local.body.blocks.contains { $0.id == edit })
+
+        second.sync.keepMyVersion(conflict)
+        #expect(await push(second, client))
+        #expect(FakeSupabaseProtocol.server.bodyText(of: pursuitUUID)?.contains(edit.rawValue.lowercased()) == true,
+                "kept on purpose, it goes back as a new board")
+    }
+
     @Test func aBoardDeletedElsewhereAndUntouchedHereIsRemovedQuietly() async throws {
         FakeSupabaseProtocol.server.reset(owner: owner)
         let client = makeClient()
@@ -372,6 +401,9 @@ private final class FakeSupabaseServer: @unchecked Sendable {
         guard let id = (call["p_id"] as? String)?.lowercased() else { return (400, Data()) }
         let expected = (call["p_expected_revision"] as? NSNumber)?.int64Value ?? 0
         let current = (rows[id]?["revision"] as? NSNumber)?.int64Value ?? 0
+        if rows[id] == nil, expected > 0 {
+            return (409, Data(#"{"code":"MS404","message":"document deleted"}"#.utf8))
+        }
         guard expected == current else {
             return (409, Data(#"{"code":"P0001","message":"revision conflict"}"#.utf8))
         }

@@ -1388,8 +1388,8 @@ struct MosaicSettingsView: View {
         let client = MosaicExploreClient(config: config)
         var allSaved = true
         for row in changed {
-            // Leaving Public already took the board out of Explore on the server.
-            if !row.explore, row.level != .public {
+            // Leaving Public already took the board out of Explore on the server, if it saved.
+            if !row.explore, savedLevels[row.id] != .public {
                 savedExplore[row.id] = false
                 continue
             }
@@ -1421,14 +1421,21 @@ struct MosaicSettingsView: View {
         }
         let client = MosaicSettingsClient(config: config)
         var allSaved = true
+        var pursuitChanged = false
         for row in changed {
             do {
                 try await client.setVisibility(id: row.id, level: row.level, accessToken: token)
                 savedLevels[row.id] = row.level
                 pursuitPrivacy?.set(row.level, for: row.id)
+                pursuitChanged = pursuitChanged || row.id != mosaic?.id
             } catch {
                 allSaved = false
             }
+        }
+        // The server dropped the shared Mosaic's picture, which may show that Pursuit as it was;
+        // drawing a new one now brings the Mosaic back to Explore without waiting an hour.
+        if pursuitChanged, let mosaic, savedExplore[mosaic.id] == true {
+            explorePreviews?.refresh(boardID: mosaic.id, force: true)
         }
         if !allSaved {
             status = "Some privacy settings could not be saved."

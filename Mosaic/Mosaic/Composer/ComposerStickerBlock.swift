@@ -294,14 +294,21 @@ struct ComposerCutoutEditor: View {
     @State private var chosen = IndexSet()
     @State private var preview: UIImage?
     @State private var isSaving = false
+    /// Cancelled with the editor, so a cutout still being made isn't placed after Cancel.
+    @State private var saveTask: Task<Void, Never>?
+    /// The photo at screen size; drawing a 48-megapixel original would take hundreds of MB.
+    @State private var shownPhoto: UIImage?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Button("Cancel", action: onCancel)
-                        .foregroundStyle(.white)
+                    Button("Cancel") {
+                        saveTask?.cancel()
+                        onCancel()
+                    }
+                    .foregroundStyle(.white)
                     Spacer()
                 }
                 .padding(.horizontal, 20)
@@ -334,8 +341,10 @@ struct ComposerCutoutEditor: View {
                 .accessibilityIdentifier("cutout.add")
             }
         }
+        .onDisappear { saveTask?.cancel() }
         .task {
             let image = photo
+            shownPhoto = await image.byPreparingThumbnail(ofSize: Self.shownSize(of: image.size))
             let session = await Task.detached(priority: .userInitiated) {
                 ComposerCutoutSession.find(in: image)
             }.value
@@ -368,7 +377,7 @@ struct ComposerCutoutEditor: View {
         GeometryReader { proxy in
             let fitted = fittedSize(of: photo.size, in: proxy.size)
             ZStack {
-                Image(uiImage: photo)
+                Image(uiImage: shownPhoto ?? photo)
                     .resizable()
                     .opacity(isReady ? 0.3 : 1)
                 if let preview {
@@ -433,16 +442,25 @@ struct ComposerCutoutEditor: View {
         guard case .ready(let session) = phase, !chosen.isEmpty else { return }
         isSaving = true
         let instances = chosen
-        Task {
+        saveTask = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> (Data, CGSize)? in
                 guard let cutout = session.lifted(instances, cropped: true) else { return nil }
                 return ComposerStickerArt.stickerPNG(from: cutout).map { ($0.data, $0.size) }
             }.value
             isSaving = false
+            guard !Task.isCancelled else { return }
             if let result {
                 onDone(result.0, result.1)
             }
         }
+    }
+
+    /// At most 2048 pixels on the long side, in the photo's proportions.
+    private static func shownSize(of size: CGSize) -> CGSize {
+        let longest = max(size.width, size.height)
+        guard longest > 2048 else { return size }
+        let scale = 2048 / longest
+        return CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
     }
 }
 

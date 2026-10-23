@@ -136,6 +136,9 @@ struct MosaicDiscoverView: View {
     @State private var phase = Phase.idle
     @State private var opened: MosaicVisitTarget?
     @State private var following: [MosaicFollowedItem] = []
+    /// Rows opened just now. The server learns of the visit in the background, so a reload on
+    /// coming back can arrive before it and would bring the mark back.
+    @State private var readAt: [String: Date] = [:]
     @State private var followingLoaded = false
     @State private var pursuitQuery = ""
     @State private var mosaicQuery = ""
@@ -202,6 +205,8 @@ struct MosaicDiscoverView: View {
         }
         .navigationDestination(item: $opened) { target in
             MosaicVisitView(target: target)
+                // Another person, or another Pursuit, while one is open is a new visit, not this one updated.
+                .id(target)
         }
         .accessibilityIdentifier(MosaicTab.search.screenAccessibilityIdentifier)
         .mosaicPageBackground(.discover)
@@ -291,7 +296,11 @@ struct MosaicDiscoverView: View {
     }
 
     private func open(_ target: MosaicVisitTarget) {
-        following = MosaicFollowingClient.read(following, opening: target)
+        let read = MosaicFollowingClient.read(following, opening: target)
+        for (before, after) in zip(following, read) where before.hasUpdate && !after.hasUpdate {
+            readAt[after.id] = .now
+        }
+        following = read
         opened = target
     }
 
@@ -341,7 +350,13 @@ struct MosaicDiscoverView: View {
             followingLoaded = true
             return
         }
-        following = items
+        following = items.map { item in
+            var item = item
+            if let at = readAt[item.id], Date.now.timeIntervalSince(at) < 30 {
+                item.hasUpdate = false
+            }
+            return item
+        }
         followingLoaded = true
     }
 
