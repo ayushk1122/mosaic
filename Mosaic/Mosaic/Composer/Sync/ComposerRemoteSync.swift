@@ -81,6 +81,52 @@ struct ComposerSyncState: Codable, Equatable, Sendable {
     }
 }
 
+/// When this device last edited each board. When a board changed both here and on the server,
+/// whichever edit is newer wins (ADR 0004). Kept in its own file, not the sync state, so a push
+/// in flight saving its copy of the state can't overwrite a newer time.
+struct ComposerEditTimes: Codable, Equatable, Sendable {
+    struct Edit: Codable, Equatable, Sendable {
+        /// The board's content when it was edited, without media links (uploads change those).
+        var hash: String
+        var at: Date
+    }
+
+    var boards: [String: Edit] = [:]
+
+    /// The board's content, ignoring which uploaded file each name points to.
+    static func editHash(of document: ComposerSyncDocument) -> String? {
+        var document = document
+        document.body.mediaAssets = nil
+        document.body.mediaPreviews = nil
+        return ComposerSyncState.contentHash(of: document)
+    }
+
+    /// Keeps each board's time while its content stays the same, and stamps `date` on boards that changed.
+    func recording(_ documents: [ComposerSyncDocument], at date: Date) -> ComposerEditTimes {
+        var next = ComposerEditTimes()
+        for document in documents {
+            guard let hash = Self.editHash(of: document) else { continue }
+            let key = document.id.uuidString.lowercased()
+            next.boards[key] = boards[key]?.hash == hash ? boards[key] : Edit(hash: hash, at: date)
+        }
+        return next
+    }
+
+    /// When this device last edited the board. An edit not recorded yet was made just now.
+    func editTime(of document: ComposerSyncDocument, now: Date) -> Date {
+        let key = document.id.uuidString.lowercased()
+        guard let edit = boards[key], edit.hash == Self.editHash(of: document) else { return now }
+        return edit.at
+    }
+
+    /// This device's version was edited after the server saved its own, so it replaces it. A server
+    /// time that can't be read keeps the server's version.
+    func localIsNewer(_ document: ComposerSyncDocument, than server: ComposerRestoredDocument, now: Date) -> Bool {
+        guard let serverTime = server.updatedAt else { return false }
+        return editTime(of: document, now: now) > serverTime
+    }
+}
+
 /// A push found the board changed on another device; carries the server's version.
 struct ComposerPushConflict: Error {
     var server: ComposerRestoredDocument
@@ -109,9 +155,6 @@ final class ComposerRemoteSync {
     private var needsPush = false
     /// Boards the server refused as too large on the last push, by name, for the shell's notice.
     private(set) var oversizedBoards: [String] = []
-    /// Boards changed on this device and on another one before syncing (ADR 0003). The server's
-    /// version is showing; each holds this device's version until kept or discarded.
-    private(set) var conflicts: [ComposerSyncConflict] = []
     /// Bumped after a pull brings in boards, so the shell can download any new photos.
     private(set) var pullCount = 0
     /// Where pulled boards go, and where a push or pull reads the current copy from.
@@ -128,7 +171,7 @@ final class ComposerRemoteSync {
 
     init(location: ComposerStorageLocation = .shared()) {
         self.location = location
-        conflicts = Self.loadConflicts(at: location)
+        moveOldConflictCopies()
     }
 
     var canUpload: Bool { loadState()?.pendingRestore != true }
@@ -162,6 +205,7 @@ final class ComposerRemoteSync {
         protectingDocumentIDs: Set<UUID> = []
     ) {
         guard canUpload else { return }
+        recordEdits(in: snapshot)
         self.mediaFile = mediaFile
         latest = snapshot
         latestProtecting = protectingDocumentIDs
@@ -192,6 +236,7 @@ final class ComposerRemoteSync {
         protectingDocumentIDs: Set<UUID> = []
     ) async -> Bool {
         guard canUpload else { return false }
+        recordEdits(in: snapshot)
         self.mediaFile = mediaFile
         latest = snapshot
         latestProtecting = protectingDocumentIDs
@@ -374,10 +419,10 @@ final class ComposerRemoteSync {
                     tooLarge.insert(document.id)
                     refusedAsTooLarge[document.id] = hash
                 } catch let conflict as ComposerPushConflict {
-                    // Changed on another device too: its version is brought in below, never overwritten.
+                    // Edited on another device more recently: its version is brought in below.
                     serverVersions[conflict.server.id] = conflict.server
                 } catch let deleted as ComposerPushDeleted {
-                    // Deleted on another device: shown like a pulled deletion, this copy kept below.
+                    // Deleted on another device: deleting wins, like a pulled deletion, below.
                     deletedElsewhere.insert(deleted.id)
                 } catch {
                     if Task.isCancelled { return false }
@@ -435,7 +480,7 @@ final class ComposerRemoteSync {
             )
             saveState(state)
             let restamped = ComposerMediaCatalog.stamped(split, assets: state.mediaAssets, previews: state.mediaPreviews)
-            // A board that conflicted is no longer this device's to push until the person chooses.
+            // A board the other device's newer edit or deletion replaced isn't pushed again.
             for document in restamped where serverVersions[document.id] == nil && !deletedElsewhere.contains(document.id) {
                 // The same refused content isn't uploaded again (about 2 MB each time) until it changes.
                 let hash = ComposerSyncState.contentHash(of: document)
@@ -452,7 +497,7 @@ final class ComposerRemoteSync {
                     tooLarge.insert(document.id)
                     refusedAsTooLarge[document.id] = hash
                 } catch let conflict as ComposerPushConflict {
-                    // Changed on another device too: its version is brought in below, never overwritten.
+                    // Edited on another device more recently: its version is brought in below.
                     serverVersions[conflict.server.id] = conflict.server
                 } catch let deleted as ComposerPushDeleted {
                     deletedElsewhere.insert(deleted.id)
@@ -493,13 +538,25 @@ final class ComposerRemoteSync {
         let key = document.id.uuidString.lowercased()
         let hash = ComposerSyncState.contentHash(of: document)
         if let hash, state.revisions[key] != nil, state.pushedHashes[key] == hash { return }
-        let next = try await save(
-            client: client,
-            document: document,
-            expected: state.revisions[key] ?? 0,
-            ownerID: ownerID,
-            accessToken: accessToken
-        )
+        let next: Int64
+        do {
+            next = try await save(
+                client: client,
+                document: document,
+                expected: state.revisions[key] ?? 0,
+                ownerID: ownerID,
+                accessToken: accessToken
+            )
+        } catch let conflict as ComposerPushConflict where loadEditTimes().localIsNewer(document, than: conflict.server, now: .now) {
+            // Changed on another device too, but edited here since: this version replaces it (ADR 0004).
+            next = try await save(
+                client: client,
+                document: document,
+                expected: conflict.server.revision,
+                ownerID: ownerID,
+                accessToken: accessToken
+            )
+        }
         state.revisions[key] = next
         state.pushedHashes[key] = hash
         saveState(state)
@@ -599,8 +656,7 @@ final class ComposerRemoteSync {
             if server.body == document.body, server.title == document.title {
                 return server.revision
             }
-            // Another device changed this board (ADR 0003): its version wins what's shown, and this
-            // device's version is kept as a conflict copy. Nothing is overwritten.
+            // Another device changed this board; which edit is newer decides what stays (ADR 0004).
             throw ComposerPushConflict(server: server)
         } catch SupabaseDocumentSyncError.documentDeleted {
             throw ComposerPushDeleted(id: document.id)
@@ -659,16 +715,12 @@ final class ComposerRemoteSync {
             removed: removed,
             snapshot: store.snapshot,
             state: state,
+            editTimes: loadEditTimes(),
             mosaicID: state.mosaicID,
             now: Date()
         )
         saveState(result.state)
-        if !result.conflicts.isEmpty {
-            // A newer conflict on the same board replaces the older one: it holds this device's latest version.
-            let incoming = Set(result.conflicts.map(\.id))
-            conflicts = conflicts.filter { !incoming.contains($0.id) } + result.conflicts
-            saveConflicts()
-        }
+        keepReplaced(result.replacedLocal)
         store.applySynced(result.snapshot, replaced: result.replaced)
         // A push waiting with a copy from before this merge would send the old boards back.
         if latest != nil {
@@ -678,40 +730,63 @@ final class ComposerRemoteSync {
         return result.state
     }
 
-    /// "Keep my version": this device's copy goes back on the board and is pushed as the newest version.
-    func keepMyVersion(_ conflict: ComposerSyncConflict) {
-        guard let store, let state = loadState() else { return }
-        let restored = ComposerPull.restoring(conflict, to: store.snapshot, mosaicID: state.mosaicID)
-        conflicts.removeAll { $0.id == conflict.id }
-        saveConflicts()
-        let board: ComposerDocumentID? = conflict.id == state.mosaicID ? nil : ComposerPull.localID(conflict.id, in: store.snapshot)
-        store.applySynced(restored, replaced: [board])
+    // MARK: Edit times and replaced copies
+
+    /// Notes when each board last changed on this device; runs with every local save.
+    func recordEdits(in snapshot: ComposerSnapshot, at date: Date = .now) {
+        guard let state = loadState(), !state.pendingRestore else { return }
+        let times = loadEditTimes()
+        let next = times.recording(ComposerBoardSync.split(snapshot: snapshot, mosaicID: state.mosaicID), at: date)
+        guard next != times, let data = try? JSONEncoder().encode(next) else { return }
+        try? FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
+        try? data.write(to: editTimesURL, options: .atomic)
     }
 
-    /// "Discard": the other device's version stays and this device's copy is dropped.
-    func discard(_ conflict: ComposerSyncConflict) {
-        conflicts.removeAll { $0.id == conflict.id }
-        saveConflicts()
+    func loadEditTimes() -> ComposerEditTimes {
+        guard let data = try? Data(contentsOf: editTimesURL) else { return ComposerEditTimes() }
+        return (try? JSONDecoder().decode(ComposerEditTimes.self, from: data)) ?? ComposerEditTimes()
     }
 
-    private var conflictsURL: URL {
-        location.root.appendingPathComponent("conflicts", isDirectory: true).appendingPathComponent("pending.json")
+    private var editTimesURL: URL {
+        location.root.appendingPathComponent("edit-times.json")
     }
 
-    private static func loadConflicts(at location: ComposerStorageLocation) -> [ComposerSyncConflict] {
-        let url = location.root.appendingPathComponent("conflicts", isDirectory: true).appendingPathComponent("pending.json")
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([ComposerSyncConflict].self, from: data)) ?? []
+    /// This device's versions that a newer edit or a deletion replaced. Nothing in the app shows
+    /// them; they stay a week so lost work can still be found if someone asks.
+    var replacedFolder: URL {
+        location.root.appendingPathComponent("replaced", isDirectory: true)
     }
 
-    private func saveConflicts() {
-        let url = conflictsURL
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if conflicts.isEmpty {
-            try? FileManager.default.removeItem(at: url)
-        } else if let data = try? JSONEncoder().encode(conflicts) {
-            try? data.write(to: url, options: .atomic)
+    static let replacedKeptFor: TimeInterval = 7 * 24 * 60 * 60
+
+    private func keepReplaced(_ documents: [ComposerSyncDocument], at date: Date = .now) {
+        let folder = replacedFolder
+        let manager = FileManager.default
+        if !documents.isEmpty {
+            try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let stamp = Int(date.timeIntervalSince1970)
+            for document in documents {
+                guard let data = try? JSONEncoder().encode(document) else { continue }
+                try? data.write(to: folder.appendingPathComponent("\(document.id.uuidString.lowercased())-\(stamp).json"), options: .atomic)
+            }
         }
+        let old = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for file in old {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? date
+            if date.timeIntervalSince(modified) > Self.replacedKeptFor {
+                try? manager.removeItem(at: file)
+            }
+        }
+    }
+
+    /// Builds before ADR 0004 kept conflict copies behind a banner; they become replaced copies.
+    private func moveOldConflictCopies() {
+        struct OldConflict: Decodable { var local: ComposerSyncDocument }
+        let url = location.root.appendingPathComponent("conflicts", isDirectory: true).appendingPathComponent("pending.json")
+        guard let data = try? Data(contentsOf: url) else { return }
+        let old = (try? JSONDecoder().decode([OldConflict].self, from: data)) ?? []
+        keepReplaced(old.map(\.local))
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func loadState() -> ComposerSyncState? {

@@ -59,7 +59,7 @@ struct SupabaseDocumentSync: Sendable {
         components.queryItems = [
             URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
             URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())"),
-            URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision")
+            URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision,updated_at")
         ]
         var request = URLRequest(url: components.url!)
         request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
@@ -85,7 +85,7 @@ struct SupabaseDocumentSync: Sendable {
             var components = URLComponents(url: config.url.appending(path: "rest/v1/documents"), resolvingAgainstBaseURL: false)!
             components.queryItems = [
                 URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
-                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision"),
+                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision,updated_at"),
                 URLQueryItem(name: "order", value: "id.asc"),
                 URLQueryItem(name: "limit", value: "100"),
                 URLQueryItem(name: "offset", value: String(result.count))
@@ -153,7 +153,7 @@ struct SupabaseDocumentSync: Sendable {
             components.queryItems = [
                 URLQueryItem(name: "owner_id", value: "eq.\(ownerID.uuidString.lowercased())"),
                 URLQueryItem(name: "id", value: "in.(\(list))"),
-                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision")
+                URLQueryItem(name: "select", value: "id,owner_id,parent_id,role,title,body,revision,updated_at")
             ]
             var request = URLRequest(url: components.url!)
             request.setValue(config.anonKey, forHTTPHeaderField: "apikey")

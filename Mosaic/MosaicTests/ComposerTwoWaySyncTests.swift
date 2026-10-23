@@ -84,7 +84,6 @@ struct ComposerTwoWaySyncTests {
 
         await pull(second, client)
         #expect(texts(second.store, in: pursuit) == 2)
-        #expect(second.sync.conflicts.isEmpty)
         #expect(second.sync.pullCount == 1)
 
         // What just arrived matches the server, so pushing sends nothing.
@@ -114,7 +113,6 @@ struct ComposerTwoWaySyncTests {
         await pull(second, client)
         #expect(texts(second.store, in: pursuit) == 3)
         #expect(!second.store.canUndo(in: pursuit))
-        #expect(second.sync.conflicts.isEmpty)
     }
 
     @Test func newAndDeletedBoardsFollowTheOtherDevice() async throws {
@@ -137,62 +135,37 @@ struct ComposerTwoWaySyncTests {
         await pull(second, client)
         #expect(!second.store.snapshot.pursuits.contains { $0.id == newPursuit })
         #expect(!second.store.blocks(for: nil).contains { $0.pursuitID == newPursuit })
-        #expect(second.sync.conflicts.isEmpty)
     }
 
-    @Test func editsOnBothDevicesShowTheServerVersionAndKeepTheLocalOne() async throws {
+    /// Files this device kept after a newer edit or a deletion replaced its version.
+    private func replacedCopies(_ device: Device) -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: device.sync.replacedFolder.path))?.count ?? 0
+    }
+
+    @Test func theOtherDevicesNewerEditReplacesAnOlderOneHere() async throws {
         FakeSupabaseProtocol.server.reset(owner: owner)
         let client = makeClient()
         defer { client.session.invalidateAndCancel() }
         let (first, second, pursuit) = try await twoDevicesInSync(client)
         defer { cleanUp(first, second) }
 
+        // Edited here a minute before the other device saved its edit.
+        let mine = second.store.addBlock(.drawing, to: pursuit)
+        second.sync.recordEdits(in: second.store.snapshot, at: Date().addingTimeInterval(-60))
         first.store.addBlock(.text, to: pursuit)
         #expect(await push(first, client))
-        let mine = second.store.addBlock(.drawing, to: pursuit)
 
         await pull(second, client)
         #expect(texts(second.store, in: pursuit) == 2)
         #expect(second.store.block(with: mine, in: pursuit) == nil)
-        let conflict = try #require(second.sync.conflicts.first)
-        #expect(second.sync.conflicts.count == 1)
-        #expect(conflict.local.body.blocks.contains { $0.id == mine })
-
-        // The choice survives a relaunch.
-        #expect(ComposerRemoteSync(location: second.location).conflicts == second.sync.conflicts)
-
-        second.sync.keepMyVersion(conflict)
-        #expect(second.sync.conflicts.isEmpty)
-        #expect(second.store.block(with: mine, in: pursuit) != nil)
-        #expect(await push(second, client))
-        await pull(first, client)
-        #expect(first.store.block(with: mine, in: pursuit) != nil)
-        #expect(first.sync.conflicts.isEmpty)
-    }
-
-    @Test func discardingKeepsTheOtherDevicesVersion() async throws {
-        FakeSupabaseProtocol.server.reset(owner: owner)
-        let client = makeClient()
-        defer { client.session.invalidateAndCancel() }
-        let (first, second, pursuit) = try await twoDevicesInSync(client)
-        defer { cleanUp(first, second) }
-
-        first.store.addBlock(.text, to: pursuit)
-        #expect(await push(first, client))
-        second.store.addBlock(.drawing, to: pursuit)
-        await pull(second, client)
-        let conflict = try #require(second.sync.conflicts.first)
-
-        second.sync.discard(conflict)
-        #expect(second.sync.conflicts.isEmpty)
-        #expect(ComposerRemoteSync(location: second.location).conflicts.isEmpty)
-        #expect(texts(second.store, in: pursuit) == 2)
+        #expect(replacedCopies(second) == 1, "the older version is kept quietly on the phone")
+        // Nothing left to send: the board is the server's.
         let saves = FakeSupabaseProtocol.server.saveCount
         #expect(await push(second, client))
         #expect(FakeSupabaseProtocol.server.saveCount == saves)
     }
 
-    @Test func aPushThatMeetsANewerVersionDoesNotOverwriteIt() async throws {
+    @Test func aNewerEditHereReplacesTheOtherDevicesOlderOne() async throws {
         FakeSupabaseProtocol.server.reset(owner: owner)
         let client = makeClient()
         defer { client.session.invalidateAndCancel() }
@@ -201,8 +174,31 @@ struct ComposerTwoWaySyncTests {
 
         let theirs = first.store.addBlock(.text, to: pursuit)
         #expect(await push(first, client))
-        // The second device pushes before it has pulled.
+        // Edited here after the other device saved.
         let mine = second.store.addBlock(.drawing, to: pursuit)
+        second.sync.recordEdits(in: second.store.snapshot, at: Date().addingTimeInterval(60))
+
+        await pull(second, client)
+        #expect(second.store.block(with: mine, in: pursuit) != nil)
+        #expect(second.store.block(with: theirs, in: pursuit) == nil, "whole boards: the newer one stays as it is")
+        #expect(await push(second, client))
+        await pull(first, client)
+        #expect(first.store.block(with: mine, in: pursuit) != nil)
+        #expect(first.store.block(with: theirs, in: pursuit) == nil)
+    }
+
+    @Test func aPushOlderThanTheServersVersionDoesNotReplaceIt() async throws {
+        FakeSupabaseProtocol.server.reset(owner: owner)
+        let client = makeClient()
+        defer { client.session.invalidateAndCancel() }
+        let (first, second, pursuit) = try await twoDevicesInSync(client)
+        defer { cleanUp(first, second) }
+
+        // Edited here first, but pushed only after the other device's later edit, without pulling.
+        let mine = second.store.addBlock(.drawing, to: pursuit)
+        second.sync.recordEdits(in: second.store.snapshot, at: Date().addingTimeInterval(-60))
+        let theirs = first.store.addBlock(.text, to: pursuit)
+        #expect(await push(first, client))
         _ = await push(second, client)
 
         let pursuitUUID = try #require(ComposerBoardSync.uuid(pursuit))
@@ -210,11 +206,30 @@ struct ComposerTwoWaySyncTests {
         #expect(server.contains(theirs.rawValue.lowercased()))
         #expect(!server.contains(mine.rawValue.lowercased()))
         #expect(second.store.block(with: theirs, in: pursuit) != nil)
-        #expect(second.sync.conflicts.map(\.id) == [pursuitUUID])
-        #expect(second.sync.conflicts.first?.local.body.blocks.contains { $0.id == mine } == true)
+        #expect(replacedCopies(second) == 1)
     }
 
-    @Test func aBoardDeletedElsewhereButEditedHereCanBeKept() async throws {
+    @Test func aPushNewerThanTheServersVersionReplacesIt() async throws {
+        FakeSupabaseProtocol.server.reset(owner: owner)
+        let client = makeClient()
+        defer { client.session.invalidateAndCancel() }
+        let (first, second, pursuit) = try await twoDevicesInSync(client)
+        defer { cleanUp(first, second) }
+
+        let theirs = first.store.addBlock(.text, to: pursuit)
+        #expect(await push(first, client))
+        // Edited here after that, and pushed without pulling first.
+        let mine = second.store.addBlock(.drawing, to: pursuit)
+        second.sync.recordEdits(in: second.store.snapshot, at: Date().addingTimeInterval(60))
+        #expect(await push(second, client))
+
+        let pursuitUUID = try #require(ComposerBoardSync.uuid(pursuit))
+        let server = try #require(FakeSupabaseProtocol.server.bodyText(of: pursuitUUID))
+        #expect(server.contains(mine.rawValue.lowercased()))
+        #expect(!server.contains(theirs.rawValue.lowercased()))
+    }
+
+    @Test func deletingOnAnotherDeviceWinsOverAnEditHere() async throws {
         FakeSupabaseProtocol.server.reset(owner: owner)
         let client = makeClient()
         defer { client.session.invalidateAndCancel() }
@@ -229,25 +244,17 @@ struct ComposerTwoWaySyncTests {
         await pull(second, client)
         first.store.deleteBlock(added, in: nil)
         #expect(await push(first, client))
-        // Edited inside a page of the deleted Pursuit.
-        let edit = second.store.addBlock(.text, to: page)
+        // Edited inside a page of the deleted Pursuit, even after the deletion.
+        second.store.addBlock(.text, to: page)
+        second.sync.recordEdits(in: second.store.snapshot, at: Date().addingTimeInterval(60))
 
         await pull(second, client)
         #expect(!second.store.snapshot.pursuits.contains { $0.id == newPursuit })
-        let conflict = try #require(second.sync.conflicts.first)
-        #expect(conflict.id == ComposerBoardSync.uuid(newPursuit))
-        #expect(conflict.deleted?.reference?.id == added)
-
-        second.sync.keepMyVersion(conflict)
-        #expect(second.store.blocks(for: nil).contains { $0.id == added })
-        #expect(second.store.block(with: edit, in: page) != nil)
-        #expect(await push(second, client))
-        await pull(first, client)
-        #expect(first.store.block(with: edit, in: page) != nil)
-        #expect(first.sync.conflicts.isEmpty)
+        #expect(!second.store.blocks(for: nil).contains { $0.id == added })
+        #expect(replacedCopies(second) == 1, "the edited page is kept quietly")
     }
 
-    @Test func pushingABoardDeletedElsewhereKeepsItAsAConflictInsteadOfBringingItBack() async throws {
+    @Test func pushingABoardDeletedElsewhereDoesNotBringItBack() async throws {
         FakeSupabaseProtocol.server.reset(owner: owner)
         let client = makeClient()
         defer { client.session.invalidateAndCancel() }
@@ -261,19 +268,13 @@ struct ComposerTwoWaySyncTests {
         first.store.deleteBlock(added, in: nil)
         #expect(await push(first, client))
         // The second device edits the deleted Pursuit and pushes before it has pulled.
-        let edit = second.store.addBlock(.text, to: newPursuit)
+        second.store.addBlock(.text, to: newPursuit)
         _ = await push(second, client)
 
         let pursuitUUID = try #require(ComposerBoardSync.uuid(newPursuit))
         #expect(FakeSupabaseProtocol.server.bodyText(of: pursuitUUID) == nil, "the deletion stands on the server")
-        let conflict = try #require(second.sync.conflicts.first { $0.id == pursuitUUID })
-        #expect(conflict.deleted?.reference?.id == added)
-        #expect(conflict.local.body.blocks.contains { $0.id == edit })
-
-        second.sync.keepMyVersion(conflict)
-        #expect(await push(second, client))
-        #expect(FakeSupabaseProtocol.server.bodyText(of: pursuitUUID)?.contains(edit.rawValue.lowercased()) == true,
-                "kept on purpose, it goes back as a new board")
+        #expect(!second.store.snapshot.pursuits.contains { $0.id == newPursuit })
+        #expect(replacedCopies(second) == 1)
     }
 
     @Test func aBoardDeletedElsewhereAndUntouchedHereIsRemovedQuietly() async throws {
@@ -288,7 +289,52 @@ struct ComposerTwoWaySyncTests {
         #expect(await push(first, client))
         await pull(second, client)
         #expect(!second.store.snapshot.pursuits.contains { $0.id == pursuit })
-        #expect(second.sync.conflicts.isEmpty)
+        #expect(replacedCopies(second) == 0)
+    }
+
+    @Test func conflictCopiesFromEarlierBuildsBecomeReplacedCopies() throws {
+        let location = try newLocation()
+        let folder = location.root.appendingPathComponent("conflicts", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let board = ComposerSyncDocument(
+            id: UUID(), parentID: nil, role: .pursuit, title: "Golf", visibility: "private",
+            body: ComposerBoardBody(blocks: [], layoutHeight: nil, background: nil, mosaicTitlePlaced: nil, pursuitPagesBlanked: nil)
+        )
+        let old: [[String: Any]] = [[
+            "id": board.id.uuidString, "title": "Golf", "savedAt": 0,
+            "local": try JSONSerialization.jsonObject(with: JSONEncoder().encode(board)),
+        ]]
+        try JSONSerialization.data(withJSONObject: old).write(to: folder.appendingPathComponent("pending.json"))
+        defer { try? FileManager.default.removeItem(at: location.root.deletingLastPathComponent()) }
+
+        let sync = ComposerRemoteSync(location: location)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("pending.json").path))
+        #expect((try? FileManager.default.contentsOfDirectory(atPath: sync.replacedFolder.path))?.count == 1)
+    }
+
+    @Test func editTimesMoveOnlyWhenABoardChanges() {
+        let board = ComposerSyncDocument(
+            id: UUID(), parentID: nil, role: .pursuit, title: "Golf", visibility: "private",
+            body: ComposerBoardBody(blocks: [], layoutHeight: nil, background: nil, mosaicTitlePlaced: nil, pursuitPagesBlanked: nil)
+        )
+        let early = Date(timeIntervalSince1970: 1_000), late = Date(timeIntervalSince1970: 2_000)
+        let times = ComposerEditTimes().recording([board], at: early)
+        #expect(times.recording([board], at: late) == times, "unchanged keeps its time")
+        var uploaded = board
+        uploaded.body.mediaAssets = ["a.jpg": "asset"]
+        #expect(times.editTime(of: uploaded, now: late) == early, "a finished upload isn't an edit")
+        var renamed = board
+        renamed.title = "Golf 2026"
+        #expect(times.editTime(of: renamed, now: late) == late, "an edit not recorded yet happened just now")
+        #expect(times.recording([renamed], at: late).editTime(of: renamed, now: .distantFuture) == late)
+    }
+
+    @Test func serverSaveTimesReadAsPostgresWritesThem() throws {
+        let micro = try #require(ComposerServerTime.date(from: "2026-10-22T21:49:12.123456+00:00"))
+        #expect(abs(micro.timeIntervalSince1970 - 1_792_705_752.123) < 0.001)
+        #expect(ComposerServerTime.date(from: "2026-10-22T21:49:12+00:00") == Date(timeIntervalSince1970: 1_792_705_752))
+        #expect(ComposerServerTime.date(from: "2026-10-22T21:49:12.5Z") == Date(timeIntervalSince1970: 1_792_705_752.5))
+        #expect(ComposerServerTime.date(from: "yesterday") == nil)
     }
 
     @Test func stickersSavedOnBothDevicesAreAllKept() async throws {
@@ -304,7 +350,6 @@ struct ComposerTwoWaySyncTests {
 
         await pull(second, client)
         #expect(Set(second.store.snapshot.stickerLibrary.map(\.fileName)) == ["theirs.png", "mine.png"])
-        #expect(second.sync.conflicts.isEmpty)
         #expect(await push(second, client))
         await pull(first, client)
         #expect(Set(first.store.snapshot.stickerLibrary.map(\.fileName)) == ["theirs.png", "mine.png"])
@@ -416,6 +461,7 @@ private final class FakeSupabaseServer: @unchecked Sendable {
             "title": call["p_title"] ?? "",
             "body": call["p_body"] ?? [:],
             "revision": current + 1,
+            "updated_at": Self.timestamp.string(from: Date()),
         ]
         return (200, Data("\(current + 1)".utf8))
     }
@@ -460,6 +506,12 @@ private final class FakeSupabaseServer: @unchecked Sendable {
         }
         return data
     }
+
+    private static let timestamp: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private static func json(_ data: Data) -> Any? {
         try? JSONSerialization.jsonObject(with: data)

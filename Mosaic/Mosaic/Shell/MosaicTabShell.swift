@@ -220,11 +220,6 @@ struct MosaicTabShell: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let conflict = remoteSync.conflicts.first {
-                syncConflictBanner(conflict)
-            }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
             if let board = remoteSync.oversizedBoards.first {
                 Text("“\(board)” is too large to sync. Remove a drawing or photo from it to sync it again.")
                     .font(.caption)
@@ -274,30 +269,6 @@ struct MosaicTabShell: View {
         .environment(explorePreviews)
         .environment(\.mosaicAccount, account)
         .environment(\.mosaicTabBarHidden, chrome.isViewing)
-    }
-
-    /// ADR 0003: the other device's version is showing; this device's is kept until the person chooses.
-    private func syncConflictBanner(_ conflict: ComposerSyncConflict) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(conflict.deleted == nil
-                 ? "“\(conflict.title)” was changed on another device too. Showing that version."
-                 : "“\(conflict.title)” was deleted on another device, but you’d edited it here.")
-                .font(.caption)
-            HStack(spacing: 16) {
-                Button("Keep my version") { remoteSync.keepMyVersion(conflict) }
-                    .accessibilityIdentifier("sync.conflict.keep")
-                Button("Discard") { remoteSync.discard(conflict) }
-                    .accessibilityIdentifier("sync.conflict.discard")
-            }
-            .font(.caption.bold())
-        }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(red: 0.16, green: 0.22, blue: 0.34))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sync.conflict")
     }
 
     /// After downloads fail, nothing is coming until Retry, so missing media shows as unavailable.
